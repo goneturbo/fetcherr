@@ -1,4 +1,4 @@
-<<<<<<< HEAD
+
 # fetcherr
 Jellyfin-compatible bridge for Infuse with Trakt library sync and Real-Debrid-backed stream resolution.
 =======
@@ -56,4 +56,4 @@ http://YOUR_SERVER:9990/ui/setup
 - Anime has not been validated thoroughly yet
 - Some metadata may still be enriched by Infuse itself
 - `Logo` image behavior may vary by client
->>>>>>> 8c75f05 (Initial beta release)
+
