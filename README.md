@@ -50,26 +50,42 @@ http://YOUR_SERVER:9990/ui/setup
 
 ## Environment
 
-- `TMDB_API_KEY`: TMDB metadata and artwork
-- `RD_API_KEY`: Real-Debrid API access
-- `TRAKT_CLIENT_ID`: Trakt OAuth client ID
-- `TRAKT_CLIENT_SECRET`: Trakt OAuth client secret
-- `TRAKT_USERNAME`: Trakt username to sync from
-- `TRAKT_LISTS`: comma-separated Trakt list slugs to sync in addition to watchlists
-- `SERVER_URL`: external base URL used for playback redirects
-- `UI_USERNAME`: web UI login username
-- `UI_PASSWORD`: web UI login password; leave blank to disable UI auth
-- `AIOSTREAM_URL`: optional legacy AIOStreams manifest or base URL
-- `STREAM_PROVIDER_URLS`: optional provider URLs, one per line
-- `ENGLISH_STREAM_MODE`: `off`, `prefer`, or `require`
+| Variable | Required | Description |
+| --- | --- | --- |
+| `TMDB_API_KEY` | Yes | TMDB metadata and artwork |
+| `RD_API_KEY` | Yes | Real-Debrid API access |
+| `TRAKT_CLIENT_ID` | Yes | Trakt OAuth client ID |
+| `TRAKT_CLIENT_SECRET` | Yes | Trakt OAuth client secret |
+| `TRAKT_USERNAME` | Yes | Trakt username to sync from |
+| `TRAKT_LISTS` | No | Comma-separated Trakt list slugs to sync in addition to watchlists |
+| `SERVER_URL` | Yes | External base URL used for playback redirects |
+| `UI_USERNAME` | No | Web UI login username |
+| `UI_PASSWORD` | No | Web UI login password; leave blank to disable UI auth |
+| `AIOSTREAM_URL` | No | Optional legacy AIOStreams manifest or base URL |
+| `STREAM_PROVIDER_URLS` | No | Optional provider URLs, one per line |
+| `ENGLISH_STREAM_MODE` | No | `off`, `prefer`, or `require` |
 
 ## Tips
 
-- Provider order matters; earlier providers are tried first
-- `ENGLISH_STREAM_MODE=require` is the strictest option for English audio
-- Full manifest URLs are accepted and normalized automatically
-- `SOOTIO_URL` is still supported as a backward-compatible alias for `AIOSTREAM_URL`
-- Real-Debrid multi-location/IP restrictions still apply
+<div style="border-left:4px solid #22c55e; padding:10px 14px; margin:12px 0; background:rgba(34,197,94,.08); border-radius:8px;">
+  <strong>Tip</strong><br>
+  Provider order matters. Earlier providers are tried first.
+</div>
+
+<div style="border-left:4px solid #a855f7; padding:10px 14px; margin:12px 0; background:rgba(168,85,247,.08); border-radius:8px;">
+  <strong>Audio</strong><br>
+  <code>ENGLISH_STREAM_MODE=require</code> is the strictest option for English audio.
+</div>
+
+<div style="border-left:4px solid #60a5fa; padding:10px 14px; margin:12px 0; background:rgba(96,165,250,.08); border-radius:8px;">
+  <strong>Compatibility</strong><br>
+  Full manifest URLs are accepted and normalized automatically. <code>SOOTIO_URL</code> is still supported as a backward-compatible alias for <code>AIOSTREAM_URL</code>.
+</div>
+
+<div style="border-left:4px solid #f59e0b; padding:10px 14px; margin:12px 0; background:rgba(245,158,11,.08); border-radius:8px;">
+  <strong>Real-Debrid</strong><br>
+  Real-Debrid multi-location and IP restrictions still apply.
+</div>
 
 ## Current Limitations
 
