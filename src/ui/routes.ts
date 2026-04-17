@@ -5,8 +5,11 @@ import { join, dirname } from 'path'
 import {
   listMovies, countMovies, listShows, countShows, getAllAiredEpisodes,
   addSourceItem, getMovieByTmdbId, getShowByTmdbId, getSetting, getManualShowSubscription,
-  getLatestSeasonNumberForShow, hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
-  removeManualShowSubscription, removeSourceItem, setSetting, upsertManualShowSubscription,
+  getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate,
+  getManualMovieAvailabilityOverride,
+  hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
+  removeManualShowSubscription, removeSourceItem, setManualMovieAvailabilityOverride,
+  setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
 } from '../db.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
@@ -16,7 +19,7 @@ import {
 } from './auth.js'
 import { config } from '../config.js'
 import { normalizeSootioUrl, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
-import { fetchMovieByTmdbId, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
+import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
@@ -40,6 +43,10 @@ function tmdbToMovieGuid(tmdbId: number) {
 }
 function tmdbToShowGuid(tmdbId: number) {
   return `00000000-0000-4000-8001-${tmdbId.toString(16).padStart(12, '0')}`
+}
+
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
 }
 
 export async function uiRoutes(app: FastifyInstance) {
@@ -154,6 +161,8 @@ export async function uiRoutes(app: FastifyInstance) {
         runtimeMins:  m.runtimeMins,
         popularity:   m.popularity,
         manualAdded:  hasSourceItem('manual:ui', 'movie', m.tmdbId),
+        isAvailable:  isMovieVisibleToLibrary(m),
+        pendingLabel: isMovieVisibleToLibrary(m) ? null : 'Pending Digital Release',
         posterUrl:    m.posterPath ? `https://image.tmdb.org/t/p/w185${m.posterPath}` : null,
         imageId:      tmdbToMovieGuid(m.tmdbId),
       })),
@@ -191,6 +200,78 @@ export async function uiRoutes(app: FastifyInstance) {
         imageId:    tmdbToShowGuid(s.tmdbId),
       })),
       total,
+    }
+  })
+
+  app.get('/ui/library/item', async (req, reply) => {
+    const q = (req as never as { query: Record<string, string> }).query
+    const type = q.type === 'tv' ? 'tv' : q.type === 'movie' ? 'movie' : ''
+    const tmdbId = Number.parseInt(q.tmdbId ?? '', 10)
+    if (!type || !Number.isFinite(tmdbId)) {
+      return reply.code(400).send({ error: 'type and tmdbId are required' })
+    }
+
+    if (type === 'movie') {
+      const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
+      if (!movie) return reply.code(404).send({ error: 'Movie not found' })
+
+      const eligibleDate = getMovieEligibleDate(movie)
+      const releaseGateOverridden = getManualMovieAvailabilityOverride(movie.tmdbId)
+      const isAvailable = isMovieVisibleToLibrary(movie)
+
+      return {
+        type,
+        tmdbId: movie.tmdbId,
+        title: movie.title,
+        year: movie.year,
+        overview: movie.overview,
+        posterUrl: movie.posterPath ? `https://image.tmdb.org/t/p/w342${movie.posterPath}` : null,
+        imdbId: movie.imdbId,
+        manualAdded: hasSourceItem('manual:ui', 'movie', movie.tmdbId),
+        visibleToInfuse: isAvailable,
+        libraryStatusLabel: isAvailable
+          ? (releaseGateOverridden && !isMovieAvailable(movie) ? 'In Library via Override' : 'In Library')
+          : 'Pending Digital Release',
+        releaseGateOverridden,
+        eligibleDate,
+        releaseDate: movie.releaseDate || null,
+        digitalReleaseDate: movie.digitalReleaseDate || null,
+        collectionItems: (await fetchMovieCollection(movie.tmdbId))
+          .filter(item => item.tmdbId !== movie.tmdbId)
+          .map(item => ({
+          ...item,
+          inLibrary: hasAnySourceItem('movie', item.tmdbId),
+        })),
+      }
+    }
+
+    const show = getShowByTmdbId(tmdbId) ?? await fetchShowByTmdbId(tmdbId)
+    if (!show) return reply.code(404).send({ error: 'Show not found' })
+
+    await ensureShowSeasonsCached(show).catch(() => {})
+    const today = todayIsoDate()
+    const episodes = getEpisodesForShow(show.tmdbId)
+    const visibleToInfuse = episodes.some(e => !!e.airDate && e.airDate <= today)
+    const nextEpisode = episodes.find(e => !!e.airDate && e.airDate > today) ?? null
+
+    return {
+      type,
+      tmdbId: show.tmdbId,
+      title: show.title,
+      year: show.year,
+      overview: show.overview,
+      posterUrl: show.posterPath ? `https://image.tmdb.org/t/p/w342${show.posterPath}` : null,
+      imdbId: show.imdbId,
+      manualAdded: hasSourceItem('manual:ui', 'show', show.tmdbId),
+      visibleToInfuse,
+      libraryStatusLabel: visibleToInfuse ? 'In Library' : 'Pending First Episode',
+      nextEpisodeAirDate: nextEpisode?.airDate || null,
+      nextEpisodeName: nextEpisode?.name || null,
+      nextEpisodeSeasonNumber: nextEpisode?.seasonNumber ?? null,
+      nextEpisodeEpisodeNumber: nextEpisode?.episodeNumber ?? null,
+      manualMode: getManualShowSubscription(show.tmdbId)?.mode ?? null,
+      status: show.status,
+      numSeasons: show.numSeasons,
     }
   })
 
@@ -326,12 +407,30 @@ export async function uiRoutes(app: FastifyInstance) {
     return reply.code(400).send({ error: 'type must be movie or tv' })
   })
 
+  app.post('/ui/library/movie-availability', async (req, reply) => {
+    const body = (req.body ?? {}) as { tmdbId?: number; ignoreReleaseGate?: boolean }
+    const tmdbId = body.tmdbId
+    const ignoreReleaseGate = !!body.ignoreReleaseGate
+    if (!tmdbId) return reply.code(400).send({ error: 'tmdbId is required' })
+    const movie = getMovieByTmdbId(tmdbId)
+    if (!movie || !hasAnySourceItem('movie', tmdbId)) {
+      return reply.code(404).send({ error: 'Movie not found in library' })
+    }
+    setManualMovieAvailabilityOverride(tmdbId, ignoreReleaseGate)
+    return {
+      ok: true,
+      title: movie?.title ?? '',
+      ignoreReleaseGate,
+    }
+  })
+
   app.post('/ui/library/remove', async (req, reply) => {
     const body = (req.body ?? {}) as { tmdbId?: number; type?: string }
     const { tmdbId, type } = body
     if (!tmdbId || !type) return reply.code(400).send({ error: 'tmdbId and type required' })
 
     if (type === 'movie') {
+      setManualMovieAvailabilityOverride(tmdbId, false)
       const removed = removeSourceItem('manual:ui', 'movie', tmdbId)
       const pruned = pruneOrphanedMovies([tmdbId])
       const stillPresent = !!getMovieByTmdbId(tmdbId)

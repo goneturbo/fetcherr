@@ -80,6 +80,12 @@ export interface ManualShowSubscription {
   updatedAt: string
 }
 
+export interface ManualMovieAvailabilityOverride {
+  movieTmdbId: number
+  ignoreReleaseGate: boolean
+  updatedAt: string
+}
+
 const schema = `
 CREATE TABLE IF NOT EXISTS movies (
   id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +186,12 @@ CREATE TABLE IF NOT EXISTS manual_show_subscriptions (
   updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+CREATE TABLE IF NOT EXISTS manual_movie_availability_overrides (
+  movie_tmdb_id          INTEGER PRIMARY KEY,
+  ignore_release_gate    INTEGER NOT NULL DEFAULT 0,
+  updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS user_data (
   item_id          TEXT    PRIMARY KEY,
   played           INTEGER NOT NULL DEFAULT 0,
@@ -273,6 +285,63 @@ export interface ListOpts {
   availableOnly?: boolean
 }
 
+function todayIsoDate(): string {
+  return new Date().toISOString().slice(0, 10)
+}
+
+export function getMovieEligibleDate(
+  movie: Pick<Movie, 'releaseDate' | 'digitalReleaseDate'>,
+): string | null {
+  if (movie.digitalReleaseDate) return movie.digitalReleaseDate
+  if (movie.releaseDate) return addDaysIso(movie.releaseDate, 45) || null
+  return null
+}
+
+export function isMovieAvailable(movie: Pick<Movie, 'releaseDate' | 'digitalReleaseDate'>, today = todayIsoDate()): boolean {
+  const eligibleDate = getMovieEligibleDate(movie)
+  if (eligibleDate && eligibleDate <= today) return true
+  return false
+}
+
+export function getManualMovieAvailabilityOverride(tmdbId: number): boolean {
+  const row = getDb().prepare(`
+    SELECT ignore_release_gate
+    FROM manual_movie_availability_overrides
+    WHERE movie_tmdb_id = ?
+  `).get(tmdbId) as { ignore_release_gate: number } | undefined
+  return !!row?.ignore_release_gate
+}
+
+export function setManualMovieAvailabilityOverride(tmdbId: number, ignoreReleaseGate: boolean): void {
+  if (!ignoreReleaseGate) {
+    getDb().prepare(`
+      DELETE FROM manual_movie_availability_overrides WHERE movie_tmdb_id = ?
+    `).run(tmdbId)
+    return
+  }
+  getDb().prepare(`
+    INSERT INTO manual_movie_availability_overrides (movie_tmdb_id, ignore_release_gate, updated_at)
+    VALUES (?, 1, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    ON CONFLICT(movie_tmdb_id) DO UPDATE SET
+      ignore_release_gate = 1,
+      updated_at = excluded.updated_at
+  `).run(tmdbId)
+}
+
+export function isMovieVisibleToLibrary(
+  movie: Pick<Movie, 'tmdbId' | 'releaseDate' | 'digitalReleaseDate'>,
+  today = todayIsoDate(),
+): boolean {
+  return getManualMovieAvailabilityOverride(movie.tmdbId) || isMovieAvailable(movie, today)
+}
+
+function addDaysIso(date: string, days: number): string {
+  const d = new Date(`${date}T00:00:00Z`)
+  if (Number.isNaN(d.getTime())) return ''
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
 function sortColumn(sortBy?: string): string {
   if (['SortName', 'title'].includes(sortBy ?? '')) {
     return "trim(case when lower(title) like 'the %' then substr(title, 5) when lower(title) like 'an %' then substr(title, 4) when lower(title) like 'a %' then substr(title, 3) else title end) collate nocase"
@@ -292,11 +361,20 @@ function movieAvailabilityWhere(availableOnly: boolean): string {
   ]
   if (availableOnly) {
     clauses.push(`(
+      EXISTS (
+        SELECT 1
+        FROM manual_movie_availability_overrides
+        WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
+          AND manual_movie_availability_overrides.ignore_release_gate = 1
+      )
+      OR
+      (
       (digital_release_date != '' AND digital_release_date <= date('now'))
       OR (
         digital_release_date = ''
         AND release_date != ''
         AND date(release_date, '+45 day') <= date('now')
+      )
       )
     )`)
   }

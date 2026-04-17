@@ -5,7 +5,7 @@ import {
   listMovies, countMovies, getMovieByTmdbId,
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
-  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason,
+  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -32,7 +32,7 @@ const USER_ID          = 'a0000000-0000-0000-0000-000000000002'
 // Keep old name as alias so existing code still compiles
 const FOLDER_ID = MOVIES_FOLDER_ID
 
-const API_LIBRARY_FILTER = { availableOnly: false as const }
+const API_LIBRARY_FILTER = { availableOnly: true as const }
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
@@ -501,8 +501,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           CollectionType:     'movies',
           ImageTags:          {},
           IsFolder:           true,
-          ChildCount:         countMovies(undefined, false),
-          RecursiveItemCount: countMovies(undefined, false),
+          ChildCount:         countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
+          RecursiveItemCount: countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
           UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
         },
         {
@@ -513,8 +513,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           CollectionType:     'tvshows',
           ImageTags:          {},
           IsFolder:           true,
-          ChildCount:         countShows(undefined, false),
-          RecursiveItemCount: countShows(undefined, false),
+          ChildCount:         countShows(undefined, API_LIBRARY_FILTER.availableOnly),
+          RecursiveItemCount: countShows(undefined, API_LIBRARY_FILTER.availableOnly),
           UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
         },
       ],
@@ -564,7 +564,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // Default: series list
       if (SearchTerm) await searchTmdbShows(SearchTerm).catch(() => {})
       const shows = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-      const total = countShows(SearchTerm, false)
+      const total = countShows(SearchTerm, API_LIBRARY_FILTER.availableOnly)
       return { Items: shows.map(showToSeriesItem), TotalRecordCount: total, StartIndex: offset }
     }
 
@@ -610,18 +610,18 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // Infuse main page "TV Shows" calls Items?includeItemTypes=Series&recursive=true
       if (includeTypes.includes('series')) {
         const shows = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-        const total = countShows(SearchTerm, false)
+        const total = countShows(SearchTerm, API_LIBRARY_FILTER.availableOnly)
         return { Items: shows.map(showToSeriesItem), TotalRecordCount: total, StartIndex: offset }
       }
       // Infuse main page "Movies" calls Items?includeItemTypes=Movie&recursive=true
       if (includeTypes.includes('movie')) {
         const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-        const total  = countMovies(SearchTerm, false)
+        const total  = countMovies(SearchTerm, API_LIBRARY_FILTER.availableOnly)
         return { Items: movies.map(movieToItem), TotalRecordCount: total, StartIndex: offset }
       }
       // True root listing: return collection folders
-      const nMovies = countMovies(undefined, false)
-      const nShows  = countShows(undefined, false)
+      const nMovies = countMovies(undefined, API_LIBRARY_FILTER.availableOnly)
+      const nShows  = countShows(undefined, API_LIBRARY_FILTER.availableOnly)
       return {
         Items: [
           {
@@ -647,7 +647,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { Items: [], TotalRecordCount: 0, StartIndex: offset }
     }
     const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-    const total  = countMovies(SearchTerm, false)
+    const total  = countMovies(SearchTerm, API_LIBRARY_FILTER.availableOnly)
     return { Items: movies.map(movieToItem), TotalRecordCount: total, StartIndex: offset }
   }
 
@@ -720,14 +720,14 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   async function handleItem(id: string, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) {
     // Collection folders
     if (id === MOVIES_FOLDER_ID) {
-      const n = countMovies(undefined, false)
+      const n = countMovies(undefined, API_LIBRARY_FILTER.availableOnly)
       return { Name: 'Movies', Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true, Path: '/movies',
         RecursiveItemCount: n, ChildCount: n, ImageTags: {},
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID } }
     }
     if (id === SHOWS_FOLDER_ID) {
-      const n = countShows(undefined, false)
+      const n = countShows(undefined, API_LIBRARY_FILTER.availableOnly)
       return { Name: 'Shows', Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true, Path: '/shows',
         RecursiveItemCount: n, ChildCount: n, ImageTags: {},
@@ -995,6 +995,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (!tmdbId) return reply.code(404).send({ error: 'Not found' })
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
     if (!movie?.imdbId) return reply.code(404).send({ error: 'No IMDb ID for this title' })
+    if (!isMovieVisibleToLibrary(movie)) {
+      return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
+    }
 
     const playUrl = `http://${req.headers.host}/play/${movie.imdbId}`
     app.log.info(`playback: "${movie.title}" → ${playUrl}`)
@@ -1039,6 +1042,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const tmdbId = idToTmdb(id)
     const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
     if (!movie?.imdbId) return reply.code(404).send()
+    if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
     return reply.redirect(`/play/${movie.imdbId}`, 302)
   })
 }

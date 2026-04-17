@@ -34,6 +34,33 @@ interface TmdbMovieRaw {
       release_dates: { type: number; release_date: string; certification?: string }[]
     }[]
   }
+  belongs_to_collection?: {
+    id: number
+    name: string
+  } | null
+}
+
+interface TmdbCollectionPartRaw {
+  id: number
+  title: string
+  release_date: string
+  poster_path: string | null
+}
+
+interface TmdbCollectionRaw {
+  id: number
+  name: string
+  parts?: TmdbCollectionPartRaw[]
+}
+
+export interface MovieCollectionItem {
+  collectionId: number
+  collectionName: string
+  tmdbId: number
+  title: string
+  year: number
+  releaseDate: string
+  posterUrl: string | null
 }
 
 interface TmdbKeyword {
@@ -185,6 +212,30 @@ export async function fetchMovieByTmdbId(tmdbId: number, listedAt = ''): Promise
     return { id: 0, ...m }
   } catch {
     return null
+  }
+}
+
+export async function fetchMovieCollection(movieTmdbId: number): Promise<MovieCollectionItem[]> {
+  if (!config.tmdbApiKey) return []
+  try {
+    const movie = await tmdbGet(`/movie/${movieTmdbId}`) as TmdbMovieRaw
+    const collection = movie.belongs_to_collection
+    if (!collection?.id) return []
+
+    const raw = await tmdbGet(`/collection/${collection.id}?language=en-US`) as TmdbCollectionRaw
+    return (raw.parts ?? [])
+      .sort((a, b) => (a.release_date || '').localeCompare(b.release_date || '') || a.title.localeCompare(b.title))
+      .map(part => ({
+        collectionId: raw.id,
+        collectionName: raw.name,
+        tmdbId: part.id,
+        title: part.title,
+        year: parseYear(part.release_date),
+        releaseDate: part.release_date ?? '',
+        posterUrl: part.poster_path ? `https://image.tmdb.org/t/p/w185${part.poster_path}` : null,
+      }))
+  } catch {
+    return []
   }
 }
 

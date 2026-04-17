@@ -45,6 +45,15 @@ function nonEnglishPenalty(s: Stream): number {
   return penalty
 }
 
+function regionalAudioPenalty(s: Stream): number {
+  const text = streamMetadataText(s)
+  let penalty = 0
+  // Softly demote obvious multi-region audio releases so cleaner English-first
+  // candidates win first, without filtering these streams out entirely.
+  if (/\bnordic\b/.test(text) && !hasEnglishSignal(s)) penalty += 2
+  return penalty
+}
+
 function episodeSpecificityScore(s: Stream): number {
   const text = streamMetadataText(s)
   let score = 0
@@ -61,6 +70,7 @@ function scoreSummary(s: Stream): string {
     `cached=${cachedScore(s)}`,
     `english=${hasEnglishSignal(s) ? 1 : 0}`,
     `nonEnglishPenalty=${nonEnglishPenalty(s)}`,
+    `regionalPenalty=${regionalAudioPenalty(s)}`,
     `episodeSpecificity=${episodeSpecificityScore(s)}`,
     `codec=${codecScore(s)}`,
     `container=${containerScore(s)}`,
@@ -119,6 +129,7 @@ function rankStreams(streams: Stream[]): Stream[] {
   return [...pool].sort((a, b) =>
     cachedScore(b) - cachedScore(a)
     || nonEnglishPenalty(a) - nonEnglishPenalty(b)
+    || regionalAudioPenalty(a) - regionalAudioPenalty(b)
     || episodeSpecificityScore(b) - episodeSpecificityScore(a)
     || (config.englishStreamMode === 'off' ? 0 : Number(hasEnglishSignal(b)) - Number(hasEnglishSignal(a)))
     || codecScore(b) - codecScore(a)
