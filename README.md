@@ -1,6 +1,10 @@
 # Fetcherr
 
-Jellyfin-compatible bridge for Infuse with Trakt library sync and Real-Debrid-backed stream resolution.
+Fetcherr gives Infuse a Stremio-like streaming experience using your Trakt library and Real-Debrid, without needing a traditional media server or local mount.
+
+It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Infuse. Fetcherr builds an Infuse-ready library from your Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
+
+The goal is simple: open Infuse, browse your library, and press play. Fetcherr handles stream discovery, prefers cached Real-Debrid results, and automatically picks the best match instead of making you choose from a stream list every time.
 
 ## What It Does
 
@@ -8,6 +12,13 @@ Jellyfin-compatible bridge for Infuse with Trakt library sync and Real-Debrid-ba
 - Exposes a Jellyfin-style library for Infuse
 - Resolves playback through direct providers such as Torrentio and Debridio
 - Verifies ambiguous audio with `ffprobe` when needed
+
+## How It Differs
+
+- Unlike Stremio and Stremio-style addons, Fetcherr is built around Infuse as the primary client.
+- Unlike WebDAV, `rclone`, or mounted-library workflows, it does not rely on local mounts or Infuse scraping metadata on its own.
+- Unlike traditional media servers, it does not require you to maintain a local media collection.
+- To keep your Real-Debrid library cleaner, Fetcherr resolves cached links for playback and removes the associated torrent hash afterward.
 
 ## Requirements
 
