@@ -29,6 +29,8 @@ The goal is simple: open Infuse, browse your library, and press play. Fetcherr h
 
 ## Get the Code
 
+`git clone` creates the `fetcherr` directory automatically, so you do not need to run `mkdir` first.
+
 ```bash
 git clone https://github.com/goneturbo/fetcherr.git
 cd fetcherr
