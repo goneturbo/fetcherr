@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
   <style>
@@ -193,7 +193,7 @@
     }
     .modal-overlay.open { display: flex; }
     .modal {
-      width: 100%; max-width: 560px; max-height: calc(100vh - 100px);
+      width: 100%; max-width: 560px; max-height: calc(100dvh - 100px);
       display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--border-strong);
       border-radius: 20px; overflow: hidden;
@@ -224,7 +224,7 @@
         linear-gradient(180deg, rgba(157,110,240,.12), rgba(157,110,240,.05)),
         var(--surface-raised);
     }
-    .fab { position: fixed; bottom: 28px; right: 28px; width: 52px; height: 52px; border-radius: 50%; background: var(--accent); border: none; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 20px rgba(157,110,240,.45); transition: transform .15s, box-shadow .15s; z-index: 100; }
+    .fab { position: fixed; bottom: max(28px, calc(env(safe-area-inset-bottom) + 16px)); right: max(28px, calc(env(safe-area-inset-right) + 16px)); width: 52px; height: 52px; border-radius: 50%; background: var(--accent); border: none; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 20px rgba(157,110,240,.45); transition: transform .15s, box-shadow .15s; z-index: 100; }
     .fab:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(157,110,240,.6); }
     .modal-body { overflow-y: auto; padding: 12px; flex: 1; }
     .search-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
@@ -258,7 +258,8 @@
       display: none; flex-direction: column; gap: 6px;
     }
     .tv-add-menu.open { display: flex; }
-    .btn-remove { width: 30px; height: 30px; padding: 0; border-radius: 8px; border: 1px solid var(--red-border); background: var(--red-dim); color: #fecaca; display: inline-flex; align-items: center; justify-content: center; font-size: 0; font-family: inherit; cursor: pointer; transition: background .15s, transform .15s; }
+    .btn-remove { width: 44px; height: 44px; padding: 0; border-radius: 10px; border: 1px solid var(--red-border); background: transparent; color: #fecaca; display: inline-flex; align-items: center; justify-content: center; font-size: 0; font-family: inherit; cursor: pointer; transition: background .15s, transform .15s; }
+    .btn-remove svg { width: 14px; height: 14px; padding: 8px; border-radius: 8px; background: var(--red-dim); }
     .btn-remove:hover { background: rgba(248,113,113,.18); transform: translateY(-1px); }
     .btn-remove:disabled { opacity: .5; cursor: not-allowed; }
     .badge-in-lib { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--green-border); background: var(--green-dim); color: #bbf7d0; font-size: 12px; font-weight: 500; white-space: nowrap; }
@@ -266,7 +267,7 @@
     .modal-toast.success { border: 1px solid var(--green-border); background: var(--green-dim); color: #bbf7d0; }
     .modal-toast.error { border: 1px solid var(--red-border); background: var(--red-dim); color: #fecaca; }
     .detail-modal {
-      width: 100%; max-width: 680px; max-height: calc(100vh - 100px);
+      width: 100%; max-width: 680px; max-height: calc(100dvh - 100px);
       display: flex; flex-direction: column;
       background: var(--surface); border: 1px solid var(--border-strong);
       border-radius: 20px; overflow: hidden;
@@ -338,7 +339,10 @@
     .toggle-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: #fef3c7; }
     .toggle-sub { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
     @media (max-width: 560px) {
-      .detail-hero { flex-direction: column; }
+      .detail-hero { flex-direction: column; align-items: center; }
+      .detail-copy { text-align: center; }
+      .detail-meta { justify-content: center; }
+      .detail-actions { justify-content: center; flex-wrap: wrap; }
       .toggle-card { flex-direction: column; align-items: flex-start; }
     }
   </style>
@@ -472,6 +476,7 @@
   let openTvMenuTmdbId = null
   let activeDetailItem = null
   let activeDetailTab = 'overview'
+  let activeDetailData = null
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -698,6 +703,7 @@
       return
     }
 
+    activeDetailData = data
     renderDetail(data)
     document.getElementById('detailLoading').style.display = 'none'
     document.getElementById('detailBody').style.display = ''
@@ -705,6 +711,7 @@
 
   function closeDetail() {
     activeDetailItem = null
+    activeDetailData = null
     document.getElementById('detailModal').classList.remove('open')
     document.getElementById('detailBody').innerHTML = ''
     document.getElementById('detailLoading').textContent = 'Loading title details…'
@@ -721,7 +728,7 @@
 
   function setDetailTab(tab) {
     activeDetailTab = tab
-    if (activeDetailItem) openItemDetail(activeDetailItem.type, activeDetailItem.tmdbId)
+    if (activeDetailData) renderDetail(activeDetailData)
   }
 
   function renderDetail(item) {
@@ -1046,9 +1053,9 @@
       return `<div class="search-result">
         ${poster}
         <div class="result-body">
-          <div class="result-title">${r.title}</div>
+          <div class="result-title">${escapeHtml(r.title)}</div>
           <div class="result-meta">
-            <span>${r.year || '—'}</span>
+            <span>${escapeHtml(r.year || '—')}</span>
             <span class="pill">${r.type === 'tv' ? 'TV Show' : 'Movie'}</span>
           </div>
         </div>

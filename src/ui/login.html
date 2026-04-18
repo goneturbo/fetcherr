@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr · Sign in</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
   <style>
@@ -135,7 +135,7 @@
 <div class="bg-blob-br"></div>
 <div class="bg-orb"></div>
 
-<div class="card">
+<form class="card" onsubmit="doLogin(event)">
   <div class="logo-wrap">
     <div class="logo-circle">
       <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:28px;height:28px;">
@@ -146,22 +146,21 @@
   <p class="sub">Sign in to access the Fetcherr web UI.</p>
 
   <div class="field">
-    <label>Username</label>
+    <label for="username">Username</label>
     <input id="username" type="text" autocomplete="username">
   </div>
   <div class="field">
-    <label>Password</label>
+    <label for="password">Password</label>
     <input id="password" type="password" autocomplete="current-password">
   </div>
 
-  <button class="btn" id="loginBtn" onclick="doLogin()">Sign in</button>
+  <button class="btn" id="loginBtn" type="submit">Sign in</button>
   <div class="error" id="errMsg"></div>
-</div>
+</form>
 
 <script>
-  document.addEventListener('keydown', e => { if (e.key === 'Enter') doLogin() })
-
-  async function doLogin() {
+  async function doLogin(event) {
+    event?.preventDefault()
     const btn = document.getElementById('loginBtn')
     const err = document.getElementById('errMsg')
     btn.disabled = true

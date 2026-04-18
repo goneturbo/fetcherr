@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr · Settings</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
   <style>
@@ -101,7 +101,7 @@
     .btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
 
     /* Save bar */
-    .save-bar { position: sticky; bottom: 20px; margin-top: 20px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: rgba(18,21,29,.92); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+    .save-bar { position: sticky; bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px)); margin-top: 20px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: rgba(18,21,29,.92); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .save-bar p { margin: 0; font-size: 13px; color: var(--muted); }
   </style>
 </head>
@@ -143,12 +143,12 @@
   <div class="section">
     <div class="section-title">AIOStreams</div>
     <div class="field">
-      <label>URL</label>
+      <label for="sootioUrl">URL</label>
       <input id="sootioUrl" type="url" placeholder="https://your-aiostreams.example.com">
       <div class="field-note">Optional legacy fallback for stream lookups. You can paste the full AIOStreams <code>manifest.json</code> URL.</div>
     </div>
     <div class="field">
-      <label>Direct Stream Providers</label>
+      <label for="streamProviderList">Direct Stream Providers</label>
       <div id="streamProviderList" class="provider-list"></div>
       <div class="provider-actions">
         <button type="button" class="btn btn-sm" onclick="addProviderRow()">+ Add Provider</button>
@@ -156,7 +156,7 @@
       <div class="field-note">Optional. Query provider base URLs directly and rank the results. Paste one full manifest or base URL per line.</div>
     </div>
     <div class="field">
-      <label>English Audio</label>
+      <label for="englishStreamMode">English Audio</label>
       <select id="englishStreamMode">
         <option value="prefer">Prefer English when available</option>
         <option value="require">Require English markers</option>
@@ -170,7 +170,7 @@
   <div class="section">
     <div class="section-title">Real-Debrid</div>
     <div class="field">
-      <label>API Key</label>
+      <label for="rdApiKey">API Key</label>
       <div class="input-row">
         <input id="rdApiKey" type="password" placeholder="Enter your Real-Debrid API key">
         <button class="btn btn-sm" onclick="validateRD()">Validate</button>
@@ -189,7 +189,7 @@
   <div class="section">
     <div class="section-title">TMDB <span class="optional-tag">Required for Search</span></div>
     <div class="field">
-      <label>API Key</label>
+      <label for="tmdbApiKey">API Key</label>
       <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key">
       <div class="field-note">Used for metadata, artwork, and Add to Library search.</div>
     </div>
@@ -199,7 +199,7 @@
   <div class="section">
     <div class="section-title">Server</div>
     <div class="field">
-      <label>Server URL</label>
+      <label for="serverUrl">Server URL</label>
       <input id="serverUrl" type="url" placeholder="http://your-server:9990">
       <div class="field-note">The external URL clients should use for playback redirects.</div>
     </div>
@@ -210,11 +210,11 @@
     <div class="section-title">Trakt</div>
     <div class="field-grid field">
       <div>
-        <label>Client ID</label>
+        <label for="traktClientId">Client ID</label>
         <input id="traktClientId" placeholder="Trakt client ID">
       </div>
       <div>
-        <label>Client Secret</label>
+        <label for="traktClientSecret">Client Secret</label>
         <input id="traktClientSecret" type="password" placeholder="Trakt client secret">
       </div>
     </div>
