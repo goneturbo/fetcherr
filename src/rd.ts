@@ -134,6 +134,10 @@ export interface ResolvedStream {
   bytes:    number
 }
 
+interface ResolvedCacheEntry extends ResolvedStream {
+  expiresAt: number
+}
+
 interface FfprobeJson {
   streams?: Array<{
     codec_type?: string
@@ -142,6 +146,31 @@ interface FfprobeJson {
       title?: string
     }
   }>
+}
+
+const RESOLVED_CACHE_TTL_MS = 3 * 60 * 1000
+const resolvedStreamCache = new Map<string, ResolvedCacheEntry>()
+
+function resolveCacheKey(hash: string, filePathHint?: string): string {
+  return `${hash}|${(filePathHint || '').toLowerCase()}`
+}
+
+function getCachedResolvedStream(hash: string, filePathHint?: string): ResolvedStream | null {
+  const key = resolveCacheKey(hash, filePathHint)
+  const entry = resolvedStreamCache.get(key)
+  if (!entry) return null
+  if (Date.now() > entry.expiresAt) {
+    resolvedStreamCache.delete(key)
+    return null
+  }
+  return { url: entry.url, filename: entry.filename, bytes: entry.bytes }
+}
+
+function cacheResolvedStream(hash: string, filePathHint: string | undefined, value: ResolvedStream): void {
+  resolvedStreamCache.set(resolveCacheKey(hash, filePathHint), {
+    ...value,
+    expiresAt: Date.now() + RESOLVED_CACHE_TTL_MS,
+  })
 }
 
 /**
@@ -156,6 +185,12 @@ export async function resolveStream(
   filePathHint?: string,
 ): Promise<ResolvedStream> {
   if (!config.rdApiKey) throw new Error('RD_API_KEY not configured')
+
+  const cached = getCachedResolvedStream(hash, filePathHint)
+  if (cached) {
+    console.log(`rd: cache hit for ${hash.slice(0, 8)}… → ${cached.filename}`)
+    return cached
+  }
 
   console.log(`rd: adding magnet ${hash.slice(0, 8)}… to RD library`)
   const torrentId = await addMagnet(hash)
@@ -190,7 +225,9 @@ export async function resolveStream(
 
     const unrestricted = await unrestrictLink(chosenLink)
     console.log(`rd: unrestricted torrent ${torrentId} to ${unrestricted.filename}`)
-    return { url: unrestricted.download, filename: unrestricted.filename, bytes: unrestricted.filesize }
+    const resolved = { url: unrestricted.download, filename: unrestricted.filename, bytes: unrestricted.filesize }
+    cacheResolvedStream(hash, filePathHint, resolved)
+    return resolved
   } finally {
     // Always clean up — fire and forget, but log success/failure so we can
     // verify whether RD library entries are lingering because delete failed.

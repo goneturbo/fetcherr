@@ -17,6 +17,7 @@ import { verifySignedPlaybackPath } from './play-auth.js'
 
 const app = Fastify({
   logger: { level: 'info' },
+  trustProxy: true,
   routerOptions: { ignoreTrailingSlash: true },
   rewriteUrl: (req) => req.url!.replace(/\/\/+/g, '/'),
 })

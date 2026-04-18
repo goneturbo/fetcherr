@@ -12,6 +12,23 @@ interface StreamRankContext {
   expectedYear?: number
 }
 
+interface RankedStreamScore {
+  stream: Stream
+  cached: number
+  english: number
+  nonEnglishPenalty: number
+  regionalPenalty: number
+  junkPenalty: number
+  yearScore: number
+  years: number[]
+  episodeSpecificity: number
+  resolution: number
+  source: number
+  size: number
+  codec: number
+  container: number
+}
+
 function streamText(s: Stream): string {
   return `${s.name ?? ''} ${s.title ?? ''} ${s.url ?? ''}`.toLowerCase()
 }
@@ -85,7 +102,6 @@ function junkPenalty(s: Stream): number {
   if (/\btelecine\b|\btc\b/.test(text)) penalty += 8
   if (/\bline[ ._-]*audio\b|\blineaudio\b/.test(text)) penalty += 6
   if (/\bai[ ._-]*upscale\b|\bupscale\b/.test(text)) penalty += 4
-  if (/\bsync\b/.test(text)) penalty += 2
   return penalty
 }
 
@@ -99,22 +115,42 @@ function episodeSpecificityScore(s: Stream): number {
   return score
 }
 
-function scoreSummary(s: Stream, ctx: StreamRankContext = {}): string {
+function precomputeScore(s: Stream, ctx: StreamRankContext = {}): RankedStreamScore {
+  return {
+    stream: s,
+    cached: cachedScore(s),
+    english: hasEnglishSignal(s) ? 1 : 0,
+    nonEnglishPenalty: nonEnglishPenalty(s),
+    regionalPenalty: regionalAudioPenalty(s),
+    junkPenalty: junkPenalty(s),
+    yearScore: explicitYearScore(s, ctx.expectedYear),
+    years: explicitYearsInStream(s),
+    episodeSpecificity: episodeSpecificityScore(s),
+    resolution: resolutionScore(s),
+    source: sourceScore(s),
+    size: sizeBytes(s),
+    codec: codecScore(s),
+    container: containerScore(s),
+  }
+}
+
+function scoreSummary(score: RankedStreamScore): string {
+  const s = score.stream
   const filename = typeof s.behaviorHints?.filename === 'string' ? s.behaviorHints.filename : ''
   return [
-    `cached=${cachedScore(s)}`,
-    `english=${hasEnglishSignal(s) ? 1 : 0}`,
-    `nonEnglishPenalty=${nonEnglishPenalty(s)}`,
-    `regionalPenalty=${regionalAudioPenalty(s)}`,
-    `junkPenalty=${junkPenalty(s)}`,
-    `yearScore=${explicitYearScore(s, ctx.expectedYear)}`,
-    `years=${JSON.stringify(explicitYearsInStream(s))}`,
-    `episodeSpecificity=${episodeSpecificityScore(s)}`,
-    `resolution=${resolutionScore(s)}`,
-    `source=${sourceScore(s)}`,
-    `size=${sizeBytes(s)}`,
-    `codec=${codecScore(s)}`,
-    `container=${containerScore(s)}`,
+    `cached=${score.cached}`,
+    `english=${score.english}`,
+    `nonEnglishPenalty=${score.nonEnglishPenalty}`,
+    `regionalPenalty=${score.regionalPenalty}`,
+    `junkPenalty=${score.junkPenalty}`,
+    `yearScore=${score.yearScore}`,
+    `years=${JSON.stringify(score.years)}`,
+    `episodeSpecificity=${score.episodeSpecificity}`,
+    `resolution=${score.resolution}`,
+    `source=${score.source}`,
+    `size=${score.size}`,
+    `codec=${score.codec}`,
+    `container=${score.container}`,
     `providerOrder=${s.providerOrder ?? 999}`,
     `name=${JSON.stringify(s.name ?? '')}`,
     `title=${JSON.stringify(s.title ?? '')}`,
@@ -189,21 +225,24 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
     ? basePool.filter(s => !hasExplicitYearMismatch(s, ctx.expectedYear))
     : basePool
 
-  return [...pool].sort((a, b) =>
-    cachedScore(b) - cachedScore(a)
-    || nonEnglishPenalty(a) - nonEnglishPenalty(b)
-    || regionalAudioPenalty(a) - regionalAudioPenalty(b)
-    || junkPenalty(a) - junkPenalty(b)
-    || explicitYearScore(b, ctx.expectedYear) - explicitYearScore(a, ctx.expectedYear)
-    || episodeSpecificityScore(b) - episodeSpecificityScore(a)
-    || (config.englishStreamMode === 'off' ? 0 : Number(hasEnglishSignal(b)) - Number(hasEnglishSignal(a)))
-    || resolutionScore(b) - resolutionScore(a)
-    || sourceScore(b) - sourceScore(a)
-    || sizeBytes(b) - sizeBytes(a)
-    || codecScore(b) - codecScore(a)
-    || containerScore(b) - containerScore(a)
-    || (a.providerOrder ?? 999) - (b.providerOrder ?? 999)
-  )
+  return pool
+    .map(stream => precomputeScore(stream, ctx))
+    .sort((a, b) =>
+      b.cached - a.cached
+      || a.nonEnglishPenalty - b.nonEnglishPenalty
+      || a.regionalPenalty - b.regionalPenalty
+      || a.junkPenalty - b.junkPenalty
+      || b.yearScore - a.yearScore
+      || b.episodeSpecificity - a.episodeSpecificity
+      || (config.englishStreamMode === 'off' ? 0 : b.english - a.english)
+      || b.resolution - a.resolution
+      || b.source - a.source
+      || b.size - a.size
+      || b.codec - a.codec
+      || b.container - a.container
+      || ((a.stream.providerOrder ?? 999) - (b.stream.providerOrder ?? 999))
+    )
+    .map(score => score.stream)
 }
 
 function providerBases(): string[] {
@@ -267,9 +306,10 @@ export async function fetchRankedStreams(imdbId: string): Promise<Stream[]> {
   const streams = await fetchStreamsFromProviders(`/stream/movie/${imdbId}.json`)
   if (!streams.length) throw new Error(`No streams found for ${imdbId}`)
   const ranked = rankStreams(streams)
+  const summaries = ranked.map(stream => precomputeScore(stream))
   console.log(`streams: top candidates for ${imdbId}`)
-  for (const s of ranked.slice(0, 5)) {
-    console.log(`streams: ${scoreSummary(s)} :: ${s.title || s.name}`)
+  for (const score of summaries.slice(0, 5)) {
+    console.log(`streams: ${scoreSummary(score)} :: ${score.stream.title || score.stream.name}`)
   }
   return ranked
 }
@@ -288,10 +328,11 @@ export async function fetchRankedEpisodeStreams(
   const streams = await fetchStreamsFromProviders(`/stream/series/${imdbId}:${season}:${episode}.json`)
   if (!streams.length) throw new Error(`No streams found for ${imdbId} S${season}E${episode}`)
   const ranked = rankStreams(streams, { expectedYear })
+  const summaries = ranked.map(stream => precomputeScore(stream, { expectedYear }))
   if (!ranked.length) throw new Error(`No year-matched streams found for ${imdbId} S${season}E${episode}`)
   console.log(`streams: top candidates for ${imdbId} S${season}E${episode}`)
-  for (const s of ranked.slice(0, 5)) {
-    console.log(`streams: ${scoreSummary(s, { expectedYear })} :: ${s.title || s.name}`)
+  for (const score of summaries.slice(0, 5)) {
+    console.log(`streams: ${scoreSummary(score)} :: ${score.stream.title || score.stream.name}`)
   }
   return ranked
 }
