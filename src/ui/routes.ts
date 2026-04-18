@@ -164,6 +164,10 @@ export async function uiRoutes(app: FastifyInstance) {
 
   // ── Page routes ────────────────────────────────────────────────────────────
   app.get('/',              async (_req, reply) => reply.redirect('/ui/dashboard', 302))
+  app.get('/ui',            async (_req, reply) => reply.redirect('/ui/dashboard', 302))
+  app.get('/favicon.ico',   async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
+  app.get('/apple-touch-icon.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
+  app.get('/apple-touch-icon-precomposed.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
   app.get('/ui/dashboard',  async (_req, reply) => reply.type('text/html').send(html('dashboard.html')))
   app.get('/ui/setup',      async (_req, reply) => reply.type('text/html').send(html('setup.html')))
   app.get('/ui/logs',       async (_req, reply) => reply.type('text/html').send(html('logs.html')))

@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && mkdir -p dist/ui/static && cp src/ui/*.html dist/ui/ && cp -R src/ui/static/. dist/ui/static/",
     "start": "node dist/index.js",
     "dev": "node --watch --import tsx/esm src/index.ts"
   },
