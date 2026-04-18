@@ -52,8 +52,6 @@ cd fetcherr
 docker compose up -d --build
 ```
 
-Fetcherr's Docker image now compiles the TypeScript app to JavaScript during the image build. You do not need to run a separate build step yourself.
-
 6. Open:
 
 ```text
