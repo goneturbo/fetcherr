@@ -159,6 +159,12 @@
 </form>
 
 <script>
+  function safeNextUrl(raw) {
+    if (!raw || !raw.startsWith('/')) return '/ui/dashboard'
+    if (raw.startsWith('//')) return '/ui/dashboard'
+    return raw
+  }
+
   async function doLogin(event) {
     event?.preventDefault()
     const btn = document.getElementById('loginBtn')
@@ -177,7 +183,7 @@
       })
       if (res.ok) {
         const params = new URLSearchParams(window.location.search)
-        window.location.href = params.get('next') || '/ui/dashboard'
+        window.location.href = safeNextUrl(params.get('next'))
       } else {
         const d = await res.json().catch(() => ({}))
         err.textContent = d.error || 'Invalid credentials'

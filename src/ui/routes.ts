@@ -49,6 +49,33 @@ function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_MAX_ATTEMPTS = 10
+const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+
+function clientIp(req: { headers: Record<string, string | string[] | undefined>; ip?: string }): string {
+  const cfIp = req.headers['cf-connecting-ip']
+  if (typeof cfIp === 'string' && cfIp.trim()) return cfIp.trim()
+
+  const forwardedFor = req.headers['x-forwarded-for']
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
+    return forwardedFor.split(',')[0].trim()
+  }
+
+  return req.ip || 'unknown'
+}
+
+function loginRateState(ip: string) {
+  const now = Date.now()
+  const existing = loginAttempts.get(ip)
+  if (!existing || now > existing.resetAt) {
+    const fresh = { count: 0, resetAt: now + LOGIN_WINDOW_MS }
+    loginAttempts.set(ip, fresh)
+    return fresh
+  }
+  return existing
+}
+
 export async function uiRoutes(app: FastifyInstance) {
 
   // ── Static files ──────────────────────────────────────────────────────────
@@ -67,27 +94,39 @@ export async function uiRoutes(app: FastifyInstance) {
   app.get('/ui/login', async (_req, reply) => reply.type('text/html').send(html('login.html')))
 
   app.post('/ui/auth/login', async (req, reply) => {
+    if (!config.uiPassword) {
+      return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+    }
+    const rateKey = clientIp(req as never)
+    const state = loginRateState(rateKey)
+    if (state.count >= LOGIN_MAX_ATTEMPTS) {
+      return reply.code(429).send({ error: 'Too many login attempts. Please try again later.' })
+    }
     const body = req.body as { username?: string; password?: string } | undefined
     const username = body?.username ?? ''
     const password = body?.password ?? ''
     if (checkCredentials(username, password)) {
+      loginAttempts.delete(rateKey)
       const token = createSession()
-      reply.header('Set-Cookie', getSessionCookie(token))
+      reply.header('Set-Cookie', getSessionCookie(token, req.headers as never))
       return { ok: true }
     }
+    state.count += 1
     return reply.code(401).send({ error: 'Invalid credentials' })
   })
 
   app.post('/ui/auth/logout', async (req, reply) => {
     const token = getTokenFromCookie(req.headers.cookie)
     if (token) deleteSession(token)
-    reply.header('Set-Cookie', clearSessionCookie())
+    reply.header('Set-Cookie', clearSessionCookie(req.headers as never))
     return { ok: true }
   })
 
   // Auth status — tells the client whether auth is enabled
   app.get('/ui/auth/check', async (req, reply) => {
-    if (!config.uiPassword) return { authEnabled: false }
+    if (!config.uiPassword) {
+      return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+    }
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token)) {
       return reply.code(401).send({ error: 'Unauthorized' })
@@ -105,7 +144,13 @@ export async function uiRoutes(app: FastifyInstance) {
       url.startsWith('/ui/static/')
     ) return
 
-    if (!config.uiPassword) return // auth not configured
+    if (!config.uiPassword) {
+      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|search|library|trakt)/.test(url)
+      if (isApiRoute) {
+        return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+      }
+      return reply.code(503).type('text/plain').send('UI auth is not configured. Set UI_PASSWORD first.')
+    }
 
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token)) {

@@ -12,6 +12,7 @@ import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
 import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
+import { getTokenFromCookie, isValidSession } from './ui/auth.js'
 
 const app = Fastify({
   logger: { level: 'info' },
@@ -47,6 +48,22 @@ await app.register(uiRoutes)
 
 // Healthcheck
 app.get('/healthz', async () => ({ status: 'ok' }))
+
+function requireUiSession(
+  req: { headers: Record<string, string | undefined> },
+  reply: { code: (n: number) => { send: (v: unknown) => unknown } },
+): boolean {
+  if (!config.uiPassword) {
+    reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+    return false
+  }
+  const token = getTokenFromCookie(req.headers.cookie)
+  if (!token || !isValidSession(token)) {
+    reply.code(401).send({ error: 'Unauthorized' })
+    return false
+  }
+  return true
+}
 
 // ── Play endpoint ─────────────────────────────────────────────────────────────
 // Called by Infuse when it follows the URL returned from PlaybackInfo.
@@ -209,11 +226,15 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
 // ── Trakt auth ────────────────────────────────────────────────────────────────
 
 // GET /trakt/auth — check auth status
-app.get('/trakt/auth', async () => tokenStatus())
+app.get('/trakt/auth', async (req, reply) => {
+  if (!requireUiSession(req as never, reply as never)) return
+  return tokenStatus()
+})
 
 // POST /trakt/auth — start device flow
 // Returns the code + URL to visit. Polls in background; token saved when approved.
 app.post('/trakt/auth', async (req, reply) => {
+  if (!requireUiSession(req as never, reply as never)) return
   try {
     const { instructions, approved } = await startDeviceAuth()
     app.log.info(`trakt: device auth started — visit ${instructions.verificationUrl} and enter code: ${instructions.userCode}`)
@@ -238,7 +259,8 @@ app.post('/trakt/auth', async (req, reply) => {
 // ── Manual sync ───────────────────────────────────────────────────────────────
 // POST /sync  — re-fetch Trakt watchlist and update the DB in the background.
 
-app.post('/sync', async () => {
+app.post('/sync', async (req, reply) => {
+  if (!requireUiSession(req as never, reply as never)) return
   runSync().catch(err => app.log.error(`Manual sync failed: ${err}`))
   return { status: 'sync started' }
 })

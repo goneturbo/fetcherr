@@ -27,17 +27,32 @@ export function deleteSession(token: string): void {
 }
 
 export function checkCredentials(username: string, password: string): boolean {
-  if (!config.uiPassword) return true // no auth configured — accept anything
+  if (!config.uiPassword) return false
   return username === config.uiUsername && password === config.uiPassword
 }
 
-export function getSessionCookie(token: string): string {
-  const maxAge = Math.floor(SESSION_TTL_MS / 1000)
-  return `infuse_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}`
+function shouldUseSecureCookie(headers: Record<string, string | undefined>): boolean {
+  const forwardedProto = headers['x-forwarded-proto']?.split(',')[0]?.trim().toLowerCase()
+  if (forwardedProto === 'https') return true
+
+  const forwarded = headers.forwarded?.toLowerCase() ?? ''
+  if (/\bproto=https\b/.test(forwarded)) return true
+
+  const cfVisitor = headers['cf-visitor']?.toLowerCase() ?? ''
+  if (cfVisitor.includes('"scheme":"https"')) return true
+
+  return false
 }
 
-export function clearSessionCookie(): string {
-  return `infuse_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`
+export function getSessionCookie(token: string, headers: Record<string, string | undefined>): string {
+  const maxAge = Math.floor(SESSION_TTL_MS / 1000)
+  const secure = shouldUseSecureCookie(headers) ? '; Secure' : ''
+  return `infuse_session=${token}; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=${maxAge}`
+}
+
+export function clearSessionCookie(headers: Record<string, string | undefined>): string {
+  const secure = shouldUseSecureCookie(headers) ? '; Secure' : ''
+  return `infuse_session=; HttpOnly${secure}; SameSite=Strict; Path=/; Max-Age=0`
 }
 
 export function getTokenFromCookie(cookieHeader: string | undefined): string | null {
