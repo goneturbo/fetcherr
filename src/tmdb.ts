@@ -106,7 +106,7 @@ function extractDigitalReleaseDate(raw: TmdbMovieRaw): string {
   const ordered = [
     results.find(r => r.iso_3166_1 === 'US'),
     ...results.filter(r => r.iso_3166_1 !== 'US'),
-  ].filter(Boolean) as TmdbMovieRaw['release_dates']['results']
+  ].filter((region): region is NonNullable<TmdbMovieRaw['release_dates']>['results'][number] => Boolean(region))
   for (const region of ordered) {
     const digital = region.release_dates.find(d => d.type === 4)
     if (digital?.release_date) return digital.release_date.slice(0, 10)
@@ -326,9 +326,11 @@ export async function searchTmdbShows(query: string): Promise<Show[]> {
     `/search/tv?query=${encodeURIComponent(query)}&include_adult=false&language=en-US`
   ) as { results: TmdbShowRaw[] }
   const out = await Promise.all((d.results ?? []).map(async (r) => {
-    const full = await tmdbGet(`/tv/${r.id}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`).catch(() => ({} as Record<string, unknown>))
-    const imdbId = (full as { external_ids?: { imdb_id?: string } }).external_ids?.imdb_id ?? ''
-    const s = raw2show({ ...r, ...full, images: (full as { images?: TmdbImagesResponse }).images } as TmdbShowRaw & { images?: TmdbImagesResponse }, imdbId)
+    const full = await tmdbGet(`/tv/${r.id}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`)
+      .then(result => result as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse })
+      .catch(() => ({} as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse }))
+    const imdbId = full.external_ids?.imdb_id ?? ''
+    const s = raw2show({ ...r, ...full, images: full.images } as TmdbShowRaw & { images?: TmdbImagesResponse }, imdbId)
     return { id: 0, ...s }
   }))
   return out

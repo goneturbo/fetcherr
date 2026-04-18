@@ -1,8 +1,6 @@
-FROM node:20-alpine
+FROM node:20-alpine AS build
 
 WORKDIR /app
-
-RUN apk add --no-cache ffmpeg
 
 COPY package*.json ./
 RUN npm install --production=false
@@ -10,8 +8,21 @@ RUN npm install --production=false
 COPY tsconfig.json ./
 COPY src ./src
 
+RUN npm run build
+RUN npm prune --omit=dev
+
+FROM node:20-alpine
+
+WORKDIR /app
+
+RUN apk add --no-cache ffmpeg
+
+COPY package*.json ./
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+
 RUN mkdir -p /app/data
 
 EXPOSE 9990
 
-CMD ["node", "--import", "tsx/esm", "src/index.ts"]
+CMD ["node", "dist/index.js"]

@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify'
+import type { FastifyInstance, FastifyReply } from 'fastify'
 import { createHash } from 'node:crypto'
 import { config } from '../config.js'
 import {
@@ -876,7 +876,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     id: string,
     type: string,
     tag: string | undefined,
-    reply: Parameters<typeof app.get>[2] extends (...args: infer A) => unknown ? A[1] : never,
+    reply: FastifyReply,
   ) {
     const isBackdrop = type.toLowerCase() === 'backdrop'
     const isLogo = type.toLowerCase() === 'logo'

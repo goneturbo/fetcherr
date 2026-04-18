@@ -3,7 +3,8 @@
   "version": "1.0.0",
   "type": "module",
   "scripts": {
-    "start": "node --import tsx/esm src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js",
     "dev": "node --watch --import tsx/esm src/index.ts"
   },
   "dependencies": {
