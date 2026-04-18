@@ -78,6 +78,17 @@ function explicitYearScore(s: Stream, expectedYear?: number): number {
   return years.includes(expectedYear) ? 2 : 0
 }
 
+function junkPenalty(s: Stream): number {
+  const text = streamMetadataText(s)
+  let penalty = 0
+  if (/\bcam(?:rip)?\b/.test(text)) penalty += 10
+  if (/\btelecine\b|\btc\b/.test(text)) penalty += 8
+  if (/\bline[ ._-]*audio\b|\blineaudio\b/.test(text)) penalty += 6
+  if (/\bai[ ._-]*upscale\b|\bupscale\b/.test(text)) penalty += 4
+  if (/\bsync\b/.test(text)) penalty += 2
+  return penalty
+}
+
 function episodeSpecificityScore(s: Stream): number {
   const text = streamMetadataText(s)
   let score = 0
@@ -95,9 +106,12 @@ function scoreSummary(s: Stream, ctx: StreamRankContext = {}): string {
     `english=${hasEnglishSignal(s) ? 1 : 0}`,
     `nonEnglishPenalty=${nonEnglishPenalty(s)}`,
     `regionalPenalty=${regionalAudioPenalty(s)}`,
+    `junkPenalty=${junkPenalty(s)}`,
     `yearScore=${explicitYearScore(s, ctx.expectedYear)}`,
     `years=${JSON.stringify(explicitYearsInStream(s))}`,
     `episodeSpecificity=${episodeSpecificityScore(s)}`,
+    `resolution=${resolutionScore(s)}`,
+    `source=${sourceScore(s)}`,
     `codec=${codecScore(s)}`,
     `container=${containerScore(s)}`,
     `size=${sizeBytes(s)}`,
@@ -129,14 +143,34 @@ function sizeBytes(s: Stream): number {
   }
 }
 
+function resolutionScore(s: Stream): number {
+  const text = streamMetadataText(s)
+  if (/\b(2160p|4k|uhd)\b/.test(text)) return 4
+  if (/\b1080p\b/.test(text)) return 3
+  if (/\b720p\b/.test(text)) return 2
+  if (/\b480p\b/.test(text)) return 1
+  return 2
+}
+
+function sourceScore(s: Stream): number {
+  const text = streamMetadataText(s)
+  if (/\bremux\b/.test(text)) return 5
+  if (/\bblu[ -]?ray\b|\bbdrip\b/.test(text)) return 4
+  if (/\bweb[ ._-]?dl\b/.test(text)) return 3
+  if (/\bweb[ ._-]?rip\b/.test(text)) return 2
+  if (/\bhdtv\b/.test(text)) return 1
+  return 2
+}
+
 // Codec compatibility score for Infuse — higher is better.
-// H.264 is universally supported; AV1 and some HEVC profiles are not.
+// H.264 remains safest, but Infuse handles HEVC well enough that codec
+// should be a late tiebreaker rather than a primary quality signal.
 function codecScore(s: Stream): number {
   const text = streamText(s)
   if (/\bav1\b/.test(text))                      return 0
-  if (/\bhevc\b|h\.?265\b|x265\b/.test(text))   return 1
+  if (/\bhevc\b|h\.?265\b|x265\b/.test(text))   return 2
   if (/\bh\.?264\b|x264\b|avc\b/.test(text))    return 3
-  return 2 // unknown — prefer over AV1/HEVC but below explicit H.264
+  return 1 // unknown — below identified codecs, above AV1
 }
 
 function containerScore(s: Stream): number {
@@ -159,12 +193,15 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
     cachedScore(b) - cachedScore(a)
     || nonEnglishPenalty(a) - nonEnglishPenalty(b)
     || regionalAudioPenalty(a) - regionalAudioPenalty(b)
+    || junkPenalty(a) - junkPenalty(b)
     || explicitYearScore(b, ctx.expectedYear) - explicitYearScore(a, ctx.expectedYear)
     || episodeSpecificityScore(b) - episodeSpecificityScore(a)
     || (config.englishStreamMode === 'off' ? 0 : Number(hasEnglishSignal(b)) - Number(hasEnglishSignal(a)))
+    || resolutionScore(b) - resolutionScore(a)
+    || sourceScore(b) - sourceScore(a)
+    || sizeBytes(b) - sizeBytes(a)
     || codecScore(b) - codecScore(a)
     || containerScore(b) - containerScore(a)
-    || sizeBytes(b) - sizeBytes(a)
     || (a.providerOrder ?? 999) - (b.providerOrder ?? 999)
   )
 }
