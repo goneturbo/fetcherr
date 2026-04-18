@@ -8,6 +8,10 @@ export interface Stream {
   providerOrder?: number
 }
 
+interface StreamRankContext {
+  expectedYear?: number
+}
+
 function streamText(s: Stream): string {
   return `${s.name ?? ''} ${s.title ?? ''} ${s.url ?? ''}`.toLowerCase()
 }
@@ -54,6 +58,26 @@ function regionalAudioPenalty(s: Stream): number {
   return penalty
 }
 
+function explicitYearsInStream(s: Stream): number[] {
+  const text = streamMetadataText(s)
+  const matches = [...text.matchAll(/\b(19\d{2}|20\d{2})\b/g)]
+  return [...new Set(matches.map(m => Number.parseInt(m[1], 10)).filter(n => Number.isFinite(n)))]
+}
+
+function hasExplicitYearMismatch(s: Stream, expectedYear?: number): boolean {
+  if (!expectedYear) return false
+  const years = explicitYearsInStream(s)
+  if (!years.length) return false
+  return !years.includes(expectedYear)
+}
+
+function explicitYearScore(s: Stream, expectedYear?: number): number {
+  if (!expectedYear) return 0
+  const years = explicitYearsInStream(s)
+  if (!years.length) return 0
+  return years.includes(expectedYear) ? 2 : -10
+}
+
 function episodeSpecificityScore(s: Stream): number {
   const text = streamMetadataText(s)
   let score = 0
@@ -64,13 +88,15 @@ function episodeSpecificityScore(s: Stream): number {
   return score
 }
 
-function scoreSummary(s: Stream): string {
+function scoreSummary(s: Stream, ctx: StreamRankContext = {}): string {
   const filename = typeof s.behaviorHints?.filename === 'string' ? s.behaviorHints.filename : ''
   return [
     `cached=${cachedScore(s)}`,
     `english=${hasEnglishSignal(s) ? 1 : 0}`,
     `nonEnglishPenalty=${nonEnglishPenalty(s)}`,
     `regionalPenalty=${regionalAudioPenalty(s)}`,
+    `yearScore=${explicitYearScore(s, ctx.expectedYear)}`,
+    `years=${JSON.stringify(explicitYearsInStream(s))}`,
     `episodeSpecificity=${episodeSpecificityScore(s)}`,
     `codec=${codecScore(s)}`,
     `container=${containerScore(s)}`,
@@ -121,15 +147,20 @@ function containerScore(s: Stream): number {
   return 1
 }
 
-function rankStreams(streams: Stream[]): Stream[] {
+function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
   const usable = streams.filter(hasUsableUrl)
   const preferred = usable.filter(s => !isLikelyBadStream(s))
-  const pool = preferred.length ? preferred : usable
+  const basePool = preferred.length ? preferred : usable
+  const withoutExplicitYearMismatch = ctx.expectedYear
+    ? basePool.filter(s => !hasExplicitYearMismatch(s, ctx.expectedYear))
+    : basePool
+  const pool = ctx.expectedYear ? withoutExplicitYearMismatch : basePool
 
   return [...pool].sort((a, b) =>
     cachedScore(b) - cachedScore(a)
     || nonEnglishPenalty(a) - nonEnglishPenalty(b)
     || regionalAudioPenalty(a) - regionalAudioPenalty(b)
+    || explicitYearScore(b, ctx.expectedYear) - explicitYearScore(a, ctx.expectedYear)
     || episodeSpecificityScore(b) - episodeSpecificityScore(a)
     || (config.englishStreamMode === 'off' ? 0 : Number(hasEnglishSignal(b)) - Number(hasEnglishSignal(a)))
     || codecScore(b) - codecScore(a)
@@ -216,13 +247,15 @@ export async function fetchRankedEpisodeStreams(
   imdbId: string,
   season: number,
   episode: number,
+  expectedYear?: number,
 ): Promise<Stream[]> {
   const streams = await fetchStreamsFromProviders(`/stream/series/${imdbId}:${season}:${episode}.json`)
   if (!streams.length) throw new Error(`No streams found for ${imdbId} S${season}E${episode}`)
-  const ranked = rankStreams(streams)
+  const ranked = rankStreams(streams, { expectedYear })
+  if (!ranked.length) throw new Error(`No year-matched streams found for ${imdbId} S${season}E${episode}`)
   console.log(`streams: top candidates for ${imdbId} S${season}E${episode}`)
   for (const s of ranked.slice(0, 5)) {
-    console.log(`streams: ${scoreSummary(s)} :: ${s.title || s.name}`)
+    console.log(`streams: ${scoreSummary(s, { expectedYear })} :: ${s.title || s.name}`)
   }
   return ranked
 }

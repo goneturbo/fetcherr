@@ -514,6 +514,11 @@ export function getShowByTmdbId(tmdbId: number): Show | null {
   return r ? row2show(r as Record<string, unknown>) : null
 }
 
+export function getShowByImdbId(imdbId: string): Show | null {
+  const r = getDb().prepare(`SELECT * FROM shows WHERE imdb_id = ? LIMIT 1`).get(imdbId)
+  return r ? row2show(r as Record<string, unknown>) : null
+}
+
 // ── Seasons ───────────────────────────────────────────────────────────────────
 
 function row2season(r: Record<string, unknown>): Season {

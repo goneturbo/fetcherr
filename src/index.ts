@@ -10,7 +10,7 @@ import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, startDeviceAuth, tokenStatus } from './trakt.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
-import { getMovieByTmdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, upsertManualShowSubscription } from './db.js'
+import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 
 const app = Fastify({
@@ -197,7 +197,8 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   const e = parseInt(episode)
   app.log.info(`play: resolving episode stream for ${imdbId} S${s}E${e}`)
   try {
-    const streams = await fetchRankedEpisodeStreams(imdbId, s, e)
+    const show = getShowByImdbId(imdbId)
+    const streams = await fetchRankedEpisodeStreams(imdbId, s, e, show?.year || undefined)
     return resolveAndRedirect(streams, `${imdbId} S${s}E${e}`, reply as never, `s${pad2(s)}e${pad2(e)}`)
   } catch (err) {
     app.log.warn(`play: no stream for ${imdbId} S${s}E${e}: ${err}`)
