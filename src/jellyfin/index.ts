@@ -13,6 +13,7 @@ import {
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
 } from '../tmdb.js'
 import type { Movie, Show, Season, Episode } from '../db.js'
+import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -962,7 +963,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         const eps = await fetchAndCacheSeasonDetails(show.tmdbId, epRef.seasonNum).catch(() => [])
         ep = eps.find(e => e.episodeNumber === epRef.episodeNum)!
       }
-      const playUrl = `http://${req.headers.host}/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`
+      const playPath = `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`
+      const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
       const label = ep ? ep.name : `S${epRef.seasonNum}E${epRef.episodeNum}`
       app.log.info(`playback: "${show.title}" ${label} → ${playUrl}`)
       return {
@@ -998,7 +1000,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
     }
 
-    const playUrl = `http://${req.headers.host}/play/${movie.imdbId}`
+    const playPath = `/play/${movie.imdbId}`
+    const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
     app.log.info(`playback: "${movie.title}" → ${playUrl}`)
     return {
       MediaSources: [{
@@ -1030,18 +1033,19 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   // Video stream redirect (fallback for some Infuse versions)
   app.get('/Videos/:id/stream', async (req, reply) => {
     const { id } = req.params as { id: string }
+    const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
 
     const epRef = idToEpisode(id)
     if (epRef) {
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show?.imdbId) return reply.code(404).send()
-      return reply.redirect(`/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`, 302)
+      return reply.redirect(createSignedPlaybackUrl(origin, `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`), 302)
     }
 
     const tmdbId = idToTmdb(id)
     const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
     if (!movie?.imdbId) return reply.code(404).send()
     if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
-    return reply.redirect(`/play/${movie.imdbId}`, 302)
+    return reply.redirect(createSignedPlaybackUrl(origin, `/play/${movie.imdbId}`), 302)
   })
 }

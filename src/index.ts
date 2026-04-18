@@ -13,6 +13,7 @@ import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
 import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getTokenFromCookie, isValidSession } from './ui/auth.js'
+import { verifySignedPlaybackPath } from './play-auth.js'
 
 const app = Fastify({
   logger: { level: 'info' },
@@ -198,6 +199,12 @@ async function resolveAndRedirect(
 
 app.get('/play/:imdbId', async (req, reply) => {
   const { imdbId } = req.params as { imdbId: string }
+  const query = req.query as { token?: string; expires?: string } | undefined
+  const playPath = `/play/${imdbId}`
+  if (!verifySignedPlaybackPath(playPath, query?.token, query?.expires)) {
+    app.log.warn(`play: rejected unsigned or expired playback request for ${imdbId}`)
+    return reply.code(401).send({ error: 'Unauthorized' })
+  }
   app.log.info(`play: resolving stream for ${imdbId}`)
   try {
     const streams = await fetchRankedStreams(imdbId)
@@ -210,6 +217,12 @@ app.get('/play/:imdbId', async (req, reply) => {
 
 app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   const { imdbId, season, episode } = req.params as { imdbId: string; season: string; episode: string }
+  const query = req.query as { token?: string; expires?: string } | undefined
+  const playPath = `/play/${imdbId}/${season}/${episode}`
+  if (!verifySignedPlaybackPath(playPath, query?.token, query?.expires)) {
+    app.log.warn(`play: rejected unsigned or expired episode playback request for ${imdbId} S${season}E${episode}`)
+    return reply.code(401).send({ error: 'Unauthorized' })
+  }
   const s = parseInt(season)
   const e = parseInt(episode)
   app.log.info(`play: resolving episode stream for ${imdbId} S${s}E${e}`)
