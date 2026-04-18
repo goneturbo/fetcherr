@@ -34,6 +34,7 @@ const USER_ID          = 'a0000000-0000-0000-0000-000000000002'
 const FOLDER_ID = MOVIES_FOLDER_ID
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
+const READ_CACHE_TTL_MS = 1_000
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
@@ -82,6 +83,32 @@ type DetailEntity = {
 
 function stableMetaId(kind: string, value: string): string {
   return createHash('md5').update(`${kind}:${value}`).digest('hex')
+}
+
+interface ReadCacheEntry<T> {
+  expiresAt: number
+  inFlight?: Promise<T>
+  value?: T
+}
+
+const readCache = new Map<string, ReadCacheEntry<unknown>>()
+
+async function withReadCache<T>(key: string, loader: () => Promise<T>): Promise<T> {
+  const now = Date.now()
+  const existing = readCache.get(key) as ReadCacheEntry<T> | undefined
+  if (existing?.value !== undefined && existing.expiresAt > now) return existing.value
+  if (existing?.inFlight) return existing.inFlight
+
+  const inFlight = loader().then(value => {
+    readCache.set(key, { value, expiresAt: Date.now() + READ_CACHE_TTL_MS })
+    return value
+  }).finally(() => {
+    const latest = readCache.get(key) as ReadCacheEntry<T> | undefined
+    if (latest?.inFlight) readCache.set(key, { value: latest.value, expiresAt: latest.expiresAt })
+  })
+
+  readCache.set(key, { expiresAt: now + READ_CACHE_TTL_MS, inFlight })
+  return inFlight
 }
 
 function parseJsonArray<T>(value: string): T[] {
@@ -263,6 +290,11 @@ function visibleSeasonsForShow(show: Show): Season[] {
 
 function visibleAiredEpisodesForShow(show: Show): Episode[] {
   return visibleSeasonsForShow(show).flatMap(s => getAiredEpisodesForSeason(show.tmdbId, s.seasonNumber))
+}
+
+function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
+  if (limit <= 0) return []
+  return items.slice(offset, offset + limit)
 }
 
 function compareEpisodeOrder(a: Pick<Episode, 'seasonNumber' | 'episodeNumber'>, b: Pick<Episode, 'seasonNumber' | 'episodeNumber'>): number {
@@ -548,18 +580,24 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // includeItemTypes=Episode → flat list of all aired episodes across all shows
       // includeItemTypes=Series  → list of series (default)
       if (includeTypes.includes('season')) {
-        const showMap = new Map(listShows({ limit: 100_000, ...API_LIBRARY_FILTER }).map(s => [s.tmdbId, s]))
-        const items = [...showMap.values()].flatMap(show =>
-          visibleSeasonsForShow(show).map(season => seasonToItem(season, show))
+        const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+        const allPairs = shows.flatMap(show =>
+          visibleSeasonsForShow(show).map(season => ({ show, season }))
         )
-        return { Items: items, TotalRecordCount: items.length, StartIndex: offset }
+        const total = allPairs.length
+        if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
+        const items = pagedItems(allPairs, offset, limit).map(({ show, season }) => seasonToItem(season, show))
+        return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       if (includeTypes.includes('episode')) {
-        const showMap = new Map(listShows({ limit: 100_000, ...API_LIBRARY_FILTER }).map(s => [s.tmdbId, s]))
-        const items = [...showMap.values()].flatMap(show =>
-          visibleAiredEpisodesForShow(show).map(ep => episodeToItem(ep, show))
+        const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+        const allPairs = shows.flatMap(show =>
+          visibleAiredEpisodesForShow(show).map(ep => ({ show, ep }))
         )
-        return { Items: items, TotalRecordCount: items.length, StartIndex: offset }
+        const total = allPairs.length
+        if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
+        const items = pagedItems(allPairs, offset, limit).map(({ show, ep }) => episodeToItem(ep, show))
+        return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       // Default: series list
       if (SearchTerm) await searchTmdbShows(SearchTerm).catch(() => {})
@@ -687,17 +725,19 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
     const limit = q.limit ? parseInt(q.limit, 10) : 50
     const offset = q.startindex ? parseInt(q.startindex, 10) : 0
-    const ids = listResumeItemIds(limit, offset)
-    const items = []
-    for (const id of ids) {
-      const item = await handleItem(id, {
-        code: () => ({ send: () => null }),
-      })
-      if (item && typeof item === 'object' && (item as Record<string, unknown>).Type !== 'Season' && (item as Record<string, unknown>).Type !== 'Series') {
-        items.push(item)
+    return withReadCache(`resume:${offset}:${limit}`, async () => {
+      const ids = listResumeItemIds(limit, offset)
+      const items = []
+      for (const id of ids) {
+        const item = await handleItem(id, {
+          code: () => ({ send: () => null }),
+        })
+        if (item && typeof item === 'object' && (item as Record<string, unknown>).Type !== 'Season' && (item as Record<string, unknown>).Type !== 'Series') {
+          items.push(item)
+        }
       }
-    }
-    return { Items: items, TotalRecordCount: countResumeItems(), StartIndex: offset }
+      return { Items: items, TotalRecordCount: countResumeItems(), StartIndex: offset }
+    })
   }
   app.get('/Users/:id/Items/Resume', async (req) => handleResumeItems(req as never))
   app.get('/UserItems/Resume', async (req) => handleResumeItems(req as never))
@@ -785,13 +825,15 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   // Seasons list for a series — Infuse calls this when opening a show
   app.get('/Shows/:seriesId/Seasons', async (req, reply) => {
     const { seriesId } = req.params as { seriesId: string }
-    const showTmdbId = idToShowTmdb(seriesId)
-    if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
-    const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
-    if (!show) return reply.code(404).send({ error: 'Not found' })
-    await ensureShowSeasonsCached(show).catch(() => {})
-    const seasons = visibleSeasonsForShow(show)
-    return { Items: seasons.map(s => seasonToItem(s, show)), TotalRecordCount: seasons.length, StartIndex: 0 }
+    return withReadCache(`show-seasons:${seriesId}`, async () => {
+      const showTmdbId = idToShowTmdb(seriesId)
+      if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
+      const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
+      if (!show) return reply.code(404).send({ error: 'Not found' })
+      await ensureShowSeasonsCached(show).catch(() => {})
+      const seasons = visibleSeasonsForShow(show)
+      return { Items: seasons.map(s => seasonToItem(s, show)), TotalRecordCount: seasons.length, StartIndex: 0 }
+    })
   })
 
   // Episodes list for a series — Infuse calls this with optional SeasonId filter
@@ -799,28 +841,29 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const { seriesId } = req.params as { seriesId: string }
     const rawQ = (req as never as { query: Record<string, string> }).query
     const SeasonId = rawQ.SeasonId ?? rawQ.seasonId ?? rawQ.seasonid
-    const showTmdbId = idToShowTmdb(seriesId)
-    if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
-    const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
-    if (!show) return reply.code(404).send({ error: 'Not found' })
+    return withReadCache(`show-episodes:${seriesId}:${SeasonId ?? 'all'}`, async () => {
+      const showTmdbId = idToShowTmdb(seriesId)
+      if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
+      const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
+      if (!show) return reply.code(404).send({ error: 'Not found' })
 
-    if (SeasonId) {
-      const seasonRef = idToSeason(SeasonId)
-      if (!seasonRef) return reply.code(404).send({ error: 'Not found' })
-      if (!getEpisodesForSeason(show.tmdbId, seasonRef.seasonNum).length) {
-        await fetchAndCacheSeasonDetails(show.tmdbId, seasonRef.seasonNum).catch(() => {})
+      if (SeasonId) {
+        const seasonRef = idToSeason(SeasonId)
+        if (!seasonRef) return reply.code(404).send({ error: 'Not found' })
+        if (!getEpisodesForSeason(show.tmdbId, seasonRef.seasonNum).length) {
+          await fetchAndCacheSeasonDetails(show.tmdbId, seasonRef.seasonNum).catch(() => {})
+        }
+        const visibleSeasonNums = new Set(visibleSeasonsForShow(show).map(s => s.seasonNumber))
+        const episodes = visibleSeasonNums.has(seasonRef.seasonNum)
+          ? getAiredEpisodesForSeason(show.tmdbId, seasonRef.seasonNum)
+          : []
+        return { Items: episodes.map(e => episodeToItem(e, show)), TotalRecordCount: episodes.length, StartIndex: 0 }
       }
-      const visibleSeasonNums = new Set(visibleSeasonsForShow(show).map(s => s.seasonNumber))
-      const episodes = visibleSeasonNums.has(seasonRef.seasonNum)
-        ? getAiredEpisodesForSeason(show.tmdbId, seasonRef.seasonNum)
-        : []
-      return { Items: episodes.map(e => episodeToItem(e, show)), TotalRecordCount: episodes.length, StartIndex: 0 }
-    }
 
-    // No season filter — return all aired episodes
-    await ensureShowSeasonsCached(show).catch(() => {})
-    const allEpisodes = visibleAiredEpisodesForShow(show)
-    return { Items: allEpisodes.map(e => episodeToItem(e, show)), TotalRecordCount: allEpisodes.length, StartIndex: 0 }
+      await ensureShowSeasonsCached(show).catch(() => {})
+      const allEpisodes = visibleAiredEpisodesForShow(show)
+      return { Items: allEpisodes.map(e => episodeToItem(e, show)), TotalRecordCount: allEpisodes.length, StartIndex: 0 }
+    })
   })
 
   // Images — redirect to TMDB CDN for movies, series, seasons, and episode stills
