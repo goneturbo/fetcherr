@@ -40,25 +40,28 @@ cd fetcherr
 
 1. Copy `.env.example` to `.env`
 2. Fill in your API keys and Trakt username
-3. Optionally set:
-   - `UI_USERNAME`
+3. Set:
    - `UI_PASSWORD`
+4. Optionally set:
+   - `UI_USERNAME`
    - `STREAM_PROVIDER_URLS`
    - `ENGLISH_STREAM_MODE`
-4. Start the app:
+5. Start the app:
 
 ```bash
 docker compose up -d --build
 ```
 
-5. Open:
+Fetcherr's Docker image now compiles the TypeScript app to JavaScript during the image build. You do not need to run a separate build step yourself.
+
+6. Open:
 
 ```text
 http://YOUR_SERVER:9990/ui/setup
 ```
 
-6. Connect Trakt
-7. Open Settings and configure provider URLs if needed
+7. Connect Trakt
+8. Open Settings and configure provider URLs if needed
 
 ## Usage
 
@@ -80,7 +83,7 @@ http://YOUR_SERVER:9990/ui/setup
 | `TRAKT_LISTS` | No | Comma-separated Trakt list slugs to sync in addition to watchlists |
 | `SERVER_URL` | Yes | External base URL used for playback redirects |
 | `UI_USERNAME` | No | Web UI login username |
-| `UI_PASSWORD` | No | Web UI login password; leave blank to disable UI auth |
+| `UI_PASSWORD` | Recommended | Web UI login password; set this for browser UI access |
 | `AIOSTREAM_URL` | No | Optional legacy AIOStreams manifest or base URL |
 | `STREAM_PROVIDER_URLS` | No | Optional provider URLs, one per line |
 | `ENGLISH_STREAM_MODE` | No | `off`, `prefer`, or `require` |
