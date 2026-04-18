@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import { config } from '../config.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
-  getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems,
+  getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary,
 } from '../db.js'
@@ -302,14 +302,13 @@ function compareEpisodeOrder(a: Pick<Episode, 'seasonNumber' | 'episodeNumber'>,
   return a.episodeNumber - b.episodeNumber
 }
 
-function findNextUpEpisode(show: Show): Episode | null {
+function findNextUpEpisode(show: Show, playedIds: Set<string>): Episode | null {
   const airedEpisodes = visibleAiredEpisodesForShow(show)
   if (!airedEpisodes.length) return null
 
   let highestPlayed: Episode | null = null
   for (const ep of airedEpisodes) {
-    const ud = getUserData(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))
-    if (!ud.played) continue
+    if (!playedIds.has(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))) continue
     if (!highestPlayed || compareEpisodeOrder(ep, highestPlayed) > 0) {
       highestPlayed = ep
     }
@@ -319,8 +318,7 @@ function findNextUpEpisode(show: Show): Episode | null {
 
   for (const ep of airedEpisodes) {
     if (compareEpisodeOrder(ep, highestPlayed) <= 0) continue
-    const ud = getUserData(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))
-    if (!ud.played) return ep
+    if (!playedIds.has(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))) return ep
   }
 
   return null
@@ -701,10 +699,11 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
     const limit = parseInt(q.limit ?? '16', 10)
     const offset = parseInt(q.startindex ?? '0', 10)
-    const nextUpItems = await withReadCache('nextup', async () =>
-      listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+    const nextUpItems = await withReadCache('nextup', async () => {
+      const playedIds = getAllPlayedItemIds()
+      return listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
         .map(show => {
-          const ep = findNextUpEpisode(show)
+          const ep = findNextUpEpisode(show, playedIds)
           return ep ? { show, ep } : null
         })
         .filter((value): value is { show: Show; ep: Episode } => value !== null)
@@ -714,7 +713,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           if (aDate !== bDate) return bDate.localeCompare(aDate)
           return a.show.title.localeCompare(b.show.title)
         })
-    )
+    })
 
     const paged = nextUpItems.slice(offset, offset + limit)
     return {

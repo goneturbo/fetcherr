@@ -1012,6 +1012,15 @@ export function countResumeItems(): number {
   return row.n
 }
 
+export function getAllPlayedItemIds(): Set<string> {
+  const rows = getDb().prepare(`
+    SELECT item_id
+    FROM user_data
+    WHERE played = 1
+  `).all() as Array<{ item_id: string }>
+  return new Set(rows.map(r => r.item_id))
+}
+
 export function markPlayed(itemId: string): void {
   getDb().prepare(`
     INSERT INTO user_data (item_id, played, play_count, position_ticks, last_played_date)
