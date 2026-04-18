@@ -75,7 +75,7 @@ function explicitYearScore(s: Stream, expectedYear?: number): number {
   if (!expectedYear) return 0
   const years = explicitYearsInStream(s)
   if (!years.length) return 0
-  return years.includes(expectedYear) ? 2 : -10
+  return years.includes(expectedYear) ? 2 : 0
 }
 
 function episodeSpecificityScore(s: Stream): number {
@@ -151,10 +151,9 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
   const usable = streams.filter(hasUsableUrl)
   const preferred = usable.filter(s => !isLikelyBadStream(s))
   const basePool = preferred.length ? preferred : usable
-  const withoutExplicitYearMismatch = ctx.expectedYear
+  const pool = ctx.expectedYear
     ? basePool.filter(s => !hasExplicitYearMismatch(s, ctx.expectedYear))
     : basePool
-  const pool = ctx.expectedYear ? withoutExplicitYearMismatch : basePool
 
   return [...pool].sort((a, b) =>
     cachedScore(b) - cachedScore(a)
