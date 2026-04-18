@@ -34,7 +34,7 @@ const USER_ID          = 'a0000000-0000-0000-0000-000000000002'
 const FOLDER_ID = MOVIES_FOLDER_ID
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
-const READ_CACHE_TTL_MS = 1_000
+const READ_CACHE_TTL_MS = 3_000
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
