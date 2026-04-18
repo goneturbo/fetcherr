@@ -580,20 +580,24 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // includeItemTypes=Episode → flat list of all aired episodes across all shows
       // includeItemTypes=Series  → list of series (default)
       if (includeTypes.includes('season')) {
-        const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
-        const allPairs = shows.flatMap(show =>
-          visibleSeasonsForShow(show).map(season => ({ show, season }))
-        )
+        const allPairs = await withReadCache('items:season-pairs', async () => {
+          const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+          return shows.flatMap(show =>
+            visibleSeasonsForShow(show).map(season => ({ show, season }))
+          )
+        })
         const total = allPairs.length
         if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
         const items = pagedItems(allPairs, offset, limit).map(({ show, season }) => seasonToItem(season, show))
         return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       if (includeTypes.includes('episode')) {
-        const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
-        const allPairs = shows.flatMap(show =>
-          visibleAiredEpisodesForShow(show).map(ep => ({ show, ep }))
-        )
+        const allPairs = await withReadCache('items:episode-pairs', async () => {
+          const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+          return shows.flatMap(show =>
+            visibleAiredEpisodesForShow(show).map(ep => ({ show, ep }))
+          )
+        })
         const total = allPairs.length
         if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
         const items = pagedItems(allPairs, offset, limit).map(({ show, ep }) => episodeToItem(ep, show))
@@ -697,19 +701,20 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
     const limit = parseInt(q.limit ?? '16', 10)
     const offset = parseInt(q.startindex ?? '0', 10)
-
-    const nextUpItems = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
-      .map(show => {
-        const ep = findNextUpEpisode(show)
-        return ep ? { show, ep } : null
-      })
-      .filter((value): value is { show: Show; ep: Episode } => value !== null)
-      .sort((a, b) => {
-        const aDate = a.ep.airDate || ''
-        const bDate = b.ep.airDate || ''
-        if (aDate !== bDate) return bDate.localeCompare(aDate)
-        return a.show.title.localeCompare(b.show.title)
-      })
+    const nextUpItems = await withReadCache('nextup', async () =>
+      listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+        .map(show => {
+          const ep = findNextUpEpisode(show)
+          return ep ? { show, ep } : null
+        })
+        .filter((value): value is { show: Show; ep: Episode } => value !== null)
+        .sort((a, b) => {
+          const aDate = a.ep.airDate || ''
+          const bDate = b.ep.airDate || ''
+          if (aDate !== bDate) return bDate.localeCompare(aDate)
+          return a.show.title.localeCompare(b.show.title)
+        })
+    )
 
     const paged = nextUpItems.slice(offset, offset + limit)
     return {
