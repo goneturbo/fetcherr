@@ -336,7 +336,6 @@ function episodeToItem(ep: Episode, show: Show) {
   const safeEpisodeName = (ep.name || `Episode ${ep.episodeNumber}`).replace(/[/\\:*?"<>|]/g, '')
   const fakeFilename = `${safeShowTitle} - S${ep.seasonNumber.toString().padStart(2, '0')}E${ep.episodeNumber.toString().padStart(2, '0')} - ${safeEpisodeName}.mkv`
   const fakePath = `/shows/${safeShowTitle}/Season ${ep.seasonNumber}/${fakeFilename}`
-  const season = getSeason(show.tmdbId, ep.seasonNumber)
   const showPosterTag = show.posterPath ? show.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const showBackdropTag = show.backdropPath ? show.backdropPath.replace(/\W/g, '').slice(0, 16) : undefined
   const showLogoTag = show.logoPath ? show.logoPath.replace(/\W/g, '').slice(0, 16) : undefined

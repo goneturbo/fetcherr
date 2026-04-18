@@ -146,7 +146,7 @@ async function refreshAccessToken(refreshToken: string): Promise<StoredToken> {
 
 let refreshInFlight: Promise<StoredToken> | null = null
 
-/** Get a valid access token, refreshing if it expires within 7 days. */
+/** Get a valid access token, refreshing if it expires within 1 day. */
 export async function getValidToken(): Promise<string | null> {
   const token = loadToken()
   if (!token) return null

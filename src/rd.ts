@@ -170,11 +170,11 @@ export async function resolveStream(
     let chosenLink: string
     if (filePathHint && info.files.length > 0) {
       const hint = filePathHint.toLowerCase()
-      const scored = info.files
-        .filter(f => f.selected)
+      const selectedFiles = info.files.filter(f => f.selected)
+      const scored = selectedFiles
         .map(f => ({ f, score: similarity(f.path.toLowerCase(), hint) }))
         .sort((a, b) => b.score - a.score)
-      const bestIdx = scored[0] ? info.files.filter(f => f.selected).indexOf(scored[0].f) : 0
+      const bestIdx = scored[0] ? selectedFiles.indexOf(scored[0].f) : 0
       chosenLink = info.links[bestIdx] ?? info.links[0]
     } else {
       // No hint — pick link corresponding to largest file

@@ -246,6 +246,9 @@
 
 <script>
   let selectedTraktLists = []
+  let hasStoredRdApiKey = false
+  let hasStoredTmdbApiKey = false
+  let hasStoredTraktClientSecret = false
 
   function providerPlaceholder(idx) {
     return idx === 0
@@ -312,19 +315,22 @@
     const res = await fetch('/ui/settings-data')
     if (!res.ok) return
     const d = await res.json()
+    hasStoredRdApiKey = !!d.hasRdApiKey
+    hasStoredTmdbApiKey = !!d.hasTmdbApiKey
+    hasStoredTraktClientSecret = !!d.hasTraktClientSecret
     document.getElementById('sootioUrl').value         = d.sootioUrl         || ''
     renderProviderRows((d.streamProviderUrls || '').split('\n').map(v => v.trim()).filter(Boolean))
     document.getElementById('englishStreamMode').value = d.englishStreamMode || 'prefer'
-    document.getElementById('rdApiKey').value          = d.rdApiKey          || ''
-    document.getElementById('tmdbApiKey').value        = d.tmdbApiKey        || ''
+    document.getElementById('rdApiKey').value          = ''
+    document.getElementById('tmdbApiKey').value        = ''
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
-    document.getElementById('traktClientSecret').value = d.traktClientSecret || ''
+    document.getElementById('traktClientSecret').value = ''
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
 
-    if (d.rdApiKey) {
+    if (hasStoredRdApiKey) {
       setPill('rdStatus', 'Configured', 'ok')
-      document.getElementById('rdMeta').textContent = maskKey(d.rdApiKey)
+      document.getElementById('rdMeta').textContent = 'Stored on server'
     } else {
       setPill('rdStatus', 'Not set', '')
       document.getElementById('rdMeta').textContent = 'No API key configured'
@@ -401,12 +407,13 @@
 
   async function connectTrakt() {
     // Save client credentials first so the server uses the entered values
+    const traktClientSecret = document.getElementById('traktClientSecret').value
     const saveRes = await fetch('/ui/settings-data', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         traktClientId:     document.getElementById('traktClientId').value,
-        traktClientSecret: document.getElementById('traktClientSecret').value,
+        ...(traktClientSecret ? { traktClientSecret } : {}),
       }),
     })
     if (!saveRes.ok) { showOut('Save credentials before connecting.', 'error'); return }
@@ -440,16 +447,19 @@
   }
 
   async function saveSettings() {
+    const rdApiKey = document.getElementById('rdApiKey').value
+    const tmdbApiKey = document.getElementById('tmdbApiKey').value
+    const traktClientSecret = document.getElementById('traktClientSecret').value
     const body = {
       sootioUrl:         document.getElementById('sootioUrl').value,
       streamProviderUrls: collectProviderUrls().join('\n'),
       englishStreamMode: document.getElementById('englishStreamMode').value,
-      rdApiKey:          document.getElementById('rdApiKey').value,
-      tmdbApiKey:        document.getElementById('tmdbApiKey').value,
       serverUrl:         document.getElementById('serverUrl').value,
       traktClientId:     document.getElementById('traktClientId').value,
-      traktClientSecret: document.getElementById('traktClientSecret').value,
       traktLists:        selectedTraktLists,
+      ...(rdApiKey ? { rdApiKey } : {}),
+      ...(tmdbApiKey ? { tmdbApiKey } : {}),
+      ...(traktClientSecret ? { traktClientSecret } : {}),
     }
     const res = await fetch('/ui/settings-data', {
       method: 'POST',

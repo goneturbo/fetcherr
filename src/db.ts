@@ -133,6 +133,7 @@ CREATE TABLE IF NOT EXISTS shows (
 );
 CREATE INDEX IF NOT EXISTS shows_title      ON shows(title);
 CREATE INDEX IF NOT EXISTS shows_popularity ON shows(popularity DESC);
+CREATE INDEX IF NOT EXISTS shows_imdb_id    ON shows(imdb_id);
 
 CREATE TABLE IF NOT EXISTS seasons (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,6 +222,7 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE shows ADD COLUMN community_rating REAL NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE shows ADD COLUMN studios_json TEXT NOT NULL DEFAULT '[]'`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE shows ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'`) } catch { /* already exists */ }
+    try { _db.exec(`CREATE INDEX IF NOT EXISTS shows_imdb_id ON shows(imdb_id)`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE episodes ADD COLUMN community_rating REAL NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN digital_release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
@@ -625,6 +627,13 @@ export function getAllAiredEpisodes(): Episode[] {
     `SELECT * FROM episodes WHERE air_date != '' AND air_date <= ?
      ORDER BY show_tmdb_id ASC, season_number ASC, episode_number ASC`
   ).all(today) as Record<string, unknown>[]).map(row2episode)
+}
+
+export function countAiredEpisodes(): number {
+  const today = new Date().toISOString().slice(0, 10)
+  return (getDb().prepare(
+    `SELECT COUNT(*) as n FROM episodes WHERE air_date != '' AND air_date <= ?`
+  ).get(today) as { n: number }).n
 }
 
 // ── App settings ──────────────────────────────────────────────────────────────

@@ -169,12 +169,11 @@ export async function searchTmdb(query: string): Promise<Movie[]> {
   const d = await tmdbGet(
     `/search/movie?query=${encodeURIComponent(query)}&include_adult=false&language=en-US`
   ) as { results: TmdbMovieRaw[] }
-  const out: Movie[] = []
-  for (const r of d.results ?? []) {
+  const out = await Promise.all((d.results ?? []).map(async (r) => {
     const imdbId = await fetchImdbId(r.id)
     const m = raw2movie(r, imdbId)
-    out.push({ id: 0, ...m })
-  }
+    return { id: 0, ...m }
+  }))
   return out
 }
 
@@ -183,7 +182,6 @@ export async function searchTmdb(query: string): Promise<Movie[]> {
  * Only hits TMDB if the movie is missing a backdrop.
  */
 export async function refreshMovieMetadataIfNeeded(movie: Movie): Promise<void> {
-  if (movie.backdropPath && movie.logoPath && movie.releaseDate && movie.officialRating && movie.communityRating && movie.studiosJson !== '[]' && !config.tmdbApiKey) return
   if (!config.tmdbApiKey) return
   // Refresh if missing backdrop or release date info
   if (movie.backdropPath && movie.logoPath && movie.releaseDate && movie.officialRating && movie.communityRating && movie.studiosJson !== '[]') return
@@ -327,13 +325,12 @@ export async function searchTmdbShows(query: string): Promise<Show[]> {
   const d = await tmdbGet(
     `/search/tv?query=${encodeURIComponent(query)}&include_adult=false&language=en-US`
   ) as { results: TmdbShowRaw[] }
-  const out: Show[] = []
-  for (const r of d.results ?? []) {
+  const out = await Promise.all((d.results ?? []).map(async (r) => {
     const full = await tmdbGet(`/tv/${r.id}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`).catch(() => ({} as Record<string, unknown>))
     const imdbId = (full as { external_ids?: { imdb_id?: string } }).external_ids?.imdb_id ?? ''
     const s = raw2show({ ...r, ...full, images: (full as { images?: TmdbImagesResponse }).images } as TmdbShowRaw & { images?: TmdbImagesResponse }, imdbId)
-    out.push({ id: 0, ...s })
-  }
+    return { id: 0, ...s }
+  }))
   return out
 }
 

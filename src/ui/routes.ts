@@ -3,7 +3,7 @@ import { readFileSync, existsSync } from 'fs'
 import { fileURLToPath } from 'url'
 import { join, dirname } from 'path'
 import {
-  listMovies, countMovies, listShows, countShows, getAllAiredEpisodes,
+  listMovies, countMovies, listShows, countShows, countAiredEpisodes,
   addSourceItem, getMovieByTmdbId, getShowByTmdbId, getSetting, getManualShowSubscription,
   getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate,
   getManualMovieAvailabilityOverride,
@@ -127,7 +127,7 @@ export async function uiRoutes(app: FastifyInstance) {
   app.get('/ui/stats', async () => {
     const movies   = countMovies()
     const shows    = countShows()
-    const episodes = getAllAiredEpisodes().length
+    const episodes = countAiredEpisodes()
     return {
       movies,
       shows,
@@ -290,15 +290,13 @@ export async function uiRoutes(app: FastifyInstance) {
     sootioUrl:         config.sootioUrl,
     streamProviderUrls: config.streamProviderUrls.join('\n'),
     englishStreamMode: config.englishStreamMode,
-    rdApiKey:          config.rdApiKey,
-    tmdbApiKey:        config.tmdbApiKey,
     serverUrl:         config.serverUrl,
     traktClientId:     config.traktClientId,
-    traktClientSecret: config.traktClientSecret,
     traktLists:        config.traktLists,
     hasSootioUrl:      !!getSetting('sootioUrl'),
     hasRdApiKey:       !!getSetting('rdApiKey'),
     hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
+    hasTraktClientSecret: !!getSetting('traktClientSecret'),
   }))
 
   app.get('/ui/trakt/lists', async (req, reply) => {
