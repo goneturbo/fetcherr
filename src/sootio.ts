@@ -112,9 +112,9 @@ function scoreSummary(s: Stream, ctx: StreamRankContext = {}): string {
     `episodeSpecificity=${episodeSpecificityScore(s)}`,
     `resolution=${resolutionScore(s)}`,
     `source=${sourceScore(s)}`,
+    `size=${sizeBytes(s)}`,
     `codec=${codecScore(s)}`,
     `container=${containerScore(s)}`,
-    `size=${sizeBytes(s)}`,
     `providerOrder=${s.providerOrder ?? 999}`,
     `name=${JSON.stringify(s.name ?? '')}`,
     `title=${JSON.stringify(s.title ?? '')}`,
@@ -260,9 +260,8 @@ async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
 }
 
 /**
- * Fetch all streams for a movie, sorted by size descending (largest first).
- * No provider-specific filtering — all indexers connected to AIOStreams are
- * considered equally; the caller picks the best candidate.
+ * Fetch all streams for a movie, ranked by cacheability, language safety,
+ * quality signals, and compatibility. The caller picks the best candidate.
  */
 export async function fetchRankedStreams(imdbId: string): Promise<Stream[]> {
   const streams = await fetchStreamsFromProviders(`/stream/movie/${imdbId}.json`)
@@ -276,7 +275,8 @@ export async function fetchRankedStreams(imdbId: string): Promise<Stream[]> {
 }
 
 /**
- * Fetch all streams for a TV episode, sorted by size descending.
+ * Fetch all streams for a TV episode, ranked by cacheability, language safety,
+ * year matching, quality signals, and compatibility.
  * AIOStreams series endpoint: /stream/series/{imdbId}:{season}:{episode}.json
  */
 export async function fetchRankedEpisodeStreams(
