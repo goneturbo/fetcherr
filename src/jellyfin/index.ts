@@ -5,7 +5,7 @@ import {
   listMovies, countMovies, getMovieByTmdbId,
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
-  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary,
+  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -24,6 +24,8 @@ import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 //   Series:  00000000-0000-4000-8001-{tmdbId 12 hex}
 //   Season:  00000000-0000-4000-8002-{showTmdbId 8 hex}{seasonNum 4 hex}
 //   Episode: 00000000-0000-4000-8003-{showTmdbId 6 hex}{seasonNum 3 hex}{episodeNum 3 hex}
+//   Search Movie:  00000000-0000-4000-8004-{tmdbId 12 hex}
+//   Search Series: 00000000-0000-4000-8005-{tmdbId 12 hex}
 
 const MOVIES_FOLDER_ID = 'a0000000-0000-4000-8000-000000000001'
 const SHOWS_FOLDER_ID  = 'a0000000-0000-4000-8000-000000000002'
@@ -53,6 +55,24 @@ function showTmdbToId(tmdbId: number): string {
 
 function idToShowTmdb(id: string): number | null {
   const m = id.match(/^00000000-0000-4000-8001-([0-9a-f]{12})$/i)
+  return m ? parseInt(m[1], 16) : null
+}
+
+function searchMovieTmdbToId(tmdbId: number): string {
+  return `00000000-0000-4000-8004-${tmdbId.toString(16).padStart(12, '0')}`
+}
+
+function idToSearchMovieTmdb(id: string): number | null {
+  const m = id.match(/^00000000-0000-4000-8004-([0-9a-f]{12})$/i)
+  return m ? parseInt(m[1], 16) : null
+}
+
+function searchShowTmdbToId(tmdbId: number): string {
+  return `00000000-0000-4000-8005-${tmdbId.toString(16).padStart(12, '0')}`
+}
+
+function idToSearchShowTmdb(id: string): number | null {
+  const m = id.match(/^00000000-0000-4000-8005-([0-9a-f]{12})$/i)
   return m ? parseInt(m[1], 16) : null
 }
 
@@ -281,6 +301,94 @@ function showToSeriesItem(s: Show) {
   }
 }
 
+function movieToSearchItem(m: Movie) {
+  const genres: string[] = JSON.parse(m.genres || '[]')
+  const id = searchMovieTmdbToId(m.tmdbId)
+  const posterTag = m.posterPath ? m.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
+  const thumbTag = (m.backdropPath || m.posterPath) ? (m.backdropPath || m.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
+  const logoTag = m.logoPath ? m.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
+  return {
+    Id:                 id,
+    ServerId:           SERVER_GUID,
+    Name:               m.title,
+    SortName:           m.title.replace(/^(the|a|an)\s+/i, '').toLowerCase(),
+    Type:               'Movie',
+    MediaType:          'Video',
+    VideoType:          'VideoFile',
+    LocationType:       'Virtual',
+    PlayAccess:         'None',
+    IsPlayable:         false,
+    CanDelete:          false,
+    CanDownload:        false,
+    ProductionYear:     m.year,
+    Overview:           m.overview,
+    Genres:             genres,
+    GenreItems:         genreItems(genres),
+    Studios:            detailStudios(m.studiosJson),
+    Tags:               [...parseJsonArray<string>(m.tagsJson), 'Not In Library'],
+    OfficialRating:     m.officialRating || undefined,
+    CommunityRating:    m.communityRating || undefined,
+    ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
+    DateCreated:        m.syncedAt,
+    IsFolder:           false,
+    ImageTags:          {
+      ...(posterTag ? { Primary: posterTag } : {}),
+      ...(logoTag ? { Logo: logoTag } : {}),
+      ...(thumbTag ? { Thumb: thumbTag } : {}),
+    },
+    PrimaryImageTag:    null,
+    BackdropImageTags:  m.backdropPath ? [m.backdropPath.replace(/\W/g, '').slice(0, 16)] : [],
+    ParentId:           FOLDER_ID,
+    ProviderIds:        { Imdb: m.imdbId || undefined, Tmdb: String(m.tmdbId) },
+    UserData:           userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }),
+  }
+}
+
+function showToSearchSeriesItem(s: Show) {
+  const genres: string[] = JSON.parse(s.genres || '[]')
+  const id = searchShowTmdbToId(s.tmdbId)
+  const posterTag = s.posterPath ? s.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
+  const thumbTag = (s.backdropPath || s.posterPath) ? (s.backdropPath || s.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
+  const logoTag = s.logoPath ? s.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
+  return {
+    Id:                 id,
+    ServerId:           SERVER_GUID,
+    Name:               s.title,
+    SortName:           s.title.replace(/^(the|a|an)\s+/i, '').toLowerCase(),
+    Type:               'Series',
+    MediaType:          'Video',
+    LocationType:       'Virtual',
+    PlayAccess:         'None',
+    IsPlayable:         false,
+    CanDelete:          false,
+    CanDownload:        false,
+    ProductionYear:     s.year,
+    Overview:           s.overview,
+    Genres:             genres,
+    GenreItems:         genreItems(genres),
+    Studios:            detailStudios(s.studiosJson),
+    Tags:               [...parseJsonArray<string>(s.tagsJson), 'Not In Library'],
+    OfficialRating:     s.officialRating || undefined,
+    CommunityRating:    s.communityRating || undefined,
+    ExternalUrls:       externalUrls('show', s.imdbId, s.tmdbId),
+    DateCreated:        s.syncedAt,
+    IsFolder:           true,
+    ChildCount:         0,
+    RecursiveItemCount: 0,
+    Status:             s.status,
+    ImageTags:          {
+      ...(posterTag ? { Primary: posterTag } : {}),
+      ...(logoTag ? { Logo: logoTag } : {}),
+      ...(thumbTag ? { Thumb: thumbTag } : {}),
+    },
+    PrimaryImageTag:    null,
+    BackdropImageTags:  s.backdropPath ? [s.backdropPath.replace(/\W/g, '').slice(0, 16)] : [],
+    ParentId:           SHOWS_FOLDER_ID,
+    ProviderIds:        { Imdb: s.imdbId || undefined, Tmdb: String(s.tmdbId) },
+    UserData:           userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }),
+  }
+}
+
 function visibleSeasonsForShow(show: Show): Season[] {
   const seasons = getSeasonsForShow(show.tmdbId)
   const showMode = getEffectiveShowMode(show.tmdbId)
@@ -300,6 +408,54 @@ function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
 function compareEpisodeOrder(a: Pick<Episode, 'seasonNumber' | 'episodeNumber'>, b: Pick<Episode, 'seasonNumber' | 'episodeNumber'>): number {
   if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber
   return a.episodeNumber - b.episodeNumber
+}
+
+async function buildSearchResultItems(
+  searchTerm: string,
+  includeTypes: string,
+  sortBy: string | undefined,
+  sortOrder: string | undefined,
+  limit: number,
+  offset: number,
+) {
+  const wantMovies = !includeTypes || includeTypes.includes('movie')
+  const wantShows = !includeTypes || includeTypes.includes('series')
+
+  const [externalMovies, externalShows] = await Promise.all([
+    wantMovies ? searchTmdb(searchTerm).catch(() => []) : Promise.resolve([]),
+    wantShows ? searchTmdbShows(searchTerm).catch(() => []) : Promise.resolve([]),
+  ])
+
+  const localMovies = wantMovies
+    ? listMovies({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, ...API_LIBRARY_FILTER })
+    : []
+  const localShows = wantShows
+    ? listShows({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, ...API_LIBRARY_FILTER })
+    : []
+
+  const localMovieIds = new Set(localMovies.map(movie => movie.tmdbId))
+  const localShowIds = new Set(localShows.map(show => show.tmdbId))
+
+  const searchOnlyMovies = externalMovies
+    .filter(movie => !localMovieIds.has(movie.tmdbId) && !hasAnySourceItem('movie', movie.tmdbId))
+    .map(movieToSearchItem)
+
+  const searchOnlyShows = externalShows
+    .filter(show => !localShowIds.has(show.tmdbId) && !hasAnySourceItem('show', show.tmdbId))
+    .map(showToSearchSeriesItem)
+
+  const combined = [
+    ...localMovies.map(movieToItem),
+    ...localShows.map(showToSeriesItem),
+    ...searchOnlyMovies,
+    ...searchOnlyShows,
+  ]
+
+  return {
+    Items: pagedItems(combined, offset, limit),
+    TotalRecordCount: combined.length,
+    StartIndex: offset,
+  }
 }
 
 function findNextUpEpisode(show: Show, playedIds: Set<string>): Episode | null {
@@ -602,7 +758,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       // Default: series list
-      if (SearchTerm) await searchTmdbShows(SearchTerm).catch(() => {})
+      if (SearchTerm) {
+        return buildSearchResultItems(SearchTerm, 'series', SortBy, SortOrder, limit, offset)
+      }
       const shows = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
       const total = countShows(SearchTerm, API_LIBRARY_FILTER.availableOnly)
       return { Items: shows.map(showToSeriesItem), TotalRecordCount: total, StartIndex: offset }
@@ -635,14 +793,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
     // ── Search: movies + shows ─────────────────────────────────────────────────
     if (SearchTerm) {
-      await Promise.all([
-        searchTmdb(SearchTerm).catch(() => {}),
-        searchTmdbShows(SearchTerm).catch(() => {}),
-      ])
-      const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-      const shows  = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-      const items  = [...movies.map(movieToItem), ...shows.map(showToSeriesItem)]
-      return { Items: items, TotalRecordCount: items.length, StartIndex: offset }
+      return buildSearchResultItems(SearchTerm, includeTypes, SortBy, SortOrder, limit, offset)
     }
 
     // ── No parentId: route by includeItemTypes or return folders ─────────────
@@ -808,6 +959,13 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
 
     // Series
+    const searchShowTmdbId = idToSearchShowTmdb(id)
+    if (searchShowTmdbId) {
+      const show = await fetchShowByTmdbId(searchShowTmdbId)
+      if (!show) return reply.code(404).send({ error: 'Not found' })
+      return showToSearchSeriesItem(show)
+    }
+
     const showTmdbId = idToShowTmdb(id)
     if (showTmdbId) {
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
@@ -816,6 +974,13 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
 
     // Movie
+    const searchMovieTmdbId = idToSearchMovieTmdb(id)
+    if (searchMovieTmdbId) {
+      const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
+      if (!movie) return reply.code(404).send({ error: 'Not found' })
+      return movieToSearchItem(movie)
+    }
+
     const tmdbId = idToTmdb(id)
     if (!tmdbId) return reply.code(404).send({ error: 'Not found' })
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
@@ -829,6 +994,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   // Seasons list for a series — Infuse calls this when opening a show
   app.get('/Shows/:seriesId/Seasons', async (req, reply) => {
     const { seriesId } = req.params as { seriesId: string }
+    const searchShowTmdbId = idToSearchShowTmdb(seriesId)
+    if (searchShowTmdbId) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
     return withReadCache(`show-seasons:${seriesId}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
@@ -845,6 +1012,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const { seriesId } = req.params as { seriesId: string }
     const rawQ = (req as never as { query: Record<string, string> }).query
     const SeasonId = rawQ.SeasonId ?? rawQ.seasonId ?? rawQ.seasonid
+    const searchShowTmdbId = idToSearchShowTmdb(seriesId)
+    if (searchShowTmdbId) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
     return withReadCache(`show-episodes:${seriesId}:${SeasonId ?? 'all'}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
@@ -898,6 +1067,17 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
 
     // Series — Primary poster or Backdrop
+    const searchShowTmdbId = idToSearchShowTmdb(id)
+    if (searchShowTmdbId) {
+      const show = await fetchShowByTmdbId(searchShowTmdbId)
+      if (!show) return reply.code(404).send()
+      if (isLogo && show.logoPath) return reply.redirect(posterUrl(show.logoPath), 307)
+      if (isThumb && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
+      if (isBackdrop && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
+      if (show.posterPath) return reply.redirect(posterUrl(show.posterPath), 307)
+      return reply.code(404).send()
+    }
+
     const showTmdbId = idToShowTmdb(id)
     if (showTmdbId) {
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
@@ -924,6 +1104,17 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
 
     // Movie poster or backdrop
+    const searchMovieTmdbId = idToSearchMovieTmdb(id)
+    if (searchMovieTmdbId) {
+      const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
+      if (!movie) return reply.code(404).send()
+      if (isLogo && movie.logoPath) return reply.redirect(posterUrl(movie.logoPath), 307)
+      if (isThumb && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
+      if (isBackdrop && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
+      if (movie.posterPath) return reply.redirect(posterUrl(movie.posterPath), 307)
+      return reply.code(404).send()
+    }
+
     const tmdbId = idToTmdb(id)
     const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
     if (!movie) return reply.code(404).send()

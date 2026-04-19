@@ -23,6 +23,7 @@ The goal is simple: open Infuse, browse your library, and press play. Fetcherr h
 ## Requirements
 
 - TMDB API key
+- Optional TVDB API key for episode-image fallback
 - Real-Debrid API key
 - Trakt client ID and secret
 - A Trakt account
@@ -74,6 +75,7 @@ http://YOUR_SERVER:9990/ui/setup
 | Variable | Required | Description |
 | --- | --- | --- |
 | `TMDB_API_KEY` | Yes | TMDB metadata and artwork |
+| `TVDB_API_KEY` | No | Optional TVDB fallback for missing episode still images |
 | `RD_API_KEY` | Yes | Real-Debrid API access |
 | `TRAKT_CLIENT_ID` | Yes | Trakt OAuth client ID |
 | `TRAKT_CLIENT_SECRET` | Yes | Trakt OAuth client secret |
@@ -96,6 +98,9 @@ http://YOUR_SERVER:9990/ui/setup
 
 > [!NOTE]
 > Full manifest URLs are accepted and normalized automatically. `SOOTIO_URL` is still supported as a backward-compatible alias for `AIOSTREAM_URL`.
+
+> [!NOTE]
+> `TVDB_API_KEY` is optional and intended only as a fallback for missing episode stills. Check TheTVDB's attribution and licensing requirements before enabling it.
 
 > [!WARNING]
 > Real-Debrid multi-location and IP restrictions still apply.

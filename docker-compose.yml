@@ -11,6 +11,7 @@ services:
       PORT: "9990"
       DATABASE_PATH: /app/data/fetcherr.db
       TMDB_API_KEY: "${TMDB_API_KEY}"
+      TVDB_API_KEY: "${TVDB_API_KEY:-}"
       AIOSTREAM_URL: "${AIOSTREAM_URL:-}"
       STREAM_PROVIDER_URLS: "${STREAM_PROVIDER_URLS:-}"
       ENGLISH_STREAM_MODE: "${ENGLISH_STREAM_MODE:-prefer}"

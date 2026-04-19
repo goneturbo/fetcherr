@@ -5,6 +5,7 @@ import {
   upsertSeason, getSeasonsForShow, type Season,
   upsertEpisode, type Episode, getAiredEpisodesForSeason,
 } from './db.js'
+import { fetchEpisodeStillFallbacks } from './tvdb.js'
 
 const BASE = 'https://api.themoviedb.org/3'
 
@@ -239,6 +240,7 @@ export async function fetchMovieCollection(movieTmdbId: number): Promise<MovieCo
 
 export function posterUrl(posterPath: string): string {
   if (!posterPath) return ''
+  if (posterPath.startsWith('http://') || posterPath.startsWith('https://')) return posterPath
   return `https://image.tmdb.org/t/p/original${posterPath}`
 }
 
@@ -258,7 +260,7 @@ interface TmdbShowRaw {
   vote_average?:    number
   production_companies?: Array<{ id: number; name: string }>
   networks?: Array<{ id: number; name: string }>
-  external_ids?:    { imdb_id?: string }
+  external_ids?:    { imdb_id?: string; tvdb_id?: number }
   content_ratings?: { results?: Array<{ iso_3166_1: string; rating: string }> }
 }
 
@@ -281,10 +283,11 @@ interface TmdbEpisodeRaw {
   air_date:       string
 }
 
-function raw2show(r: TmdbShowRaw, imdbId = '', listedAt = ''): Omit<Show, 'id'> {
+function raw2show(r: TmdbShowRaw, imdbId = '', tvdbId = 0, listedAt = ''): Omit<Show, 'id'> {
   return {
     tmdbId:       r.id,
     imdbId,
+    tvdbId,
     title:        r.name,
     year:         parseYear(r.first_air_date),
     overview:     r.overview ?? '',
@@ -306,13 +309,14 @@ function raw2show(r: TmdbShowRaw, imdbId = '', listedAt = ''): Omit<Show, 'id'> 
 export async function fetchShowByTmdbId(tmdbId: number, listedAt = ''): Promise<Show | null> {
   if (!config.tmdbApiKey) return null
   const cached = getShowByTmdbId(tmdbId)
-  if (cached?.imdbId) return cached
+  if (cached?.imdbId && (!config.tvdbApiKey || cached.tvdbId)) return cached
 
   try {
     const r = await tmdbGet(`/tv/${tmdbId}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`) as
-      TmdbShowRaw & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse; keywords?: TmdbKeywordsResponse }
+      TmdbShowRaw & { external_ids?: { imdb_id?: string; tvdb_id?: number }; images?: TmdbImagesResponse; keywords?: TmdbKeywordsResponse }
     const imdbId = r.external_ids?.imdb_id ?? ''
-    const s = raw2show(r, imdbId, listedAt)
+    const tvdbId = r.external_ids?.tvdb_id ?? 0
+    const s = raw2show(r, imdbId, tvdbId, listedAt)
     upsertShow(s)
     return { id: 0, ...s }
   } catch {
@@ -327,10 +331,11 @@ export async function searchTmdbShows(query: string): Promise<Show[]> {
   ) as { results: TmdbShowRaw[] }
   const out = await Promise.all((d.results ?? []).map(async (r) => {
     const full = await tmdbGet(`/tv/${r.id}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`)
-      .then(result => result as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse })
-      .catch(() => ({} as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse }))
+      .then(result => result as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string; tvdb_id?: number }; images?: TmdbImagesResponse })
+      .catch(() => ({} as Partial<TmdbShowRaw> & { external_ids?: { imdb_id?: string; tvdb_id?: number }; images?: TmdbImagesResponse }))
     const imdbId = full.external_ids?.imdb_id ?? ''
-    const s = raw2show({ ...r, ...full, images: full.images } as TmdbShowRaw & { images?: TmdbImagesResponse }, imdbId)
+    const tvdbId = full.external_ids?.tvdb_id ?? 0
+    const s = raw2show({ ...r, ...full, images: full.images } as TmdbShowRaw & { images?: TmdbImagesResponse }, imdbId, tvdbId)
     return { id: 0, ...s }
   }))
   return out
@@ -346,6 +351,7 @@ export async function fetchAndCacheSeasonDetails(
 ): Promise<Episode[]> {
   if (!config.tmdbApiKey) return []
   try {
+    let show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
     const r = await tmdbGet(`/tv/${showTmdbId}/season/${seasonNumber}`) as TmdbSeasonRaw
     const season: Omit<Season, 'id'> = {
       showTmdbId,
@@ -375,6 +381,48 @@ export async function fetchAndCacheSeasonDetails(
       upsertEpisode(ep)
       episodes.push({ id: 0, ...ep })
     }
+
+    const missingStillEpisodes = episodes.filter(ep => !ep.stillPath)
+    if (config.tvdbApiKey && missingStillEpisodes.length) {
+      if (show && !show.tvdbId) {
+        const refreshedShow = await fetchShowByTmdbId(showTmdbId).catch(() => null)
+        if (refreshedShow?.tvdbId) {
+          show = refreshedShow
+          console.log(`tvdb: backfilled tvdbId ${show.tvdbId} for ${show.title}`)
+        }
+      }
+      if (show?.tvdbId) {
+        try {
+          const fallbackStills = await fetchEpisodeStillFallbacks(show.tvdbId, seasonNumber)
+          let filledCount = 0
+          for (const episode of missingStillEpisodes) {
+            const fallbackStill = fallbackStills.get(episode.episodeNumber)
+            if (!fallbackStill) continue
+            const updated: Omit<Episode, 'id'> = {
+              showTmdbId: episode.showTmdbId,
+              seasonNumber: episode.seasonNumber,
+              episodeNumber: episode.episodeNumber,
+              name: episode.name,
+              overview: episode.overview,
+              stillPath: fallbackStill,
+              runtimeMins: episode.runtimeMins,
+              communityRating: episode.communityRating,
+              airDate: episode.airDate,
+              syncedAt: episode.syncedAt,
+            }
+            upsertEpisode(updated)
+            episode.stillPath = fallbackStill
+            filledCount += 1
+          }
+          console.log(`tvdb: ${show.title} S${seasonNumber} filled ${filledCount}/${missingStillEpisodes.length} missing stills`)
+        } catch {
+          // ignore TVDB fallback failures; TMDB remains source of truth
+        }
+      } else {
+        console.log(`tvdb: skipping still fallback for show ${showTmdbId} S${seasonNumber} — missing tvdbId`)
+      }
+    }
+
     return episodes
   } catch {
     return []
@@ -386,12 +434,13 @@ export async function fetchAndCacheSeasonDetails(
  * Only hits TMDB if the show is missing a backdrop.
  */
 export async function refreshShowMetadataIfNeeded(show: Show): Promise<void> {
-  if ((show.backdropPath && show.logoPath && show.officialRating && show.communityRating && show.studiosJson !== '[]') || !config.tmdbApiKey) return
+  if ((show.backdropPath && show.logoPath && show.officialRating && show.communityRating && show.studiosJson !== '[]' && (!config.tvdbApiKey || show.tvdbId)) || !config.tmdbApiKey) return
   try {
     const r = await tmdbGet(`/tv/${show.tmdbId}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`) as
-      TmdbShowRaw & { external_ids?: { imdb_id?: string }; images?: TmdbImagesResponse; keywords?: TmdbKeywordsResponse }
+      TmdbShowRaw & { external_ids?: { imdb_id?: string; tvdb_id?: number }; images?: TmdbImagesResponse; keywords?: TmdbKeywordsResponse }
     const imdbId = r.external_ids?.imdb_id ?? show.imdbId
-    upsertShow(raw2show(r, imdbId))
+    const tvdbId = r.external_ids?.tvdb_id ?? show.tvdbId
+    upsertShow(raw2show(r, imdbId, tvdbId))
   } catch {
     // ignore
   }

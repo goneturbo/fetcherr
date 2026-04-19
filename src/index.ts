@@ -32,6 +32,7 @@ initCastSchema()
   if (s.sootioUrl)          config.sootioUrl          = normalizeSootioUrl(s.sootioUrl)
   if (s.rdApiKey)           config.rdApiKey            = s.rdApiKey
   if (s.tmdbApiKey)         config.tmdbApiKey          = s.tmdbApiKey
+  if (s.tvdbApiKey)         config.tvdbApiKey          = s.tvdbApiKey
   if (s.serverUrl)          config.serverUrl           = s.serverUrl
   if (s.traktClientId)      config.traktClientId       = s.traktClientId
   if (s.traktClientSecret)  config.traktClientSecret   = s.traktClientSecret
@@ -72,6 +73,31 @@ function requireUiSession(
 // Queries AIOStreams for the best RD-cached stream and 302s to the direct URL.
 
 function pad2(n: number) { return n.toString().padStart(2, '0') }
+
+const FAILED_PLAY_TTL_MS = 3 * 60 * 1000
+type FailedPlayCacheEntry = { expiresAt: number; reason: string }
+const failedPlayCache = new Map<string, FailedPlayCacheEntry>()
+
+function getFailedPlayReason(cacheKey: string): string | null {
+  const entry = failedPlayCache.get(cacheKey)
+  if (!entry) return null
+  if (entry.expiresAt <= Date.now()) {
+    failedPlayCache.delete(cacheKey)
+    return null
+  }
+  return entry.reason
+}
+
+function cacheFailedPlay(cacheKey: string, reason: string) {
+  failedPlayCache.set(cacheKey, {
+    expiresAt: Date.now() + FAILED_PLAY_TTL_MS,
+    reason,
+  })
+}
+
+function clearFailedPlay(cacheKey: string) {
+  failedPlayCache.delete(cacheKey)
+}
 
 const VIDEO_EXTS = new Set(['mkv','mp4','avi','mov','m4v','ts','m2ts','wmv','flv','webm'])
 
@@ -121,6 +147,13 @@ function hasEnglishAudio(languages: string[]): boolean {
   )
 }
 
+function hasOnlyUndeterminedAudio(languages: string[]): boolean {
+  const normalized = languages
+    .map(lang => lang.trim().toLowerCase())
+    .filter(Boolean)
+  return normalized.length > 0 && normalized.every(lang => lang === 'und' || lang === 'undetermined')
+}
+
 function groupStreamsByProvider<T extends { providerOrder?: number }>(streams: T[]): T[][] {
   const groups = new Map<number, T[]>()
   for (const stream of streams) {
@@ -137,6 +170,7 @@ function groupStreamsByProvider<T extends { providerOrder?: number }>(streams: T
 async function resolveAndRedirect(
   streams: Awaited<ReturnType<typeof fetchRankedStreams>>,
   label: string,
+  cacheKey: string,
   reply: { redirect: (url: string, code: number) => unknown; code: (n: number) => { send: (v: unknown) => unknown } },
   fileHint?: string,
 ) {
@@ -167,7 +201,8 @@ async function resolveAndRedirect(
             try {
               const audioLanguages = await probeAudioLanguages(resolved.url)
               app.log.info(`play: ffprobe audio languages for ${resolved.filename}: ${audioLanguages.join(', ') || 'none'}`)
-              if (config.englishStreamMode === 'require' && !hasEnglishAudio(audioLanguages)) {
+              const allowsUndetermined = hasOnlyUndeterminedAudio(audioLanguages) && !streamClearlyNonEnglish(stream)
+              if (config.englishStreamMode === 'require' && !hasEnglishAudio(audioLanguages) && !allowsUndetermined) {
                 app.log.info(`play: skipping ${resolved.filename}, no English audio detected`)
                 continue
               }
@@ -176,6 +211,7 @@ async function resolveAndRedirect(
             }
           }
           app.log.info(`play: RD resolved ${resolved.filename} → ${resolved.url.slice(0, 80)}…`)
+          clearFailedPlay(cacheKey)
           return reply.redirect(resolved.url, 302)
         } catch (err) {
           if (err instanceof NotCachedError) {
@@ -188,13 +224,16 @@ async function resolveAndRedirect(
       }
     }
     app.log.warn(`play: no usable RD-cached stream found for ${label}`)
+    cacheFailedPlay(cacheKey, 'No cached stream available')
     return reply.code(404).send({ error: 'No cached stream available', message: 'No Cached Streams Found' })
   }
   const best = streams[0]
   if (!best?.url) {
+    cacheFailedPlay(cacheKey, 'No streams found')
     return reply.code(404).send({ error: 'No usable stream available', message: 'No Streams Found' })
   }
   app.log.info(`play: fallback direct → ${best.url.slice(0, 80)}…`)
+  clearFailedPlay(cacheKey)
   return reply.redirect(best.url, 302)
 }
 
@@ -206,12 +245,18 @@ app.get('/play/:imdbId', async (req, reply) => {
     app.log.warn(`play: rejected unsigned or expired playback request for ${imdbId}`)
     return reply.code(401).send({ error: 'Unauthorized' })
   }
+  const failedReason = getFailedPlayReason(playPath)
+  if (failedReason) {
+    app.log.info(`play: cached miss for ${imdbId} (${failedReason})`)
+    return reply.code(404).send({ error: failedReason, message: 'No Streams Found' })
+  }
   app.log.info(`play: resolving stream for ${imdbId}`)
   try {
     const streams = await fetchRankedStreams(imdbId)
-    return resolveAndRedirect(streams, imdbId, reply as never)
+    return resolveAndRedirect(streams, imdbId, playPath, reply as never)
   } catch (err) {
     app.log.warn(`play: no stream for ${imdbId}: ${err}`)
+    cacheFailedPlay(playPath, 'No streams found')
     return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
   }
 })
@@ -224,15 +269,21 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
     app.log.warn(`play: rejected unsigned or expired episode playback request for ${imdbId} S${season}E${episode}`)
     return reply.code(401).send({ error: 'Unauthorized' })
   }
+  const failedReason = getFailedPlayReason(playPath)
+  if (failedReason) {
+    app.log.info(`play: cached miss for ${imdbId} S${season}E${episode} (${failedReason})`)
+    return reply.code(404).send({ error: failedReason, message: 'No Streams Found' })
+  }
   const s = parseInt(season)
   const e = parseInt(episode)
   app.log.info(`play: resolving episode stream for ${imdbId} S${s}E${e}`)
   try {
     const show = getShowByImdbId(imdbId)
     const streams = await fetchRankedEpisodeStreams(imdbId, s, e, show?.year || undefined)
-    return resolveAndRedirect(streams, `${imdbId} S${s}E${e}`, reply as never, `s${pad2(s)}e${pad2(e)}`)
+    return resolveAndRedirect(streams, `${imdbId} S${s}E${e}`, playPath, reply as never, `s${pad2(s)}e${pad2(e)}`)
   } catch (err) {
     app.log.warn(`play: no stream for ${imdbId} S${s}E${e}: ${err}`)
+    cacheFailedPlay(playPath, 'No streams found')
     return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
   }
 })

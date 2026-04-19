@@ -24,6 +24,7 @@ export const config = {
   host:       process.env.HOST ?? '0.0.0.0',
   dbPath:     process.env.DATABASE_PATH ?? '/app/data/fetcherr.db',
   tmdbApiKey: process.env.TMDB_API_KEY ?? '',
+  tvdbApiKey: process.env.TVDB_API_KEY ?? '',
   sootioUrl:  normalizeSootioUrl(process.env.AIOSTREAM_URL ?? process.env.SOOTIO_URL ?? ''),
   serverName: process.env.SERVER_NAME ?? 'Fetcherr',
   serverId:   process.env.SERVER_ID  ?? 'fetcherr-001',

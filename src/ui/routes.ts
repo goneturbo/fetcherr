@@ -345,6 +345,7 @@ export async function uiRoutes(app: FastifyInstance) {
     hasSootioUrl:      !!getSetting('sootioUrl'),
     hasRdApiKey:       !!getSetting('rdApiKey'),
     hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
+    hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
     hasTraktClientSecret: !!getSetting('traktClientSecret'),
   }))
 
@@ -364,7 +365,7 @@ export async function uiRoutes(app: FastifyInstance) {
   app.post('/ui/settings-data', async (req) => {
     const body = (req.body ?? {}) as Record<string, string | string[]>
     const editable: (keyof typeof config)[] = [
-      'sootioUrl', 'rdApiKey', 'tmdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret',
+      'sootioUrl', 'rdApiKey', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret',
     ]
     for (const key of editable) {
       if (typeof body[key] === 'string') {

@@ -195,6 +195,16 @@
     </div>
   </div>
 
+  <!-- TVDB -->
+  <div class="section">
+    <div class="section-title">TVDB <span class="optional-tag">Optional</span></div>
+    <div class="field">
+      <label for="tvdbApiKey">API Key</label>
+      <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key">
+      <div class="field-note">Optional fallback for missing TV episode thumbnails when TMDB has no still image.</div>
+    </div>
+  </div>
+
   <!-- Server -->
   <div class="section">
     <div class="section-title">Server</div>
@@ -248,6 +258,7 @@
   let selectedTraktLists = []
   let hasStoredRdApiKey = false
   let hasStoredTmdbApiKey = false
+  let hasStoredTvdbApiKey = false
   let hasStoredTraktClientSecret = false
 
   function providerPlaceholder(idx) {
@@ -317,12 +328,14 @@
     const d = await res.json()
     hasStoredRdApiKey = !!d.hasRdApiKey
     hasStoredTmdbApiKey = !!d.hasTmdbApiKey
+    hasStoredTvdbApiKey = !!d.hasTvdbApiKey
     hasStoredTraktClientSecret = !!d.hasTraktClientSecret
     document.getElementById('sootioUrl').value         = d.sootioUrl         || ''
     renderProviderRows((d.streamProviderUrls || '').split('\n').map(v => v.trim()).filter(Boolean))
     document.getElementById('englishStreamMode').value = d.englishStreamMode || 'prefer'
     document.getElementById('rdApiKey').value          = ''
     document.getElementById('tmdbApiKey').value        = ''
+    document.getElementById('tvdbApiKey').value        = ''
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
     document.getElementById('traktClientSecret').value = ''
@@ -449,6 +462,7 @@
   async function saveSettings() {
     const rdApiKey = document.getElementById('rdApiKey').value
     const tmdbApiKey = document.getElementById('tmdbApiKey').value
+    const tvdbApiKey = document.getElementById('tvdbApiKey').value
     const traktClientSecret = document.getElementById('traktClientSecret').value
     const body = {
       sootioUrl:         document.getElementById('sootioUrl').value,
@@ -459,6 +473,7 @@
       traktLists:        selectedTraktLists,
       ...(rdApiKey ? { rdApiKey } : {}),
       ...(tmdbApiKey ? { tmdbApiKey } : {}),
+      ...(tvdbApiKey ? { tvdbApiKey } : {}),
       ...(traktClientSecret ? { traktClientSecret } : {}),
     }
     const res = await fetch('/ui/settings-data', {

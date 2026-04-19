@@ -27,6 +27,7 @@ export interface Show {
   id:           number
   tmdbId:       number
   imdbId:       string
+  tvdbId:       number
   title:        string
   year:         number
   overview:     string
@@ -115,6 +116,7 @@ CREATE TABLE IF NOT EXISTS shows (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   tmdb_id        INTEGER NOT NULL UNIQUE,
   imdb_id        TEXT    NOT NULL DEFAULT '',
+  tvdb_id        INTEGER NOT NULL DEFAULT 0,
   title          TEXT    NOT NULL,
   year           INTEGER NOT NULL DEFAULT 0,
   overview       TEXT    NOT NULL DEFAULT '',
@@ -222,6 +224,7 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE shows ADD COLUMN community_rating REAL NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE shows ADD COLUMN studios_json TEXT NOT NULL DEFAULT '[]'`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE shows ADD COLUMN tags_json TEXT NOT NULL DEFAULT '[]'`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE shows ADD COLUMN tvdb_id INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`CREATE INDEX IF NOT EXISTS shows_imdb_id ON shows(imdb_id)`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE episodes ADD COLUMN community_rating REAL NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
@@ -444,6 +447,7 @@ function row2show(r: Record<string, unknown>): Show {
     id:           r.id            as number,
     tmdbId:       r.tmdb_id       as number,
     imdbId:       r.imdb_id       as string,
+    tvdbId:       (r.tvdb_id as number) ?? 0,
     title:        r.title         as string,
     year:         r.year          as number,
     overview:     r.overview      as string,
@@ -464,10 +468,11 @@ function row2show(r: Record<string, unknown>): Show {
 
 export function upsertShow(s: Omit<Show, 'id'>): void {
   getDb().prepare(`
-    INSERT INTO shows (tmdb_id, imdb_id, title, year, overview, poster_path, backdrop_path, logo_path, genres, status, num_seasons, popularity, official_rating, community_rating, studios_json, tags_json, synced_at)
-    VALUES (@tmdbId, @imdbId, @title, @year, @overview, @posterPath, @backdropPath, @logoPath, @genres, @status, @numSeasons, @popularity, @officialRating, @communityRating, @studiosJson, @tagsJson, COALESCE(NULLIF(@syncedAt, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')))
+    INSERT INTO shows (tmdb_id, imdb_id, tvdb_id, title, year, overview, poster_path, backdrop_path, logo_path, genres, status, num_seasons, popularity, official_rating, community_rating, studios_json, tags_json, synced_at)
+    VALUES (@tmdbId, @imdbId, @tvdbId, @title, @year, @overview, @posterPath, @backdropPath, @logoPath, @genres, @status, @numSeasons, @popularity, @officialRating, @communityRating, @studiosJson, @tagsJson, COALESCE(NULLIF(@syncedAt, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')))
     ON CONFLICT(tmdb_id) DO UPDATE SET
       imdb_id      = excluded.imdb_id,
+      tvdb_id      = excluded.tvdb_id,
       title        = excluded.title,
       year         = excluded.year,
       overview     = excluded.overview,
