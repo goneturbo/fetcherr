@@ -3,7 +3,7 @@ import {
   upsertMovie, getMovieByTmdbId, type Movie,
   upsertShow, getShowByTmdbId, type Show,
   upsertSeason, getSeasonsForShow, type Season,
-  upsertEpisode, type Episode, getAiredEpisodesForSeason,
+  upsertEpisode, type Episode, getAiredEpisodesForSeason, getEffectiveShowMode,
 } from './db.js'
 import { fetchEpisodeStillFallbacks } from './tvdb.js'
 
@@ -453,7 +453,12 @@ export async function refreshShowMetadataIfNeeded(show: Show): Promise<void> {
 export async function ensureShowSeasonsCached(show: Show): Promise<void> {
   const cached = getSeasonsForShow(show.tmdbId)
   const cachedNums = new Set(cached.map(s => s.seasonNumber))
-  for (let n = 1; n <= show.numSeasons; n++) {
+  const showMode = getEffectiveShowMode(show.tmdbId)
+  const seasonNumbers = showMode.mode === 'latest'
+    ? [showMode.activeSeasonNumber || show.numSeasons].filter(n => n > 0)
+    : Array.from({ length: show.numSeasons }, (_, idx) => idx + 1)
+
+  for (const n of seasonNumbers) {
     if (!cachedNums.has(n)) {
       await fetchAndCacheSeasonDetails(show.tmdbId, n)
       continue
