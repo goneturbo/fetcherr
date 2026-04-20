@@ -44,11 +44,13 @@ const ROOT_FOLDER_ART: Record<string, string> = {
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
+const IMAGE_PROXY_TTL_MS = 60 * 60 * 1000
 const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const LOGIN_MAX_ATTEMPTS = 10
 const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
+const proxiedImageCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>()
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
@@ -160,6 +162,43 @@ function loginRateState(ip: string) {
     return fresh
   }
   return existing
+}
+
+async function fetchProxiedImage(url: string): Promise<{ buffer: Buffer; contentType: string } | null> {
+  const now = Date.now()
+  const cached = proxiedImageCache.get(url)
+  if (cached && cached.expiresAt > now) {
+    return { buffer: cached.buffer, contentType: cached.contentType }
+  }
+
+  try {
+    const res = await fetch(url, {
+      redirect: 'follow',
+      headers: {
+        'user-agent': 'Fetcherr/1.0',
+        'accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
+      },
+    })
+    if (!res.ok) return null
+
+    const arrayBuffer = await res.arrayBuffer()
+    const buffer = Buffer.from(arrayBuffer)
+    const contentType = res.headers.get('content-type') || 'image/jpeg'
+    proxiedImageCache.set(url, { buffer, contentType, expiresAt: now + IMAGE_PROXY_TTL_MS })
+    return { buffer, contentType }
+  } catch {
+    return null
+  }
+}
+
+async function sendImageUrl(reply: FastifyReply, pathOrUrl: string | undefined): Promise<FastifyReply> {
+  if (!pathOrUrl) return reply.code(404).send()
+  const url = posterUrl(pathOrUrl)
+  const proxied = await fetchProxiedImage(url)
+  if (!proxied) return reply.code(404).send()
+  reply.header('Cache-Control', 'public, max-age=3600')
+  reply.type(proxied.contentType)
+  return reply.send(proxied.buffer)
 }
 
 function parseJsonArray<T>(value: string): T[] {
@@ -1213,7 +1252,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     })
   })
 
-  // Images — redirect to TMDB CDN for movies, series, seasons, and episode stills
+  // Images — proxy TMDB/TVDB bytes so clients don't need to follow external redirects
   // Jellyfin image URL can be /Items/:id/Images/:type OR /Items/:id/Images/:type/:index
   async function handleImage(
     id: string,
@@ -1235,14 +1274,14 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const epRef = idToEpisode(id)
     if (epRef) {
       const show = getShowByTmdbId(epRef.showTmdbId)
-      if (isLogo && show?.logoPath) return reply.redirect(posterUrl(show.logoPath), 307)
+      if (isLogo && show?.logoPath) return sendImageUrl(reply, show.logoPath)
       const eps = getEpisodesForSeason(epRef.showTmdbId, epRef.seasonNum)
       const ep = eps.find(e => e.episodeNumber === epRef.episodeNum)
       const season = getSeason(epRef.showTmdbId, epRef.seasonNum)
-      if (isThumb && show?.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
-      if (ep?.stillPath) return reply.redirect(posterUrl(ep.stillPath), 307)
-      if (season?.posterPath) return reply.redirect(posterUrl(season.posterPath), 307)
-      if (show?.posterPath) return reply.redirect(posterUrl(show.posterPath), 307)
+      if (isThumb && show?.backdropPath) return sendImageUrl(reply, show.backdropPath)
+      if (ep?.stillPath) return sendImageUrl(reply, ep.stillPath)
+      if (season?.posterPath) return sendImageUrl(reply, season.posterPath)
+      if (show?.posterPath) return sendImageUrl(reply, show.posterPath)
       return reply.code(404).send()
     }
 
@@ -1251,10 +1290,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchShowTmdbId) {
       const show = await fetchShowByTmdbId(searchShowTmdbId)
       if (!show) return reply.code(404).send()
-      if (isLogo && show.logoPath) return reply.redirect(posterUrl(show.logoPath), 307)
-      if (isThumb && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
-      if (isBackdrop && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
-      if (show.posterPath) return reply.redirect(posterUrl(show.posterPath), 307)
+      if (isLogo && show.logoPath) return sendImageUrl(reply, show.logoPath)
+      if (isThumb && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
+      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
+      if (show.posterPath) return sendImageUrl(reply, show.posterPath)
       return reply.code(404).send()
     }
 
@@ -1262,10 +1301,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (showTmdbId) {
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send()
-      if (isLogo && show.logoPath) return reply.redirect(posterUrl(show.logoPath), 307)
-      if (isThumb && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
-      if (isBackdrop && show.backdropPath) return reply.redirect(posterUrl(show.backdropPath), 307)
-      if (show.posterPath) return reply.redirect(posterUrl(show.posterPath), 307)
+      if (isLogo && show.logoPath) return sendImageUrl(reply, show.logoPath)
+      if (isThumb && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
+      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
+      if (show.posterPath) return sendImageUrl(reply, show.posterPath)
       return reply.code(404).send()
     }
 
@@ -1277,9 +1316,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         await fetchAndCacheSeasonDetails(seasonRef.showTmdbId, seasonRef.seasonNum).catch(() => {})
         season = getSeason(seasonRef.showTmdbId, seasonRef.seasonNum)
       }
-      if (season?.posterPath) return reply.redirect(posterUrl(season.posterPath), 307)
+      if (season?.posterPath) return sendImageUrl(reply, season.posterPath)
       const show = getShowByTmdbId(seasonRef.showTmdbId)
-      if (show?.posterPath) return reply.redirect(posterUrl(show.posterPath), 307)
+      if (show?.posterPath) return sendImageUrl(reply, show.posterPath)
       return reply.code(404).send()
     }
 
@@ -1288,20 +1327,20 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchMovieTmdbId) {
       const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
       if (!movie) return reply.code(404).send()
-      if (isLogo && movie.logoPath) return reply.redirect(posterUrl(movie.logoPath), 307)
-      if (isThumb && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
-      if (isBackdrop && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
-      if (movie.posterPath) return reply.redirect(posterUrl(movie.posterPath), 307)
+      if (isLogo && movie.logoPath) return sendImageUrl(reply, movie.logoPath)
+      if (isThumb && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
+      if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
+      if (movie.posterPath) return sendImageUrl(reply, movie.posterPath)
       return reply.code(404).send()
     }
 
     const tmdbId = idToTmdb(id)
     const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
     if (!movie) return reply.code(404).send()
-      if (isLogo && movie.logoPath) return reply.redirect(posterUrl(movie.logoPath), 307)
-      if (isThumb && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
-      if (isBackdrop && movie.backdropPath) return reply.redirect(posterUrl(movie.backdropPath), 307)
-    if (movie.posterPath) return reply.redirect(posterUrl(movie.posterPath), 307)
+    if (isLogo && movie.logoPath) return sendImageUrl(reply, movie.logoPath)
+    if (isThumb && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
+    if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
+    if (movie.posterPath) return sendImageUrl(reply, movie.posterPath)
     return reply.code(404).send()
   }
 
