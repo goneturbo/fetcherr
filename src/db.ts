@@ -347,12 +347,79 @@ function addDaysIso(date: string, days: number): string {
   return d.toISOString().slice(0, 10)
 }
 
-function sortColumn(sortBy?: string): string {
-  if (['SortName', 'title'].includes(sortBy ?? '')) {
-    return "trim(case when lower(title) like 'the %' then substr(title, 5) when lower(title) like 'an %' then substr(title, 4) when lower(title) like 'a %' then substr(title, 3) else title end) collate nocase"
+function normalizeSortBy(sortBy?: string): string {
+  return (sortBy ?? '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase()
+}
+
+type SortSpec = {
+  expr: string
+  directional: boolean
+}
+
+function movieSortSpec(sortBy?: string): SortSpec {
+  const normalized = normalizeSortBy(sortBy)
+  if (['sortname', 'title'].includes(normalized)) {
+    return {
+      expr: "trim(case when lower(title) like 'the %' then substr(title, 5) when lower(title) like 'an %' then substr(title, 4) when lower(title) like 'a %' then substr(title, 3) else title end) collate nocase",
+      directional: true,
+    }
   }
-  if (['ProductionYear', 'year'].includes(sortBy ?? '')) return 'year'
-  return 'popularity'
+  if (['productionyear', 'year'].includes(normalized)) return { expr: 'year', directional: true }
+  if (['communityrating', 'imdbrating', 'rating'].includes(normalized)) return { expr: 'community_rating', directional: true }
+  if (['officialrating', 'parentalrating'].includes(normalized)) return { expr: 'official_rating collate nocase', directional: true }
+  if (['releasedate', 'premieredate', 'datecreated'].includes(normalized)) return { expr: "coalesce(nullif(release_date, ''), nullif(digital_release_date, ''), '')", directional: true }
+  if (['dateshowadded', 'dateadded', 'addeddate'].includes(normalized)) return { expr: 'synced_at', directional: true }
+  if (['dateplayed', 'lastplayeddate'].includes(normalized)) {
+    return {
+      expr: `(SELECT last_played_date FROM user_data WHERE item_id = ('00000000-0000-4000-8000-' || lower(printf('%012x', movies.tmdb_id))))`,
+      directional: true,
+    }
+  }
+  if (normalized === 'random') return { expr: 'random()', directional: false }
+  return { expr: 'popularity', directional: true }
+}
+
+function showSortSpec(sortBy?: string): SortSpec {
+  const normalized = normalizeSortBy(sortBy)
+  if (['sortname', 'title'].includes(normalized)) {
+    return {
+      expr: "trim(case when lower(title) like 'the %' then substr(title, 5) when lower(title) like 'an %' then substr(title, 4) when lower(title) like 'a %' then substr(title, 3) else title end) collate nocase",
+      directional: true,
+    }
+  }
+  if (['productionyear', 'year', 'releasedate', 'premieredate'].includes(normalized)) return { expr: 'year', directional: true }
+  if (['communityrating', 'imdbrating', 'rating'].includes(normalized)) return { expr: 'community_rating', directional: true }
+  if (['officialrating', 'parentalrating'].includes(normalized)) return { expr: 'official_rating collate nocase', directional: true }
+  if (['dateshowadded', 'dateadded', 'addeddate'].includes(normalized)) return { expr: 'synced_at', directional: true }
+  if (['dateepisodeadded', 'episodeaddeddate'].includes(normalized)) {
+    return {
+      expr: `(SELECT max(e.synced_at) FROM episodes e WHERE e.show_tmdb_id = shows.tmdb_id)`,
+      directional: true,
+    }
+  }
+  if (['dateplayed', 'lastplayeddate'].includes(normalized)) {
+    return {
+      expr: `(SELECT max(u.last_played_date)
+        FROM user_data u
+        JOIN episodes e
+          ON u.item_id = ('00000000-0000-4000-8003-' || lower(printf('%06x%03x%03x', e.show_tmdb_id, e.season_number, e.episode_number)))
+       WHERE e.show_tmdb_id = shows.tmdb_id)`,
+      directional: true,
+    }
+  }
+  if (normalized === 'random') return { expr: 'random()', directional: false }
+  return { expr: 'popularity', directional: true }
+}
+
+function sortDirection(sortOrder?: string): 'ASC' | 'DESC' {
+  const normalized = (sortOrder ?? '')
+    .split(',')[0]
+    .trim()
+    .toLowerCase()
+  return normalized === 'asc' || normalized === 'ascending' ? 'ASC' : 'DESC'
 }
 
 function movieAvailabilityWhere(availableOnly: boolean): string {
@@ -410,17 +477,17 @@ function showAvailabilityWhere(availableOnly: boolean): string {
 export function listMovies(opts: ListOpts = {}): Movie[] {
   const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false } = opts
 
-  const col = sortColumn(sortBy)
-  const dir = (sortOrder ?? '').toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  const sortSpec = movieSortSpec(sortBy)
+  const orderClause = sortSpec.directional ? `${sortSpec.expr} ${sortDirection(sortOrder)}` : sortSpec.expr
   const baseWhere = movieAvailabilityWhere(availableOnly)
 
   if (search) {
     return (getDb().prepare(
-      `SELECT * FROM movies ${baseWhere}${baseWhere ? ' AND' : ' WHERE'} title LIKE ? ORDER BY ${col} ${dir} LIMIT ? OFFSET ?`
+      `SELECT * FROM movies ${baseWhere}${baseWhere ? ' AND' : ' WHERE'} title LIKE ? ORDER BY ${orderClause} LIMIT ? OFFSET ?`
     ).all(`%${search}%`, limit, offset) as Record<string, unknown>[]).map(row2movie)
   }
   return (getDb().prepare(
-    `SELECT * FROM movies ${baseWhere} ORDER BY ${col} ${dir} LIMIT ? OFFSET ?`
+    `SELECT * FROM movies ${baseWhere} ORDER BY ${orderClause} LIMIT ? OFFSET ?`
   ).all(limit, offset) as Record<string, unknown>[]).map(row2movie)
 }
 
@@ -492,16 +559,16 @@ export function upsertShow(s: Omit<Show, 'id'>): void {
 
 export function listShows(opts: ListOpts = {}): Show[] {
   const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false } = opts
-  const col = sortColumn(sortBy)
-  const dir = (sortOrder ?? '').toLowerCase() === 'asc' ? 'ASC' : 'DESC'
+  const sortSpec = showSortSpec(sortBy)
+  const orderClause = sortSpec.directional ? `${sortSpec.expr} ${sortDirection(sortOrder)}` : sortSpec.expr
   const baseWhere = showAvailabilityWhere(availableOnly)
   if (search) {
     return (getDb().prepare(
-      `SELECT * FROM shows ${baseWhere}${baseWhere ? ' AND' : ' WHERE'} title LIKE ? ORDER BY ${col} ${dir} LIMIT ? OFFSET ?`
+      `SELECT * FROM shows ${baseWhere}${baseWhere ? ' AND' : ' WHERE'} title LIKE ? ORDER BY ${orderClause} LIMIT ? OFFSET ?`
     ).all(`%${search}%`, limit, offset) as Record<string, unknown>[]).map(row2show)
   }
   return (getDb().prepare(
-    `SELECT * FROM shows ${baseWhere} ORDER BY ${col} ${dir} LIMIT ? OFFSET ?`
+    `SELECT * FROM shows ${baseWhere} ORDER BY ${orderClause} LIMIT ? OFFSET ?`
   ).all(limit, offset) as Record<string, unknown>[]).map(row2show)
 }
 

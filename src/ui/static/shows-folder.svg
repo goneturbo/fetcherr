@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" fill="none">
+  <defs>
+    <linearGradient id="bg" x1="143" y1="88" x2="1052" y2="590" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#0F172A"/>
+      <stop offset="1" stop-color="#08111F"/>
+    </linearGradient>
+    <linearGradient id="panel" x1="287" y1="135" x2="923" y2="522" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#14B8A6"/>
+      <stop offset="1" stop-color="#0EA5E9"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" rx="40" fill="url(#bg)"/>
+  <circle cx="160" cy="144" r="132" fill="#0B1220" fill-opacity=".7"/>
+  <circle cx="1044" cy="548" r="164" fill="#132033" fill-opacity=".64"/>
+  <rect x="216" y="120" width="768" height="434" rx="36" fill="url(#panel)"/>
+  <rect x="252" y="156" width="696" height="362" rx="24" fill="#07111E" fill-opacity=".9"/>
+  <rect x="294" y="198" width="612" height="22" rx="11" fill="#99F6E4" fill-opacity=".85"/>
+  <rect x="294" y="452" width="244" height="22" rx="11" fill="#67E8F9" fill-opacity=".68"/>
+  <rect x="294" y="242" width="182" height="162" rx="18" fill="#14B8A6" fill-opacity=".18"/>
+  <rect x="506" y="242" width="182" height="162" rx="18" fill="#0EA5E9" fill-opacity=".18"/>
+  <rect x="718" y="242" width="146" height="162" rx="18" fill="#22D3EE" fill-opacity=".18"/>
+  <path d="M337 294H433" stroke="#99F6E4" stroke-width="18" stroke-linecap="round"/>
+  <path d="M337 352H402" stroke="#67E8F9" stroke-width="18" stroke-linecap="round"/>
+  <path d="M548 294H645" stroke="#99F6E4" stroke-width="18" stroke-linecap="round"/>
+  <path d="M548 352H626" stroke="#67E8F9" stroke-width="18" stroke-linecap="round"/>
+  <path d="M748 294H828" stroke="#99F6E4" stroke-width="18" stroke-linecap="round"/>
+  <path d="M748 352H804" stroke="#67E8F9" stroke-width="18" stroke-linecap="round"/>
+  <text x="215" y="632" fill="#ECFEFF" font-family="ui-sans-serif, system-ui, sans-serif" font-size="88" font-weight="700" letter-spacing="-2">Shows</text>
+</svg>

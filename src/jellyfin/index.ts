@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { createHash } from 'node:crypto'
+import { readFileSync, existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { config } from '../config.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
@@ -34,6 +37,11 @@ const USER_ID          = 'a0000000-0000-0000-0000-000000000002'
 
 // Keep old name as alias so existing code still compiles
 const FOLDER_ID = MOVIES_FOLDER_ID
+const __dir = dirname(fileURLToPath(import.meta.url))
+const ROOT_FOLDER_ART: Record<string, string> = {
+  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.svg'),
+  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.svg'),
+}
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
@@ -405,6 +413,10 @@ function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
   return items.slice(offset, offset + limit)
 }
 
+function rootFolderImageTags(id: string) {
+  return ROOT_FOLDER_ART[id] ? { Primary: 'root' } : {}
+}
+
 function compareEpisodeOrder(a: Pick<Episode, 'seasonNumber' | 'episodeNumber'>, b: Pick<Episode, 'seasonNumber' | 'episodeNumber'>): number {
   if (a.seasonNumber !== b.seasonNumber) return a.seasonNumber - b.seasonNumber
   return a.episodeNumber - b.episodeNumber
@@ -685,7 +697,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           ServerId:           SERVER_GUID,
           Type:               'CollectionFolder',
           CollectionType:     'movies',
-          ImageTags:          {},
+          ImageTags:          rootFolderImageTags(MOVIES_FOLDER_ID),
           IsFolder:           true,
           ChildCount:         countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
           RecursiveItemCount: countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
@@ -697,7 +709,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           ServerId:           SERVER_GUID,
           Type:               'CollectionFolder',
           CollectionType:     'tvshows',
-          ImageTags:          {},
+          ImageTags:          rootFolderImageTags(SHOWS_FOLDER_ID),
           IsFolder:           true,
           ChildCount:         countShows(undefined, API_LIBRARY_FILTER.availableOnly),
           RecursiveItemCount: countShows(undefined, API_LIBRARY_FILTER.availableOnly),
@@ -818,13 +830,13 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           {
             Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Movies',
             Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true,
-            ChildCount: nMovies, RecursiveItemCount: nMovies, ImageTags: {},
+            ChildCount: nMovies, RecursiveItemCount: nMovies, ImageTags: rootFolderImageTags(MOVIES_FOLDER_ID),
             UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
           },
           {
             Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Shows',
             Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true,
-            ChildCount: nShows, RecursiveItemCount: nShows, ImageTags: {},
+            ChildCount: nShows, RecursiveItemCount: nShows, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
             UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
           },
         ],
@@ -837,6 +849,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (includeTypes.includes('season') || includeTypes.includes('episode')) {
       return { Items: [], TotalRecordCount: 0, StartIndex: offset }
     }
+    if (SearchTerm) {
+      return buildSearchResultItems(SearchTerm, 'movie', SortBy, SortOrder, limit, offset)
+    }
     const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
     const total  = countMovies(SearchTerm, API_LIBRARY_FILTER.availableOnly)
     return { Items: movies.map(movieToItem), TotalRecordCount: total, StartIndex: offset }
@@ -844,6 +859,30 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
   app.get('/Items',           async (req) => handleItems(req as never))
   app.get('/Users/:id/Items', async (req) => handleItems(req as never))
+
+  async function handleSearchHints(req: { query: Record<string, string> }) {
+    const q: Record<string, string> = {}
+    for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
+
+    const SearchTerm = q.searchterm ?? q.term ?? ''
+    const includeTypes = (q.includeitemtypes ?? '').toLowerCase()
+    const limit = q.limit ? parseInt(q.limit, 10) : 20
+    const offset = parseInt(q.startindex ?? '0', 10)
+
+    if (!SearchTerm.trim()) {
+      return { SearchHints: [], TotalRecordCount: 0 }
+    }
+
+    const results = await buildSearchResultItems(SearchTerm, includeTypes, undefined, undefined, limit, offset)
+    return {
+      SearchHints: results.Items,
+      TotalRecordCount: results.TotalRecordCount,
+    }
+  }
+
+  app.get('/Search/Hints', async (req) => handleSearchHints(req as never))
+  app.get('/Users/:id/Search/Hints', async (req) => handleSearchHints(req as never))
+
   app.get('/Shows/NextUp', async (req) => {
     const rawQuery = (req as never as { query: Record<string, string> }).query
     const q: Record<string, string> = {}
@@ -918,14 +957,14 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       const n = countMovies(undefined, API_LIBRARY_FILTER.availableOnly)
       return { Name: 'Movies', Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true, Path: '/movies',
-        RecursiveItemCount: n, ChildCount: n, ImageTags: {},
+        RecursiveItemCount: n, ChildCount: n, ImageTags: rootFolderImageTags(MOVIES_FOLDER_ID),
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID } }
     }
     if (id === SHOWS_FOLDER_ID) {
       const n = countShows(undefined, API_LIBRARY_FILTER.availableOnly)
       return { Name: 'Shows', Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true, Path: '/shows',
-        RecursiveItemCount: n, ChildCount: n, ImageTags: {},
+        RecursiveItemCount: n, ChildCount: n, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID } }
     }
 
@@ -1050,6 +1089,11 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const isBackdrop = type.toLowerCase() === 'backdrop'
     const isLogo = type.toLowerCase() === 'logo'
     const isThumb = type.toLowerCase() === 'thumb'
+    const rootFolderArt = ROOT_FOLDER_ART[id]
+    if (rootFolderArt && existsSync(rootFolderArt)) {
+      reply.type('image/svg+xml')
+      return reply.send(readFileSync(rootFolderArt))
+    }
 
     // Episode primary/backdrop still → fall back to season poster → series poster
     const epRef = idToEpisode(id)
