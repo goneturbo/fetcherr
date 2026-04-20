@@ -1,34 +1,47 @@
 import { randomBytes } from 'crypto'
 import { config } from '../config.js'
+import { authEnabled, getUserById, verifyUserCredentials, type AppUser } from '../db.js'
 
-// In-memory session store: token → expiry timestamp (ms)
-const sessions = new Map<string, number>()
+type SessionRecord = { userId: string; expiresAt: number }
+
+// In-memory session store: token → { userId, expiry }
+const sessions = new Map<string, SessionRecord>()
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 
-export function createSession(): string {
+export function createSession(userId: string): string {
   const token = randomBytes(32).toString('hex')
-  sessions.set(token, Date.now() + SESSION_TTL_MS)
+  sessions.set(token, { userId, expiresAt: Date.now() + SESSION_TTL_MS })
   return token
 }
 
 export function isValidSession(token: string): boolean {
-  const expiry = sessions.get(token)
-  if (!expiry) return false
-  if (Date.now() > expiry) {
+  const session = sessions.get(token)
+  if (!session) return false
+  if (Date.now() > session.expiresAt) {
     sessions.delete(token)
     return false
   }
   return true
 }
 
+export function getSessionUser(token: string): AppUser | null {
+  const session = sessions.get(token)
+  if (!session) return null
+  if (Date.now() > session.expiresAt) {
+    sessions.delete(token)
+    return null
+  }
+  return getUserById(session.userId)
+}
+
 export function deleteSession(token: string): void {
   sessions.delete(token)
 }
 
-export function checkCredentials(username: string, password: string): boolean {
-  if (!config.uiPassword) return false
-  return username === config.uiUsername && password === config.uiPassword
+export function checkCredentials(username: string, password: string): AppUser | null {
+  if (!authEnabled()) return null
+  return verifyUserCredentials(username, password)
 }
 
 function shouldUseSecureCookie(headers: Record<string, string | undefined>): boolean {
@@ -59,4 +72,8 @@ export function getTokenFromCookie(cookieHeader: string | undefined): string | n
   if (!cookieHeader) return null
   const match = cookieHeader.match(/(?:^|;\s*)infuse_session=([^;]+)/)
   return match ? match[1] : null
+}
+
+export function isUiAuthConfigured(): boolean {
+  return authEnabled() || !!config.uiPassword
 }

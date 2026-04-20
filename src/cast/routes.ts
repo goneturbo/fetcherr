@@ -1,6 +1,8 @@
 import type { FastifyInstance } from 'fastify'
 import { resolveStream, NotCachedError } from '../rd.js'
 import { saveCastItem, getCastItem, listCastItems, deleteCastItem } from './db.js'
+import { getTokenFromCookie, getSessionUser } from '../ui/auth.js'
+import { resolveJellyfinUser } from '../jellyfin/index.js'
 
 // ── Helper ─────────────────────────────────────────────────────────────────────
 
@@ -10,6 +12,25 @@ function requireToken(token: unknown, reply: { code: (n: number) => { send: (v: 
     return false
   }
   return true
+}
+
+function cookieHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function requireAuthenticatedUser(
+  headers: Record<string, string | string[] | undefined>,
+  reply: { code: (n: number) => { send: (v: unknown) => unknown } },
+) {
+  const sessionToken = getTokenFromCookie(cookieHeaderValue(headers.cookie))
+  if (sessionToken) {
+    const user = getSessionUser(sessionToken)
+    if (user) return user
+  }
+  const jellyfinUser = resolveJellyfinUser(headers)
+  if (jellyfinUser) return jellyfinUser
+  reply.code(401).send({ error: 'Unauthorized' })
+  return null
 }
 
 // ── Routes ─────────────────────────────────────────────────────────────────────
@@ -28,6 +49,7 @@ export async function castRoutes(app: FastifyInstance) {
     const { token }  = req.query  as { token?: string }
     const body       = req.body   as { hash?: string; fileUrl?: string; sizeMb?: number; url?: string }
 
+    if (!requireAuthenticatedUser(req.headers, reply as never)) return
     if (!requireToken(token, reply as never)) return
     if (!body?.hash) return reply.code(400).send({ error: 'hash is required' })
 
@@ -50,6 +72,7 @@ export async function castRoutes(app: FastifyInstance) {
    */
   app.get('/api/cast/links', async (req, reply) => {
     const { token } = req.query as { token?: string }
+    if (!requireAuthenticatedUser(req.headers, reply as never)) return
     if (!requireToken(token, reply as never)) return
     return listCastItems(token as string)
   })
@@ -63,6 +86,7 @@ export async function castRoutes(app: FastifyInstance) {
    */
   app.get('/api/cast/play', async (req, reply) => {
     const { token, imdbId } = req.query as { token?: string; imdbId?: string }
+    if (!requireAuthenticatedUser(req.headers, reply as never)) return
     if (!requireToken(token, reply as never)) return
     if (!imdbId) return reply.code(400).send({ error: 'imdbId is required' })
 
@@ -94,6 +118,7 @@ export async function castRoutes(app: FastifyInstance) {
   app.post('/api/cast/unrestrict', async (req, reply) => {
     const body = req.body as { hash?: string; magnet?: string; fileUrl?: string }
     const hash = body?.hash ?? body?.magnet
+    if (!requireAuthenticatedUser(req.headers, reply as never)) return
     if (!hash) return reply.code(400).send({ error: 'hash or magnet is required' })
 
     app.log.info(`cast: one-shot unrestrict hash=${hash.slice(0, 12)}...`)
@@ -120,6 +145,7 @@ export async function castRoutes(app: FastifyInstance) {
   app.delete('/api/cast/movie/:imdbId', async (req, reply) => {
     const { imdbId } = req.params as { imdbId: string }
     const { token }  = req.query  as { token?: string }
+    if (!requireAuthenticatedUser(req.headers, reply as never)) return
     if (!requireToken(token, reply as never)) return
     deleteCastItem(token as string, imdbId)
     return reply.code(204).send()

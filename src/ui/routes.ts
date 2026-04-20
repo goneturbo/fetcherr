@@ -10,11 +10,12 @@ import {
   hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
   removeManualShowSubscription, removeSourceItem, setManualMovieAvailabilityOverride,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
+  authEnabled, canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, updateUser,
 } from '../db.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
 import {
-  createSession, isValidSession, deleteSession, checkCredentials,
+  createSession, getSessionUser, isValidSession, deleteSession, checkCredentials, isUiAuthConfigured,
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
@@ -76,6 +77,32 @@ function loginRateState(ip: string) {
   return existing
 }
 
+function cookieHeaderValue(value: string | string[] | undefined): string | undefined {
+  return Array.isArray(value) ? value[0] : value
+}
+
+function currentUiUser(req: { headers: Record<string, string | string[] | undefined> }) {
+  const token = getTokenFromCookie(cookieHeaderValue(req.headers.cookie))
+  if (!token) return null
+  return getSessionUser(token)
+}
+
+function requireAdmin(
+  req: { headers: Record<string, string | string[] | undefined> },
+  reply: { code: (n: number) => { send: (v: unknown) => unknown } },
+) {
+  const user = currentUiUser(req)
+  if (!user) {
+    reply.code(401).send({ error: 'Unauthorized' })
+    return null
+  }
+  if (user.role !== 'admin') {
+    reply.code(403).send({ error: 'Admin access required' })
+    return null
+  }
+  return user
+}
+
 export async function uiRoutes(app: FastifyInstance) {
 
   // ── Static files ──────────────────────────────────────────────────────────
@@ -94,8 +121,8 @@ export async function uiRoutes(app: FastifyInstance) {
   app.get('/ui/login', async (_req, reply) => reply.type('text/html').send(html('login.html')))
 
   app.post('/ui/auth/login', async (req, reply) => {
-    if (!config.uiPassword) {
-      return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+    if (!isUiAuthConfigured()) {
+      return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
     }
     const rateKey = clientIp(req as never)
     const state = loginRateState(rateKey)
@@ -105,9 +132,10 @@ export async function uiRoutes(app: FastifyInstance) {
     const body = req.body as { username?: string; password?: string } | undefined
     const username = body?.username ?? ''
     const password = body?.password ?? ''
-    if (checkCredentials(username, password)) {
+    const user = checkCredentials(username, password)
+    if (user) {
       loginAttempts.delete(rateKey)
-      const token = createSession()
+      const token = createSession(user.id)
       reply.header('Set-Cookie', getSessionCookie(token, req.headers as never))
       return { ok: true }
     }
@@ -124,14 +152,18 @@ export async function uiRoutes(app: FastifyInstance) {
 
   // Auth status — tells the client whether auth is enabled
   app.get('/ui/auth/check', async (req, reply) => {
-    if (!config.uiPassword) {
-      return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+    if (!isUiAuthConfigured()) {
+      return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
     }
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token)) {
       return reply.code(401).send({ error: 'Unauthorized' })
     }
-    return { authEnabled: true }
+    const user = getSessionUser(token)
+    if (!user) {
+      return reply.code(401).send({ error: 'Unauthorized' })
+    }
+    return { authEnabled: true, username: user?.username ?? '', role: user?.role ?? 'user', maxRating: user?.maxRating ?? 'unrestricted' }
   })
 
   // ── Auth middleware for all other /ui/* routes ────────────────────────────
@@ -144,17 +176,17 @@ export async function uiRoutes(app: FastifyInstance) {
       url.startsWith('/ui/static/')
     ) return
 
-    if (!config.uiPassword) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|search|library|trakt)/.test(url)
+    if (!isUiAuthConfigured()) {
+      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
       if (isApiRoute) {
-        return reply.code(503).send({ error: 'UI auth is not configured. Set UI_PASSWORD first.' })
+        return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
       }
-      return reply.code(503).type('text/plain').send('UI auth is not configured. Set UI_PASSWORD first.')
+      return reply.code(503).type('text/plain').send('UI auth is not configured. Create an admin account first.')
     }
 
     const token = getTokenFromCookie(req.headers.cookie)
-    if (!token || !isValidSession(token)) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|search|library)/.test(url)
+    if (!token || !isValidSession(token) || !getSessionUser(token)) {
+      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
       if (isApiRoute) {
         return reply.code(401).send({ error: 'Unauthorized' })
       }
@@ -169,25 +201,35 @@ export async function uiRoutes(app: FastifyInstance) {
   app.get('/apple-touch-icon.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
   app.get('/apple-touch-icon-precomposed.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
   app.get('/ui/dashboard',  async (_req, reply) => reply.type('text/html').send(html('dashboard.html')))
-  app.get('/ui/setup',      async (_req, reply) => reply.type('text/html').send(html('setup.html')))
-  app.get('/ui/logs',       async (_req, reply) => reply.type('text/html').send(html('logs.html')))
+  app.get('/ui/setup',      async (_req, reply) => reply.redirect('/ui/settings'))
+  app.get('/ui/logs',       async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    return reply.type('text/html').send(html('logs.html'))
+  })
 
   // ── Stats ──────────────────────────────────────────────────────────────────
-  app.get('/ui/stats', async () => {
-    const movies   = countMovies()
-    const shows    = countShows()
-    const episodes = countAiredEpisodes()
+  app.get('/ui/stats', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+    const visibleMovies = listMovies({ limit: 10_000, offset: 0, userId: user.id }).filter(movie => canUserAccessMovie(user, movie))
+    const visibleShows = listShows({ limit: 10_000, offset: 0, userId: user.id }).filter(show => canUserAccessShow(user, show))
+    const movies   = visibleMovies.length
+    const shows    = visibleShows.length
+    const episodes = visibleShows.reduce((sum, show) => sum + getEpisodesForShow(show.tmdbId).filter(ep => !!ep.airDate && ep.airDate <= todayIsoDate()).length, 0)
     return {
       movies,
       shows,
       episodes,
       lastSyncAt,
       nextSyncAt,
+      currentUser: { username: user.username, role: user.role, maxRating: user.maxRating },
     }
   })
 
   // ── Movies list ────────────────────────────────────────────────────────────
   app.get('/ui/movies', async (req) => {
+    const user = currentUiUser(req as never)
+    if (!user) return { items: [], total: 0 }
     const q      = (req as never as { query: Record<string, string> }).query
     const search = q.search || undefined
     const sortBy = q.sortBy || 'popularity'
@@ -195,8 +237,9 @@ export async function uiRoutes(app: FastifyInstance) {
     const limit  = Math.min(parseInt(q.limit ?? '100'), 500)
     const offset = parseInt(q.offset ?? '0')
 
-    const items = listMovies({ search, sortBy, sortOrder, limit, offset })
-    const total = countMovies(search)
+    const allItems = listMovies({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id }).filter(m => canUserAccessMovie(user, m))
+    const items = allItems.slice(offset, offset + limit)
+    const total = allItems.length
 
     return {
       items: items.map(m => ({
@@ -221,6 +264,8 @@ export async function uiRoutes(app: FastifyInstance) {
 
   // ── Shows list ─────────────────────────────────────────────────────────────
   app.get('/ui/shows', async (req) => {
+    const user = currentUiUser(req as never)
+    if (!user) return { items: [], total: 0 }
     const q      = (req as never as { query: Record<string, string> }).query
     const search = q.search || undefined
     const sortBy = q.sortBy || 'popularity'
@@ -228,8 +273,9 @@ export async function uiRoutes(app: FastifyInstance) {
     const limit  = Math.min(parseInt(q.limit ?? '100'), 500)
     const offset = parseInt(q.offset ?? '0')
 
-    const items = listShows({ search, sortBy, sortOrder, limit, offset })
-    const total = countShows(search)
+    const allItems = listShows({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id }).filter(s => canUserAccessShow(user, s))
+    const items = allItems.slice(offset, offset + limit)
+    const total = allItems.length
 
     return {
       items: items.map(s => ({
@@ -253,6 +299,8 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   app.get('/ui/library/item', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const q = (req as never as { query: Record<string, string> }).query
     const type = q.type === 'tv' ? 'tv' : q.type === 'movie' ? 'movie' : ''
     const tmdbId = Number.parseInt(q.tmdbId ?? '', 10)
@@ -263,6 +311,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (type === 'movie') {
       const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
       if (!movie) return reply.code(404).send({ error: 'Movie not found' })
+      if (!canUserAccessMovie(user, movie)) return reply.code(404).send({ error: 'Movie not found' })
 
       const eligibleDate = getMovieEligibleDate(movie)
       const releaseGateOverridden = getManualMovieAvailabilityOverride(movie.tmdbId)
@@ -296,6 +345,7 @@ export async function uiRoutes(app: FastifyInstance) {
 
     const show = getShowByTmdbId(tmdbId) ?? await fetchShowByTmdbId(tmdbId)
     if (!show) return reply.code(404).send({ error: 'Show not found' })
+    if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Show not found' })
 
     await ensureShowSeasonsCached(show).catch(() => {})
     const today = todayIsoDate()
@@ -325,31 +375,45 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   // ── Logs ───────────────────────────────────────────────────────────────────
-  app.get('/ui/logs-data', async (req) => {
+  app.get('/ui/logs-data', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
     const q     = (req as never as { query: Record<string, string> }).query
     const level = q.level
     return { entries: getLogs(level) }
   })
 
   // ── Settings page ──────────────────────────────────────────────────────────
-  app.get('/ui/settings', async (_req, reply) => reply.type('text/html').send(html('settings.html')))
+  app.get('/ui/settings', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    return reply.type('text/html').send(html('settings.html'))
+  })
 
   // GET settings — returns current in-memory config values
-  app.get('/ui/settings-data', async () => ({
-    sootioUrl:         config.sootioUrl,
-    streamProviderUrls: config.streamProviderUrls.join('\n'),
-    englishStreamMode: config.englishStreamMode,
-    serverUrl:         config.serverUrl,
-    traktClientId:     config.traktClientId,
-    traktLists:        config.traktLists,
-    hasSootioUrl:      !!getSetting('sootioUrl'),
-    hasRdApiKey:       !!getSetting('rdApiKey'),
-    hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
-    hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
-    hasTraktClientSecret: !!getSetting('traktClientSecret'),
-  }))
+  app.get('/ui/settings-data', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    return {
+      sootioUrl:         config.sootioUrl,
+      streamProviderUrls: config.streamProviderUrls.join('\n'),
+      englishStreamMode: config.englishStreamMode,
+      serverUrl:         config.serverUrl,
+      traktClientId:     config.traktClientId,
+      traktLists:        config.traktLists,
+      hasSootioUrl:      !!getSetting('sootioUrl'),
+      hasRdApiKey:       !!getSetting('rdApiKey'),
+      hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
+      hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
+      hasTraktClientSecret: !!getSetting('traktClientSecret'),
+      users: listUsers().map(user => ({
+        id: user.id,
+        username: user.username,
+        role: user.role,
+        maxRating: user.maxRating,
+      })),
+    }
+  })
 
   app.get('/ui/trakt/lists', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
     try {
       const lists = await fetchTraktUserLists()
       return {
@@ -362,7 +426,9 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   // POST settings — persist to DB and update in-memory config
-  app.post('/ui/settings-data', async (req) => {
+  app.post('/ui/settings-data', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as Record<string, string | string[]>
     const editable: (keyof typeof config)[] = [
       'sootioUrl', 'rdApiKey', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret',
@@ -400,8 +466,45 @@ export async function uiRoutes(app: FastifyInstance) {
     return { ok: true }
   })
 
+  app.post('/ui/users-data', async (req, reply) => {
+    const admin = requireAdmin(req, reply as never)
+    if (!admin) return
+    const body = (req.body ?? {}) as {
+      id?: string
+      username?: string
+      password?: string
+      role?: string
+      maxRating?: string
+      action?: string
+    }
+    const role = body.role != null
+      ? (body.role === 'admin' ? 'admin' : body.role === 'kids' ? 'kids' : 'user')
+      : undefined
+    try {
+      if (body.action === 'delete' && body.id) {
+        deleteUser(body.id)
+        return { ok: true }
+      }
+      if (body.id) {
+        const user = updateUser(body.id, {
+          username: body.username,
+          password: body.password,
+          role,
+          maxRating: body.maxRating,
+        })
+        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating } }
+      }
+      const user = createUser(body.username ?? '', body.password ?? '', role ?? 'user', body.maxRating ?? 'unrestricted')
+      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating } }
+    } catch (err) {
+      return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
+    }
+  })
+
   // ── TMDB search (no upsert) ────────────────────────────────────────────────
   app.get('/ui/search', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const q     = (req as never as { query: Record<string, string> }).query
     const query = (q.q ?? '').trim()
     const type  = q.type === 'tv' ? 'tv' : 'movie'
@@ -427,6 +530,8 @@ export async function uiRoutes(app: FastifyInstance) {
 
   // ── Add to library ─────────────────────────────────────────────────────────
   app.post('/ui/library/add', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const body = (req.body ?? {}) as { tmdbId?: number; type?: string; mode?: string }
     const { tmdbId, type } = body
     const mode = body.mode === 'latest' ? 'latest' : 'all'
@@ -436,6 +541,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (type === 'movie') {
       const movie = await fetchMovieByTmdbId(tmdbId)
       if (!movie) return reply.code(404).send({ error: 'Movie not found on TMDB' })
+      if (!canUserAccessMovie(user, movie)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
       addSourceItem('manual:ui', 'movie', tmdbId)
       return { ok: true, title: movie.title }
     }
@@ -443,6 +549,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (type === 'tv') {
       const show = await fetchShowByTmdbId(tmdbId)
       if (!show) return reply.code(404).send({ error: 'Show not found on TMDB' })
+      if (!canUserAccessShow(user, show)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
       await ensureShowSeasonsCached(show).catch(() => {})
       const activeSeasonNumber = mode === 'latest'
         ? (getLatestSeasonNumberForShow(tmdbId) ?? Math.max(show.numSeasons, 1))
@@ -456,6 +563,8 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   app.post('/ui/library/movie-availability', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as { tmdbId?: number; ignoreReleaseGate?: boolean }
     const tmdbId = body.tmdbId
     const ignoreReleaseGate = !!body.ignoreReleaseGate
@@ -473,6 +582,8 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   app.post('/ui/library/remove', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as { tmdbId?: number; type?: string }
     const { tmdbId, type } = body
     if (!tmdbId || !type) return reply.code(400).send({ error: 'tmdbId and type required' })

@@ -9,6 +9,7 @@ import {
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, type AppUser,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -33,18 +34,21 @@ import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 const MOVIES_FOLDER_ID = 'a0000000-0000-4000-8000-000000000001'
 const SHOWS_FOLDER_ID  = 'a0000000-0000-4000-8000-000000000002'
 const SERVER_GUID      = 'a0000000-0000-0000-0000-000000000001'
-const USER_ID          = 'a0000000-0000-0000-0000-000000000002'
-
 // Keep old name as alias so existing code still compiles
 const FOLDER_ID = MOVIES_FOLDER_ID
 const __dir = dirname(fileURLToPath(import.meta.url))
 const ROOT_FOLDER_ART: Record<string, string> = {
-  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.svg'),
-  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.svg'),
+  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.png'),
+  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.png'),
 }
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
+const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
+const LOGIN_WINDOW_MS = 15 * 60 * 1000
+const LOGIN_MAX_ATTEMPTS = 10
+const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
+const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
@@ -139,6 +143,25 @@ async function withReadCache<T>(key: string, loader: () => Promise<T>): Promise<
   return inFlight
 }
 
+function clientIp(headers: Record<string, string | string[] | undefined>): string {
+  const cfIp = headers['cf-connecting-ip']
+  if (typeof cfIp === 'string' && cfIp.trim()) return cfIp.trim()
+  const forwardedFor = headers['x-forwarded-for']
+  if (typeof forwardedFor === 'string' && forwardedFor.trim()) return forwardedFor.split(',')[0].trim()
+  return 'unknown'
+}
+
+function loginRateState(ip: string) {
+  const now = Date.now()
+  const existing = loginAttempts.get(ip)
+  if (!existing || now > existing.resetAt) {
+    const fresh = { count: 0, resetAt: now + LOGIN_WINDOW_MS }
+    loginAttempts.set(ip, fresh)
+    return fresh
+  }
+  return existing
+}
+
 function parseJsonArray<T>(value: string): T[] {
   try {
     const parsed = JSON.parse(value || '[]')
@@ -196,12 +219,12 @@ function userDataForItem(itemId: string, ud: { played: boolean; playCount: numbe
   }
 }
 
-function movieToItem(m: Movie) {
+function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
   const genres: string[] = JSON.parse(m.genres || '[]')
   const runtimeTicks = (m.runtimeMins || 90) * 60 * 10_000_000
   const fakePath = `/movies/${m.title.replace(/[/\\:*?"<>|]/g, '')} (${m.year}).mkv`
   const id = tmdbToId(m.tmdbId)
-  const ud = getUserData(id)
+  const ud = getUserData(id, userId)
   const posterTag = m.posterPath ? m.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const thumbTag = (m.backdropPath || m.posterPath) ? (m.backdropPath || m.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
   const logoTag = m.logoPath ? m.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
@@ -261,10 +284,10 @@ function movieToItem(m: Movie) {
   }
 }
 
-function showToSeriesItem(s: Show) {
+function showToSeriesItem(s: Show, userId = DEFAULT_ADMIN_USER_ID) {
   const genres: string[] = JSON.parse(s.genres || '[]')
   const id = showTmdbToId(s.tmdbId)
-  const ud = getUserData(id)
+  const ud = getUserData(id, userId)
   const showMode = getEffectiveShowMode(s.tmdbId)
   const childCount = showMode.mode === 'latest' ? 1 : s.numSeasons
   const posterTag = s.posterPath ? s.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
@@ -408,6 +431,22 @@ function visibleAiredEpisodesForShow(show: Show): Episode[] {
   return visibleSeasonsForShow(show).flatMap(s => getAiredEpisodesForSeason(show.tmdbId, s.seasonNumber))
 }
 
+function filterMoviesForUser(user: AppUser, movies: Movie[]): Movie[] {
+  return movies.filter(movie => canUserAccessMovie(user, movie))
+}
+
+function filterShowsForUser(user: AppUser, shows: Show[]): Show[] {
+  return shows.filter(show => canUserAccessShow(user, show))
+}
+
+function fallbackUser(): AppUser | null {
+  return getUserById(DEFAULT_ADMIN_USER_ID)
+}
+
+function requestUser(headers: Record<string, string | string[] | undefined>): AppUser | null {
+  return resolveJellyfinUser(headers) ?? (authEnabled() ? null : fallbackUser())
+}
+
 function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
   if (limit <= 0) return []
   return items.slice(offset, offset + limit)
@@ -429,6 +468,7 @@ async function buildSearchResultItems(
   sortOrder: string | undefined,
   limit: number,
   offset: number,
+  user: AppUser,
 ) {
   const wantMovies = !includeTypes || includeTypes.includes('movie')
   const wantShows = !includeTypes || includeTypes.includes('series')
@@ -439,26 +479,28 @@ async function buildSearchResultItems(
   ])
 
   const localMovies = wantMovies
-    ? listMovies({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, ...API_LIBRARY_FILTER })
+    ? filterMoviesForUser(user, listMovies({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
     : []
   const localShows = wantShows
-    ? listShows({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, ...API_LIBRARY_FILTER })
+    ? filterShowsForUser(user, listShows({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
     : []
 
   const localMovieIds = new Set(localMovies.map(movie => movie.tmdbId))
   const localShowIds = new Set(localShows.map(show => show.tmdbId))
 
   const searchOnlyMovies = externalMovies
+    .filter(movie => canUserAccessMovie(user, movie))
     .filter(movie => !localMovieIds.has(movie.tmdbId) && !hasAnySourceItem('movie', movie.tmdbId))
     .map(movieToSearchItem)
 
   const searchOnlyShows = externalShows
+    .filter(show => canUserAccessShow(user, show))
     .filter(show => !localShowIds.has(show.tmdbId) && !hasAnySourceItem('show', show.tmdbId))
     .map(showToSearchSeriesItem)
 
   const combined = [
-    ...localMovies.map(movieToItem),
-    ...localShows.map(showToSeriesItem),
+    ...localMovies.map(movie => movieToItem(movie, user.id)),
+    ...localShows.map(show => showToSeriesItem(show, user.id)),
     ...searchOnlyMovies,
     ...searchOnlyShows,
   ]
@@ -492,10 +534,10 @@ function findNextUpEpisode(show: Show, playedIds: Set<string>): Episode | null {
   return null
 }
 
-function seasonToItem(season: Season, show: Show) {
+function seasonToItem(season: Season, show: Show, userId = DEFAULT_ADMIN_USER_ID) {
   const seriesId = showTmdbToId(show.tmdbId)
   const id = seasonToId(show.tmdbId, season.seasonNumber)
-  const ud = getUserData(id)
+  const ud = getUserData(id, userId)
   return {
     Id:                 id,
     ServerId:           SERVER_GUID,
@@ -524,12 +566,12 @@ function seasonToItem(season: Season, show: Show) {
   }
 }
 
-function episodeToItem(ep: Episode, show: Show) {
+function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) {
   const genres: string[] = JSON.parse(show.genres || '[]')
   const seriesId  = showTmdbToId(show.tmdbId)
   const seasonId  = seasonToId(show.tmdbId, ep.seasonNumber)
   const id        = episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber)
-  const ud        = getUserData(id)
+  const ud        = getUserData(id, userId)
   const runtimeTicks = (ep.runtimeMins || 45) * 60 * 10_000_000
   const safeShowTitle = show.title.replace(/[/\\:*?"<>|]/g, '')
   const safeEpisodeName = (ep.name || `Episode ${ep.episodeNumber}`).replace(/[/\\:*?"<>|]/g, '')
@@ -602,21 +644,67 @@ function episodeToItem(ep: Episode, show: Show) {
   }
 }
 
-function fakeUser() {
-  const hasPassword = !!config.uiPassword
+function createJellyfinToken(userId: string): string {
+  const token = createHash('sha256').update(`${userId}:${Date.now()}:${Math.random()}`).digest('hex')
+  jellyfinTokens.set(token, { userId, expiresAt: Date.now() + JELLYFIN_TOKEN_TTL_MS })
+  return token
+}
+
+function parseJellyfinToken(headers: Record<string, string | string[] | undefined>): string | null {
+  const direct = headers['x-emby-token'] ?? headers['x-mediabrowser-token']
+  if (typeof direct === 'string' && direct.trim()) return direct.trim()
+  const auth = headers.authorization
+  if (typeof auth !== 'string') return null
+  const match = auth.match(/\bToken="?([^",\s]+)"?/i)
+  return match ? match[1] : null
+}
+
+export function resolveJellyfinUser(headers: Record<string, string | string[] | undefined>): AppUser | null {
+  const token = parseJellyfinToken(headers)
+  if (!token) return null
+  const record = jellyfinTokens.get(token)
+  if (!record) return null
+  if (record.expiresAt <= Date.now()) {
+    jellyfinTokens.delete(token)
+    return null
+  }
+  return getUserById(record.userId)
+}
+
+function jellyfinUser(user: AppUser) {
   return {
-    Name:                  config.uiUsername || 'admin',
-    Id:                    USER_ID,
-    HasPassword:           hasPassword,
-    HasConfiguredPassword: hasPassword,
-    EnableAutoLogin:       !hasPassword,
-    Policy: { IsAdministrator: true, EnableAllFolders: true, EnableMediaPlayback: true },
+    Name:                  user.username,
+    Id:                    user.id,
+    HasPassword:           true,
+    HasConfiguredPassword: true,
+    EnableAutoLogin:       false,
+    Policy: {
+      IsAdministrator: user.role === 'admin',
+      EnableAllFolders: true,
+      EnableMediaPlayback: true,
+    },
   }
 }
 
 // ── Route registration ────────────────────────────────────────────────────────
 
 export async function jellyfinRoutes(app: FastifyInstance) {
+
+  function requireJellyfinUser(
+    headers: Record<string, string | string[] | undefined>,
+    reply: FastifyReply,
+  ): AppUser | null {
+    if (!authEnabled()) {
+      reply.code(503).send({ error: 'User auth is not configured.' })
+      return null
+    }
+    const user = requestUser(headers)
+    if (!user) {
+      reply.code(401).send({ error: 'Unauthorized' })
+      return null
+    }
+    return user
+  }
 
   // System info — probed before and after auth
   app.get('/System/Info',        async () => systemInfo())
@@ -652,24 +740,39 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
   // Auth — verify credentials if UI_PASSWORD is set
   app.post('/Users/AuthenticateByName', async (req, reply) => {
-    if (config.uiPassword) {
-      const body = req.body as { Username?: string; Pw?: string } | undefined
-      const username = body?.Username ?? ''
-      const password = body?.Pw ?? ''
-      if (username !== config.uiUsername || password !== config.uiPassword) {
-        return reply.code(401).send({ error: 'Invalid credentials' })
-      }
+    if (!authEnabled()) return reply.code(503).send({ error: 'User auth is not configured.' })
+    const rateKey = clientIp(req.headers)
+    const state = loginRateState(rateKey)
+    if (state.count >= LOGIN_MAX_ATTEMPTS) {
+      return reply.code(429).send({ error: 'Too many login attempts. Please try again later.' })
     }
+    const body = req.body as { Username?: string; Pw?: string } | undefined
+    const username = body?.Username ?? ''
+    const password = body?.Pw ?? ''
+    const user = verifyUserCredentials(username, password)
+    if (!user) {
+      state.count += 1
+      return reply.code(401).send({ error: 'Invalid credentials' })
+    }
+    loginAttempts.delete(rateKey)
     return {
-      AccessToken: 'fetcherr-token',
+      AccessToken: createJellyfinToken(user.id),
       ServerId:    SERVER_GUID,
-      User:        fakeUser(),
+      User:        jellyfinUser(user),
     }
   })
 
   // User profile
-  app.get('/Users/:id', async () => fakeUser())
-  app.get('/Users/Me',  async () => fakeUser())
+  app.get('/Users/:id', async (req, reply) => {
+    const user = requireJellyfinUser(req.headers, reply)
+    if (!user) return
+    return jellyfinUser(user)
+  })
+  app.get('/Users/Me',  async (req, reply) => {
+    const user = requireJellyfinUser(req.headers, reply)
+    if (!user) return
+    return jellyfinUser(user)
+  })
 
   // Library sections
   app.get('/Library/VirtualFolders', async () => ([
@@ -688,7 +791,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   ]))
 
   // Views — library sections
-  function viewItemsResponse() {
+  function viewItemsResponse(user: AppUser) {
+    const moviesCount = filterMoviesForUser(user, listMovies({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
+    const showsCount = filterShowsForUser(user, listShows({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
     return {
       Items: [
         {
@@ -699,8 +804,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           CollectionType:     'movies',
           ImageTags:          rootFolderImageTags(MOVIES_FOLDER_ID),
           IsFolder:           true,
-          ChildCount:         countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
-          RecursiveItemCount: countMovies(undefined, API_LIBRARY_FILTER.availableOnly),
+          ChildCount:         moviesCount,
+          RecursiveItemCount: moviesCount,
           UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
         },
         {
@@ -711,8 +816,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
           CollectionType:     'tvshows',
           ImageTags:          rootFolderImageTags(SHOWS_FOLDER_ID),
           IsFolder:           true,
-          ChildCount:         countShows(undefined, API_LIBRARY_FILTER.availableOnly),
-          RecursiveItemCount: countShows(undefined, API_LIBRARY_FILTER.availableOnly),
+          ChildCount:         showsCount,
+          RecursiveItemCount: showsCount,
           UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
         },
       ],
@@ -721,11 +826,21 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
   }
 
-  app.get('/Users/:id/Views', async () => viewItemsResponse())
-  app.get('/UserViews', async () => viewItemsResponse())
+  app.get('/Users/:id/Views', async (req, reply) => {
+    const user = requireJellyfinUser(req.headers, reply)
+    if (!user) return
+    return viewItemsResponse(user)
+  })
+  app.get('/UserViews', async (req, reply) => {
+    const user = requireJellyfinUser(req.headers, reply)
+    if (!user) return
+    return viewItemsResponse(user)
+  })
 
   // Browse + search — /Users/{id}/Items and /Items
-  async function handleItems(req: { query: Record<string, string> }) {
+  async function handleItems(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
+    const user = requestUser(req.headers)
+    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
     // Infuse sends params in camelCase (parentId, sortBy, startIndex, limit).
     // Normalize to lowercase keys so we handle both cases transparently.
     const q: Record<string, string> = {}
@@ -746,36 +861,35 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // includeItemTypes=Episode → flat list of all aired episodes across all shows
       // includeItemTypes=Series  → list of series (default)
       if (includeTypes.includes('season')) {
-        const allPairs = await withReadCache('items:season-pairs', async () => {
-          const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+        const allPairs = await withReadCache(`items:season-pairs:${user.id}`, async () => {
+          const shows = filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...API_LIBRARY_FILTER }))
           return shows.flatMap(show =>
             visibleSeasonsForShow(show).map(season => ({ show, season }))
           )
         })
         const total = allPairs.length
         if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
-        const items = pagedItems(allPairs, offset, limit).map(({ show, season }) => seasonToItem(season, show))
+        const items = pagedItems(allPairs, offset, limit).map(({ show, season }) => seasonToItem(season, show, user.id))
         return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       if (includeTypes.includes('episode')) {
-        const allPairs = await withReadCache('items:episode-pairs', async () => {
-          const shows = listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+        const allPairs = await withReadCache(`items:episode-pairs:${user.id}`, async () => {
+          const shows = filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...API_LIBRARY_FILTER }))
           return shows.flatMap(show =>
             visibleAiredEpisodesForShow(show).map(ep => ({ show, ep }))
           )
         })
         const total = allPairs.length
         if (limit <= 0) return { Items: [], TotalRecordCount: total, StartIndex: offset }
-        const items = pagedItems(allPairs, offset, limit).map(({ show, ep }) => episodeToItem(ep, show))
+        const items = pagedItems(allPairs, offset, limit).map(({ show, ep }) => episodeToItem(ep, show, user.id))
         return { Items: items, TotalRecordCount: total, StartIndex: offset }
       }
       // Default: series list
       if (SearchTerm) {
-        return buildSearchResultItems(SearchTerm, 'series', SortBy, SortOrder, limit, offset)
+        return buildSearchResultItems(SearchTerm, 'series', SortBy, SortOrder, limit, offset, user)
       }
-      const shows = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-      const total = countShows(SearchTerm, API_LIBRARY_FILTER.availableOnly)
-      return { Items: shows.map(showToSeriesItem), TotalRecordCount: total, StartIndex: offset }
+      const allShows = filterShowsForUser(user, listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
+      return { Items: pagedItems(allShows, offset, limit).map(show => showToSeriesItem(show, user.id)), TotalRecordCount: allShows.length, StartIndex: offset }
     }
 
     // ── Series ID: list seasons ────────────────────────────────────────────────
@@ -783,9 +897,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (seriesRef) {
       const show = getShowByTmdbId(seriesRef) ?? await fetchShowByTmdbId(seriesRef)
       if (!show) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
+      if (!canUserAccessShow(user, show)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       await ensureShowSeasonsCached(show).catch(() => {})
       const seasons = visibleSeasonsForShow(show)
-      return { Items: seasons.map(s => seasonToItem(s, show)), TotalRecordCount: seasons.length, StartIndex: offset }
+      return { Items: seasons.map(s => seasonToItem(s, show, user.id)), TotalRecordCount: seasons.length, StartIndex: offset }
     }
 
     // ── Season ID: list episodes ───────────────────────────────────────────────
@@ -793,6 +908,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (seasonRef) {
       const show = getShowByTmdbId(seasonRef.showTmdbId) ?? await fetchShowByTmdbId(seasonRef.showTmdbId)
       if (!show) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
+      if (!canUserAccessShow(user, show)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       if (!getEpisodesForSeason(show.tmdbId, seasonRef.seasonNum).length) {
         await fetchAndCacheSeasonDetails(show.tmdbId, seasonRef.seasonNum).catch(() => {})
       }
@@ -800,31 +916,29 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       const episodes = visibleSeasonNums.has(seasonRef.seasonNum)
         ? getAiredEpisodesForSeason(show.tmdbId, seasonRef.seasonNum)
         : []
-      return { Items: episodes.map(e => episodeToItem(e, show)), TotalRecordCount: episodes.length, StartIndex: offset }
+      return { Items: episodes.map(e => episodeToItem(e, show, user.id)), TotalRecordCount: episodes.length, StartIndex: offset }
     }
 
     // ── Search: movies + shows ─────────────────────────────────────────────────
     if (SearchTerm) {
-      return buildSearchResultItems(SearchTerm, includeTypes, SortBy, SortOrder, limit, offset)
+      return buildSearchResultItems(SearchTerm, includeTypes, SortBy, SortOrder, limit, offset, user)
     }
 
     // ── No parentId: route by includeItemTypes or return folders ─────────────
     if (!ParentId) {
       // Infuse main page "TV Shows" calls Items?includeItemTypes=Series&recursive=true
       if (includeTypes.includes('series')) {
-        const shows = listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-        const total = countShows(SearchTerm, API_LIBRARY_FILTER.availableOnly)
-        return { Items: shows.map(showToSeriesItem), TotalRecordCount: total, StartIndex: offset }
+        const shows = filterShowsForUser(user, listShows({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
+        return { Items: pagedItems(shows, offset, limit).map(show => showToSeriesItem(show, user.id)), TotalRecordCount: shows.length, StartIndex: offset }
       }
       // Infuse main page "Movies" calls Items?includeItemTypes=Movie&recursive=true
       if (includeTypes.includes('movie')) {
-        const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-        const total  = countMovies(SearchTerm, API_LIBRARY_FILTER.availableOnly)
-        return { Items: movies.map(movieToItem), TotalRecordCount: total, StartIndex: offset }
+        const movies = filterMoviesForUser(user, listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
+        return { Items: pagedItems(movies, offset, limit).map(movie => movieToItem(movie, user.id)), TotalRecordCount: movies.length, StartIndex: offset }
       }
       // True root listing: return collection folders
-      const nMovies = countMovies(undefined, API_LIBRARY_FILTER.availableOnly)
-      const nShows  = countShows(undefined, API_LIBRARY_FILTER.availableOnly)
+      const nMovies = filterMoviesForUser(user, listMovies({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
+      const nShows  = filterShowsForUser(user, listShows({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
       return {
         Items: [
           {
@@ -850,17 +964,18 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { Items: [], TotalRecordCount: 0, StartIndex: offset }
     }
     if (SearchTerm) {
-      return buildSearchResultItems(SearchTerm, 'movie', SortBy, SortOrder, limit, offset)
+      return buildSearchResultItems(SearchTerm, 'movie', SortBy, SortOrder, limit, offset, user)
     }
-    const movies = listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit, offset, ...API_LIBRARY_FILTER })
-    const total  = countMovies(SearchTerm, API_LIBRARY_FILTER.availableOnly)
-    return { Items: movies.map(movieToItem), TotalRecordCount: total, StartIndex: offset }
+    const movies = filterMoviesForUser(user, listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
+    return { Items: pagedItems(movies, offset, limit).map(movie => movieToItem(movie, user.id)), TotalRecordCount: movies.length, StartIndex: offset }
   }
 
   app.get('/Items',           async (req) => handleItems(req as never))
   app.get('/Users/:id/Items', async (req) => handleItems(req as never))
 
-  async function handleSearchHints(req: { query: Record<string, string> }) {
+  async function handleSearchHints(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
+    const user = requestUser(req.headers)
+    if (!user) return { SearchHints: [], TotalRecordCount: 0 }
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
 
@@ -873,7 +988,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { SearchHints: [], TotalRecordCount: 0 }
     }
 
-    const results = await buildSearchResultItems(SearchTerm, includeTypes, undefined, undefined, limit, offset)
+    const results = await buildSearchResultItems(SearchTerm, includeTypes, undefined, undefined, limit, offset, user)
     return {
       SearchHints: results.Items,
       TotalRecordCount: results.TotalRecordCount,
@@ -884,14 +999,16 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Users/:id/Search/Hints', async (req) => handleSearchHints(req as never))
 
   app.get('/Shows/NextUp', async (req) => {
+    const user = requestUser(req.headers)
+    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
     const rawQuery = (req as never as { query: Record<string, string> }).query
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
     const limit = parseInt(q.limit ?? '16', 10)
     const offset = parseInt(q.startindex ?? '0', 10)
-    const nextUpItems = await withReadCache('nextup', async () => {
-      const playedIds = getAllPlayedItemIds()
-      return listShows({ limit: 100_000, ...API_LIBRARY_FILTER })
+    const nextUpItems = await withReadCache(`nextup:${user.id}`, async () => {
+      const playedIds = getAllPlayedItemIds(user.id)
+      return filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...API_LIBRARY_FILTER }))
         .map(show => {
           const ep = findNextUpEpisode(show, playedIds)
           return ep ? { show, ep } : null
@@ -907,30 +1024,32 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
     const paged = nextUpItems.slice(offset, offset + limit)
     return {
-      Items: paged.map(({ show, ep }) => episodeToItem(ep, show)),
+      Items: paged.map(({ show, ep }) => episodeToItem(ep, show, user.id)),
       TotalRecordCount: nextUpItems.length,
       StartIndex: offset,
     }
   })
 
   // Resume / Continue Watching
-  async function handleResumeItems(req: { query: Record<string, string> }) {
+  async function handleResumeItems(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
+    const user = requestUser(req.headers)
+    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
     const limit = q.limit ? parseInt(q.limit, 10) : 50
     const offset = q.startindex ? parseInt(q.startindex, 10) : 0
-    return withReadCache(`resume:${offset}:${limit}`, async () => {
-      const ids = listResumeItemIds(limit, offset)
+    return withReadCache(`resume:${user.id}:${offset}:${limit}`, async () => {
+      const ids = listResumeItemIds(limit, offset, user.id)
       const items = []
       for (const id of ids) {
         const item = await handleItem(id, {
           code: () => ({ send: () => null }),
-        })
+        }, user)
         if (item && typeof item === 'object' && (item as Record<string, unknown>).Type !== 'Season' && (item as Record<string, unknown>).Type !== 'Series') {
           items.push(item)
         }
       }
-      return { Items: items, TotalRecordCount: countResumeItems(), StartIndex: offset }
+      return { Items: items, TotalRecordCount: countResumeItems(user.id), StartIndex: offset }
     })
   }
   app.get('/Users/:id/Items/Resume', async (req) => handleResumeItems(req as never))
@@ -938,6 +1057,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
   // Latest / Recently Added
   app.get('/Users/:id/Items/Latest', async (req) => {
+    const user = requestUser(req.headers)
+    if (!user) return []
     const rawQuery = (req as never as { query: Record<string, string> }).query
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
@@ -945,23 +1066,25 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const parentId = q.parentid
 
     if (parentId === SHOWS_FOLDER_ID) {
-      return listShows({ sortBy: 'popularity', sortOrder: 'DESC', limit: lim, ...API_LIBRARY_FILTER }).map(showToSeriesItem)
+      return filterShowsForUser(user, listShows({ sortBy: 'popularity', sortOrder: 'DESC', limit: lim, userId: user.id, ...API_LIBRARY_FILTER })).map(show => showToSeriesItem(show, user.id))
     }
-    return listMovies({ sortBy: 'popularity', sortOrder: 'DESC', limit: lim, ...API_LIBRARY_FILTER }).map(movieToItem)
+    return filterMoviesForUser(user, listMovies({ sortBy: 'popularity', sortOrder: 'DESC', limit: lim, userId: user.id, ...API_LIBRARY_FILTER })).map(movie => movieToItem(movie, user.id))
   })
 
   // Single item — /Items/:id and /Users/:userId/Items/:itemId
-  async function handleItem(id: string, reply: { code: (n: number) => { send: (v: unknown) => unknown } }) {
+  async function handleItem(id: string, reply: { code: (n: number) => { send: (v: unknown) => unknown } }, user?: AppUser | null) {
+    const currentUser = user ?? fallbackUser()
+    if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' })
     // Collection folders
     if (id === MOVIES_FOLDER_ID) {
-      const n = countMovies(undefined, API_LIBRARY_FILTER.availableOnly)
+      const n = filterMoviesForUser(currentUser, listMovies({ limit: 10_000, offset: 0, userId: currentUser.id, ...API_LIBRARY_FILTER })).length
       return { Name: 'Movies', Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true, Path: '/movies',
         RecursiveItemCount: n, ChildCount: n, ImageTags: rootFolderImageTags(MOVIES_FOLDER_ID),
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID } }
     }
     if (id === SHOWS_FOLDER_ID) {
-      const n = countShows(undefined, API_LIBRARY_FILTER.availableOnly)
+      const n = filterShowsForUser(currentUser, listShows({ limit: 10_000, offset: 0, userId: currentUser.id, ...API_LIBRARY_FILTER })).length
       return { Name: 'Shows', Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID,
         Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true, Path: '/shows',
         RecursiveItemCount: n, ChildCount: n, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
@@ -973,6 +1096,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (epRef) {
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
       let [ep] = getEpisodesForSeason(show.tmdbId, epRef.seasonNum)
         .filter(e => e.episodeNumber === epRef.episodeNum)
       if (!ep) {
@@ -980,7 +1104,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         ep = eps.find(e => e.episodeNumber === epRef.episodeNum)!
       }
       if (!ep) return reply.code(404).send({ error: 'Not found' })
-      return episodeToItem(ep, show)
+      return episodeToItem(ep, show, currentUser.id)
     }
 
     // Season
@@ -988,13 +1112,14 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (seasonRef) {
       const show = getShowByTmdbId(seasonRef.showTmdbId) ?? await fetchShowByTmdbId(seasonRef.showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
       let season = getSeason(show.tmdbId, seasonRef.seasonNum)
       if (!season) {
         await fetchAndCacheSeasonDetails(show.tmdbId, seasonRef.seasonNum).catch(() => {})
         season = getSeason(show.tmdbId, seasonRef.seasonNum)
       }
       if (!season) return reply.code(404).send({ error: 'Not found' })
-      return seasonToItem(season, show)
+      return seasonToItem(season, show, currentUser.id)
     }
 
     // Series
@@ -1002,6 +1127,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchShowTmdbId) {
       const show = await fetchShowByTmdbId(searchShowTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
       return showToSearchSeriesItem(show)
     }
 
@@ -1009,7 +1135,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (showTmdbId) {
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
-      return showToSeriesItem(show)
+      if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
+      return showToSeriesItem(show, currentUser.id)
     }
 
     // Movie
@@ -1017,6 +1144,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchMovieTmdbId) {
       const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
       if (!movie) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
       return movieToSearchItem(movie)
     }
 
@@ -1024,40 +1152,47 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (!tmdbId) return reply.code(404).send({ error: 'Not found' })
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
     if (!movie) return reply.code(404).send({ error: 'Not found' })
-    return movieToItem(movie)
+    if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
+    return movieToItem(movie, currentUser.id)
   }
 
-  app.get('/Items/:id',                  async (req, reply) => handleItem((req.params as { id: string }).id, reply as never))
-  app.get('/Users/:userId/Items/:itemId', async (req, reply) => handleItem((req.params as { itemId: string }).itemId, reply as never))
+  app.get('/Items/:id',                  async (req, reply) => handleItem((req.params as { id: string }).id, reply as never, requestUser(req.headers)))
+  app.get('/Users/:userId/Items/:itemId', async (req, reply) => handleItem((req.params as { itemId: string }).itemId, reply as never, requestUser(req.headers)))
 
   // Seasons list for a series — Infuse calls this when opening a show
   app.get('/Shows/:seriesId/Seasons', async (req, reply) => {
+    const user = requestUser(req.headers)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const { seriesId } = req.params as { seriesId: string }
     const searchShowTmdbId = idToSearchShowTmdb(seriesId)
     if (searchShowTmdbId) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
-    return withReadCache(`show-seasons:${seriesId}`, async () => {
+    return withReadCache(`show-seasons:${user.id}:${seriesId}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
       await ensureShowSeasonsCached(show).catch(() => {})
       const seasons = visibleSeasonsForShow(show)
-      return { Items: seasons.map(s => seasonToItem(s, show)), TotalRecordCount: seasons.length, StartIndex: 0 }
+      return { Items: seasons.map(s => seasonToItem(s, show, user.id)), TotalRecordCount: seasons.length, StartIndex: 0 }
     })
   })
 
   // Episodes list for a series — Infuse calls this with optional SeasonId filter
   app.get('/Shows/:seriesId/Episodes', async (req, reply) => {
+    const user = requestUser(req.headers)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const { seriesId } = req.params as { seriesId: string }
     const rawQ = (req as never as { query: Record<string, string> }).query
     const SeasonId = rawQ.SeasonId ?? rawQ.seasonId ?? rawQ.seasonid
     const searchShowTmdbId = idToSearchShowTmdb(seriesId)
     if (searchShowTmdbId) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
-    return withReadCache(`show-episodes:${seriesId}:${SeasonId ?? 'all'}`, async () => {
+    return withReadCache(`show-episodes:${user.id}:${seriesId}:${SeasonId ?? 'all'}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
+      if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
 
       if (SeasonId) {
         const seasonRef = idToSeason(SeasonId)
@@ -1069,12 +1204,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         const episodes = visibleSeasonNums.has(seasonRef.seasonNum)
           ? getAiredEpisodesForSeason(show.tmdbId, seasonRef.seasonNum)
           : []
-        return { Items: episodes.map(e => episodeToItem(e, show)), TotalRecordCount: episodes.length, StartIndex: 0 }
+        return { Items: episodes.map(e => episodeToItem(e, show, user.id)), TotalRecordCount: episodes.length, StartIndex: 0 }
       }
 
       await ensureShowSeasonsCached(show).catch(() => {})
       const allEpisodes = visibleAiredEpisodesForShow(show)
-      return { Items: allEpisodes.map(e => episodeToItem(e, show)), TotalRecordCount: allEpisodes.length, StartIndex: 0 }
+      return { Items: allEpisodes.map(e => episodeToItem(e, show, user.id)), TotalRecordCount: allEpisodes.length, StartIndex: 0 }
     })
   })
 
@@ -1084,6 +1219,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     id: string,
     type: string,
     tag: string | undefined,
+    user: AppUser | null,
     reply: FastifyReply,
   ) {
     const isBackdrop = type.toLowerCase() === 'backdrop'
@@ -1091,7 +1227,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const isThumb = type.toLowerCase() === 'thumb'
     const rootFolderArt = ROOT_FOLDER_ART[id]
     if (rootFolderArt && existsSync(rootFolderArt)) {
-      reply.type('image/svg+xml')
+      reply.type('image/png')
       return reply.send(readFileSync(rootFolderArt))
     }
 
@@ -1172,12 +1308,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Items/:id/Images/:type', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as { tag?: string } | undefined
-    return handleImage(params.id, params.type, query?.tag, reply as never)
+    return handleImage(params.id, params.type, query?.tag, requestUser(req.headers), reply as never)
   })
   app.get('/Items/:id/Images/:type/:index', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as { tag?: string } | undefined
-    return handleImage(params.id, params.type, query?.tag, reply as never)
+    return handleImage(params.id, params.type, query?.tag, requestUser(req.headers), reply as never)
   })
 
   // Stubs for endpoints Infuse probes but we don't need to implement
@@ -1186,11 +1322,13 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Users/:userId/Items/:itemId/SpecialFeatures', async () => [])
   app.post('/Sessions/Playing',         async () => ({}))
   app.post('/Sessions/Playing/Progress', async (req) => {
+    const user = requestUser(req.headers)
+    if (!user) return {}
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId       = body?.ItemId       as string | undefined
     const positionTicks = body?.PositionTicks as number | undefined
     if (itemId && positionTicks != null) {
-      saveProgress(itemId, positionTicks)
+      saveProgress(itemId, positionTicks, user.id)
       app.log.info(`progress: saved ${itemId} at ${positionTicks} ticks`)
     } else {
       app.log.warn(`progress: missing item or position in /Sessions/Playing/Progress payload`)
@@ -1198,16 +1336,18 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     return {}
   })
   app.post('/Sessions/Playing/Stopped', async (req) => {
+    const user = requestUser(req.headers)
+    if (!user) return {}
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId            = body?.ItemId             as string  | undefined
     const positionTicks     = body?.PositionTicks      as number  | undefined
     const playedToCompletion = body?.PlayedToCompletion as boolean | undefined
     if (itemId) {
       if (playedToCompletion) {
-        markPlayed(itemId)
+        markPlayed(itemId, user.id)
         app.log.info(`progress: marked played ${itemId}`)
       } else if (positionTicks != null) {
-        saveProgress(itemId, positionTicks)
+        saveProgress(itemId, positionTicks, user.id)
         app.log.info(`progress: stopped ${itemId} at ${positionTicks} ticks`)
       } else {
         app.log.warn(`progress: missing stop position for ${itemId}`)
@@ -1217,13 +1357,17 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   })
   app.post('/Users/:userId/PlayedItems/:itemId', async (req) => {
     const { itemId } = (req as never as { params: { itemId: string } }).params
-    markPlayed(itemId)
-    const ud = getUserData(itemId)
+    const user = requestUser(req.headers)
+    if (!user) return {}
+    markPlayed(itemId, user.id)
+    const ud = getUserData(itemId, user.id)
     return { PlayCount: ud.playCount, Played: ud.played, LastPlayedDate: ud.lastPlayedDate || undefined }
   })
   app.delete('/Users/:userId/PlayedItems/:itemId', async (req) => {
     const { itemId } = (req as never as { params: { itemId: string } }).params
-    markUnplayed(itemId)
+    const user = requestUser(req.headers)
+    if (!user) return {}
+    markUnplayed(itemId, user.id)
     return {}
   })
 
@@ -1232,6 +1376,8 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     req: { params: { id: string }; headers: Record<string, string> },
     reply: { code: (n: number) => { send: (v: unknown) => unknown } },
   ) {
+    const user = requestUser(req.headers)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const { id } = req.params
 
     // Episode playback
@@ -1239,6 +1385,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (epRef) {
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show?.imdbId) return reply.code(404).send({ error: 'No IMDb ID for this show' })
+      if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
       let [ep] = getEpisodesForSeason(show.tmdbId, epRef.seasonNum)
         .filter(e => e.episodeNumber === epRef.episodeNum)
       if (!ep) {
@@ -1278,6 +1425,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (!tmdbId) return reply.code(404).send({ error: 'Not found' })
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
     if (!movie?.imdbId) return reply.code(404).send({ error: 'No IMDb ID for this title' })
+    if (!canUserAccessMovie(user, movie)) return reply.code(404).send({ error: 'Not found' })
     if (!isMovieVisibleToLibrary(movie)) {
       return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
     }

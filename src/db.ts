@@ -1,3 +1,4 @@
+import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto'
 import Database from 'better-sqlite3'
 import { config } from './config.js'
 
@@ -73,6 +74,17 @@ export interface Episode {
 
 export type MediaType = 'movie' | 'show'
 export type ManualShowMode = 'all' | 'latest'
+export type AppUserRole = 'admin' | 'user' | 'kids'
+
+export interface AppUser {
+  id: string
+  username: string
+  passwordHash: string
+  role: AppUserRole
+  maxRating: string
+  createdAt: string
+  updatedAt: string
+}
 
 export interface ManualShowSubscription {
   showTmdbId: number
@@ -86,6 +98,24 @@ export interface ManualMovieAvailabilityOverride {
   ignoreReleaseGate: boolean
   updatedAt: string
 }
+
+export const DEFAULT_ADMIN_USER_ID = 'a0000000-0000-0000-0000-000000000002'
+export const MAX_RATING_OPTIONS = [
+  'unrestricted',
+  'G',
+  'PG',
+  'PG-13',
+  'R',
+  'NC-17',
+  'TV-Y',
+  'TV-Y7',
+  'TV-G',
+  'TV-PG',
+  'TV-14',
+  'TV-MA',
+] as const
+
+export type MaxRating = typeof MAX_RATING_OPTIONS[number]
 
 const schema = `
 CREATE TABLE IF NOT EXISTS movies (
@@ -173,6 +203,16 @@ CREATE TABLE IF NOT EXISTS app_settings (
   value TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS app_users (
+  id            TEXT PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  password_hash TEXT NOT NULL DEFAULT '',
+  role          TEXT NOT NULL CHECK (role IN ('admin', 'user', 'kids')),
+  max_rating    TEXT NOT NULL DEFAULT 'unrestricted',
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
 CREATE TABLE IF NOT EXISTS source_items (
   source_key TEXT    NOT NULL,
   media_type TEXT    NOT NULL CHECK (media_type IN ('movie', 'show')),
@@ -202,6 +242,17 @@ CREATE TABLE IF NOT EXISTS user_data (
   position_ticks   INTEGER NOT NULL DEFAULT 0,
   last_played_date TEXT    NOT NULL DEFAULT ''
 );
+
+CREATE TABLE IF NOT EXISTS user_item_data (
+  user_id          TEXT    NOT NULL,
+  item_id          TEXT    NOT NULL,
+  played           INTEGER NOT NULL DEFAULT 0,
+  play_count       INTEGER NOT NULL DEFAULT 0,
+  position_ticks   INTEGER NOT NULL DEFAULT 0,
+  last_played_date TEXT    NOT NULL DEFAULT '',
+  PRIMARY KEY (user_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS user_item_data_resume ON user_item_data(user_id, played, last_played_date);
 `
 
 let _db: Database.Database | null = null
@@ -229,8 +280,120 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE episodes ADD COLUMN community_rating REAL NOT NULL DEFAULT 0`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN digital_release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+    migrateAppUserRoles(_db)
+    bootstrapDefaultAdmin(_db)
+    migrateLegacyUserData(_db)
   }
   return _db
+}
+
+function hashPassword(password: string, saltHex = randomBytes(16).toString('hex')): string {
+  const derived = scryptSync(password, saltHex, 64).toString('hex')
+  return `${saltHex}:${derived}`
+}
+
+function verifyPasswordHash(password: string, passwordHash: string): boolean {
+  const [saltHex, derivedHex] = passwordHash.split(':', 2)
+  if (!saltHex || !derivedHex) return false
+  const actual = Buffer.from(derivedHex, 'hex')
+  const expected = scryptSync(password, saltHex, actual.length)
+  if (actual.length !== expected.length) return false
+  return timingSafeEqual(actual, expected)
+}
+
+function normalizeUsername(username: string): string {
+  return username.trim()
+}
+
+function normalizeMaxRating(value: string | null | undefined): MaxRating {
+  const normalized = (value ?? '').trim().toUpperCase()
+  if (!normalized) return 'unrestricted'
+  const match = MAX_RATING_OPTIONS.find(option => option.toUpperCase() === normalized)
+  return match ?? 'unrestricted'
+}
+
+function normalizeUserRole(value: string | null | undefined): AppUserRole {
+  const normalized = (value ?? '').trim().toLowerCase()
+  if (normalized === 'admin') return 'admin'
+  if (normalized === 'kids') return 'kids'
+  return 'user'
+}
+
+function effectiveMaxRatingForRole(role: AppUserRole, maxRating: string): MaxRating {
+  if (role === 'kids') return 'TV-PG'
+  return 'unrestricted'
+}
+
+function row2appUser(r: Record<string, unknown>): AppUser {
+  const role = normalizeUserRole(r.role as string)
+  return {
+    id: r.id as string,
+    username: r.username as string,
+    passwordHash: (r.password_hash as string) ?? '',
+    role,
+    maxRating: effectiveMaxRatingForRole(role, (r.max_rating as string) ?? 'unrestricted'),
+    createdAt: (r.created_at as string) ?? '',
+    updatedAt: (r.updated_at as string) ?? '',
+  }
+}
+
+function migrateAppUserRoles(db: Database.Database): void {
+  const row = db.prepare(`SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'app_users'`).get() as { sql?: string } | undefined
+  const sql = String(row?.sql ?? '')
+  if (!sql || sql.includes("'kids'")) return
+  db.transaction(() => {
+    db.exec(`
+      CREATE TABLE app_users_new (
+        id            TEXT PRIMARY KEY,
+        username      TEXT NOT NULL UNIQUE COLLATE NOCASE,
+        password_hash TEXT NOT NULL DEFAULT '',
+        role          TEXT NOT NULL CHECK (role IN ('admin', 'user', 'kids')),
+        max_rating    TEXT NOT NULL DEFAULT 'unrestricted',
+        created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+        updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+      );
+      INSERT INTO app_users_new (id, username, password_hash, role, max_rating, created_at, updated_at)
+      SELECT id, username, password_hash, role, max_rating, created_at, updated_at
+      FROM app_users;
+      DROP TABLE app_users;
+      ALTER TABLE app_users_new RENAME TO app_users;
+    `)
+  })()
+}
+
+function bootstrapDefaultAdmin(db: Database.Database): void {
+  const existing = db.prepare(`SELECT COUNT(*) AS n FROM app_users`).get() as { n: number }
+  if (existing.n > 0) return
+  const username = normalizeUsername(config.uiUsername || 'admin')
+  const password = config.uiPassword.trim()
+  if (!username || !password) return
+  db.prepare(`
+    INSERT INTO app_users (id, username, password_hash, role, max_rating, updated_at)
+    VALUES (?, ?, ?, 'admin', 'unrestricted', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  `).run(DEFAULT_ADMIN_USER_ID, username, hashPassword(password))
+}
+
+function migrateLegacyUserData(db: Database.Database): void {
+  const legacyCount = db.prepare(`SELECT COUNT(*) AS n FROM user_data`).get() as { n: number }
+  if (legacyCount.n === 0) return
+  const migratedCount = db.prepare(`SELECT COUNT(*) AS n FROM user_item_data`).get() as { n: number }
+  if (migratedCount.n > 0) return
+  const hasAdmin = db.prepare(`SELECT 1 FROM app_users WHERE id = ? LIMIT 1`).get(DEFAULT_ADMIN_USER_ID)
+  if (!hasAdmin) return
+  db.prepare(`
+    INSERT INTO user_item_data (user_id, item_id, played, play_count, position_ticks, last_played_date)
+    SELECT ?, item_id, played, play_count, position_ticks, last_played_date
+    FROM user_data
+  `).run(DEFAULT_ADMIN_USER_ID)
+}
+
+function sqlStringLiteral(value: string): string {
+  return `'${value.replace(/'/g, "''")}'`
+}
+
+function randomGuidLikeId(): string {
+  const hex = randomBytes(16).toString('hex')
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`
 }
 
 function row2movie(r: Record<string, unknown>): Movie {
@@ -288,6 +451,7 @@ export interface ListOpts {
   limit?:     number
   offset?:    number
   availableOnly?: boolean
+  userId?: string
 }
 
 function todayIsoDate(): string {
@@ -359,7 +523,7 @@ type SortSpec = {
   directional: boolean
 }
 
-function movieSortSpec(sortBy?: string): SortSpec {
+function movieSortSpec(sortBy?: string, userId = DEFAULT_ADMIN_USER_ID): SortSpec {
   const normalized = normalizeSortBy(sortBy)
   if (['sortname', 'title'].includes(normalized)) {
     return {
@@ -374,7 +538,7 @@ function movieSortSpec(sortBy?: string): SortSpec {
   if (['dateshowadded', 'dateadded', 'addeddate'].includes(normalized)) return { expr: 'synced_at', directional: true }
   if (['dateplayed', 'lastplayeddate'].includes(normalized)) {
     return {
-      expr: `(SELECT last_played_date FROM user_data WHERE item_id = ('00000000-0000-4000-8000-' || lower(printf('%012x', movies.tmdb_id))))`,
+      expr: `(SELECT last_played_date FROM user_item_data WHERE user_id = ${sqlStringLiteral(userId)} AND item_id = ('00000000-0000-4000-8000-' || lower(printf('%012x', movies.tmdb_id))))`,
       directional: true,
     }
   }
@@ -382,7 +546,7 @@ function movieSortSpec(sortBy?: string): SortSpec {
   return { expr: 'popularity', directional: true }
 }
 
-function showSortSpec(sortBy?: string): SortSpec {
+function showSortSpec(sortBy?: string, userId = DEFAULT_ADMIN_USER_ID): SortSpec {
   const normalized = normalizeSortBy(sortBy)
   if (['sortname', 'title'].includes(normalized)) {
     return {
@@ -403,10 +567,11 @@ function showSortSpec(sortBy?: string): SortSpec {
   if (['dateplayed', 'lastplayeddate'].includes(normalized)) {
     return {
       expr: `(SELECT max(u.last_played_date)
-        FROM user_data u
+        FROM user_item_data u
         JOIN episodes e
           ON u.item_id = ('00000000-0000-4000-8003-' || lower(printf('%06x%03x%03x', e.show_tmdb_id, e.season_number, e.episode_number)))
-       WHERE e.show_tmdb_id = shows.tmdb_id)`,
+       WHERE u.user_id = ${sqlStringLiteral(userId)}
+         AND e.show_tmdb_id = shows.tmdb_id)`,
       directional: true,
     }
   }
@@ -475,9 +640,9 @@ function showAvailabilityWhere(availableOnly: boolean): string {
 }
 
 export function listMovies(opts: ListOpts = {}): Movie[] {
-  const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false } = opts
+  const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false, userId = DEFAULT_ADMIN_USER_ID } = opts
 
-  const sortSpec = movieSortSpec(sortBy)
+  const sortSpec = movieSortSpec(sortBy, userId)
   const orderClause = sortSpec.directional ? `${sortSpec.expr} ${sortDirection(sortOrder)}` : sortSpec.expr
   const baseWhere = movieAvailabilityWhere(availableOnly)
 
@@ -558,8 +723,8 @@ export function upsertShow(s: Omit<Show, 'id'>): void {
 }
 
 export function listShows(opts: ListOpts = {}): Show[] {
-  const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false } = opts
-  const sortSpec = showSortSpec(sortBy)
+  const { search, sortBy, sortOrder, limit = 50, offset = 0, availableOnly = false, userId = DEFAULT_ADMIN_USER_ID } = opts
+  const sortSpec = showSortSpec(sortBy, userId)
   const orderClause = sortSpec.directional ? `${sortSpec.expr} ${sortDirection(sortOrder)}` : sortSpec.expr
   const baseWhere = showAvailabilityWhere(availableOnly)
   if (search) {
@@ -724,6 +889,153 @@ export function setSetting(key: string, value: string): void {
 export function getAllSettings(): Record<string, string> {
   const rows = getDb().prepare(`SELECT key, value FROM app_settings`).all() as { key: string; value: string }[]
   return Object.fromEntries(rows.map(r => [r.key, r.value]))
+}
+
+// ── App users ────────────────────────────────────────────────────────────────
+
+export function listUsers(): AppUser[] {
+  const rows = getDb().prepare(`
+    SELECT * FROM app_users
+    ORDER BY CASE role WHEN 'admin' THEN 0 ELSE 1 END ASC, username COLLATE NOCASE ASC
+  `).all() as Record<string, unknown>[]
+  return rows.map(row2appUser)
+}
+
+export function countUsers(): number {
+  return (getDb().prepare(`SELECT COUNT(*) AS n FROM app_users`).get() as { n: number }).n
+}
+
+export function getUserById(userId: string): AppUser | null {
+  const row = getDb().prepare(`SELECT * FROM app_users WHERE id = ?`).get(userId) as Record<string, unknown> | undefined
+  return row ? row2appUser(row) : null
+}
+
+export function getUserByUsername(username: string): AppUser | null {
+  const normalized = normalizeUsername(username)
+  if (!normalized) return null
+  const row = getDb().prepare(`SELECT * FROM app_users WHERE username = ? COLLATE NOCASE`).get(normalized) as Record<string, unknown> | undefined
+  return row ? row2appUser(row) : null
+}
+
+export function verifyUserCredentials(username: string, password: string): AppUser | null {
+  const user = getUserByUsername(username)
+  if (!user || !user.passwordHash) return null
+  return verifyPasswordHash(password, user.passwordHash) ? user : null
+}
+
+export function createUser(username: string, password: string, role: AppUserRole, maxRating: string): AppUser {
+  const normalized = normalizeUsername(username)
+  if (!normalized) throw new Error('Username is required')
+  if (!password.trim()) throw new Error('Password is required')
+  const id = role === 'admin' && countUsers() === 0 ? DEFAULT_ADMIN_USER_ID : randomGuidLikeId()
+  const effectiveMaxRating = effectiveMaxRatingForRole(role, maxRating)
+  getDb().prepare(`
+    INSERT INTO app_users (id, username, password_hash, role, max_rating, updated_at)
+    VALUES (?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+  `).run(id, normalized, hashPassword(password), role, effectiveMaxRating)
+  return getUserById(id)!
+}
+
+export function updateUser(
+  userId: string,
+  updates: { username?: string; password?: string; role?: AppUserRole; maxRating?: string },
+): AppUser {
+  const existing = getUserById(userId)
+  if (!existing) throw new Error('User not found')
+  const username = updates.username != null ? normalizeUsername(updates.username) : existing.username
+  const role = updates.role ?? existing.role
+  const maxRating = effectiveMaxRatingForRole(role, updates.maxRating != null ? updates.maxRating : existing.maxRating)
+  const passwordHash = updates.password && updates.password.trim()
+    ? hashPassword(updates.password)
+    : existing.passwordHash
+  if (!username) throw new Error('Username is required')
+  if (existing.role === 'admin' && role !== 'admin') {
+    const admins = getDb().prepare(`SELECT COUNT(*) AS n FROM app_users WHERE role = 'admin'`).get() as { n: number }
+    if (admins.n <= 1) throw new Error('Cannot demote the last admin')
+  }
+  getDb().prepare(`
+    UPDATE app_users
+    SET username = ?, password_hash = ?, role = ?, max_rating = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(username, passwordHash, role, maxRating, userId)
+  return getUserById(userId)!
+}
+
+export function deleteUser(userId: string): void {
+  const db = getDb()
+  const user = getUserById(userId)
+  if (!user) return
+  if (user.role === 'admin') {
+    const admins = db.prepare(`SELECT COUNT(*) AS n FROM app_users WHERE role = 'admin'`).get() as { n: number }
+    if (admins.n <= 1) throw new Error('Cannot delete the last admin')
+  }
+  db.transaction(() => {
+    db.prepare(`DELETE FROM user_item_data WHERE user_id = ?`).run(userId)
+    db.prepare(`DELETE FROM app_users WHERE id = ?`).run(userId)
+  })()
+}
+
+export function authEnabled(): boolean {
+  return countUsers() > 0
+}
+
+function normalizeOfficialRating(rating: string): string {
+  const raw = rating.trim().toUpperCase()
+  if (!raw) return ''
+  const compact = raw.replace(/\s+/g, '').replace(/_/g, '-')
+  if (compact === 'TVY') return 'TV-Y'
+  if (compact === 'TVY7' || compact === 'TVY7FV') return 'TV-Y7'
+  if (compact === 'TVG') return 'TV-G'
+  if (compact === 'TVPG') return 'TV-PG'
+  if (compact === 'TV14') return 'TV-14'
+  if (compact === 'TVMA') return 'TV-MA'
+  if (compact === 'PG13') return 'PG-13'
+  if (compact === 'NC17') return 'NC-17'
+  if (compact === 'NOTRATED' || compact === 'UNRATED' || compact === 'NR' || compact === 'UR') return 'UNRATED'
+  return compact
+}
+
+function ratingSeverity(rating: string): number | null {
+  switch (normalizeOfficialRating(rating)) {
+    case 'G':
+    case 'TV-Y':
+    case 'TV-G':
+      return 0
+    case 'PG':
+    case 'TV-Y7':
+    case 'TV-PG':
+      return 1
+    case 'PG-13':
+    case 'TV-14':
+      return 2
+    case 'R':
+    case 'TV-MA':
+      return 3
+    case 'NC-17':
+      return 4
+    default:
+      return null
+  }
+}
+
+export function canUserAccessRating(maxRating: string, officialRating: string): boolean {
+  const normalizedMax = normalizeMaxRating(maxRating)
+  if (normalizedMax === 'unrestricted') return true
+  const limit = ratingSeverity(normalizedMax)
+  const actual = ratingSeverity(officialRating)
+  if (limit == null) return true
+  if (actual == null) return true
+  return actual <= limit
+}
+
+export function canUserAccessMovie(user: Pick<AppUser, 'role' | 'maxRating'>, movie: Pick<Movie, 'officialRating'>): boolean {
+  if (user.role === 'admin') return true
+  return canUserAccessRating(effectiveMaxRatingForRole(user.role, user.maxRating), movie.officialRating)
+}
+
+export function canUserAccessShow(user: Pick<AppUser, 'role' | 'maxRating'>, show: Pick<Show, 'officialRating'>): boolean {
+  if (user.role === 'admin') return true
+  return canUserAccessRating(effectiveMaxRatingForRole(user.role, user.maxRating), show.officialRating)
 }
 
 function row2manualShowSubscription(r: Record<string, unknown>): ManualShowSubscription {
@@ -1022,8 +1334,8 @@ export interface UserData {
 
 const MIN_RESUME_TICKS = 2 * 60 * 10_000_000
 
-export function getUserData(itemId: string): UserData {
-  const r = getDb().prepare(`SELECT * FROM user_data WHERE item_id = ?`).get(itemId) as Record<string, unknown> | undefined
+export function getUserData(itemId: string, userId = DEFAULT_ADMIN_USER_ID): UserData {
+  const r = getDb().prepare(`SELECT * FROM user_item_data WHERE user_id = ? AND item_id = ?`).get(userId, itemId) as Record<string, unknown> | undefined
   if (!r) return { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }
   const positionTicks = Math.max(0, Number(r.position_ticks ?? 0))
   return {
@@ -1034,35 +1346,36 @@ export function getUserData(itemId: string): UserData {
   }
 }
 
-export function clearProgress(itemId: string): void {
+export function clearProgress(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
   getDb().prepare(`
-    INSERT INTO user_data (item_id, position_ticks)
-    VALUES (?, 0)
-    ON CONFLICT(item_id) DO UPDATE SET position_ticks = 0
-  `).run(itemId)
+    INSERT INTO user_item_data (user_id, item_id, position_ticks)
+    VALUES (?, ?, 0)
+    ON CONFLICT(user_id, item_id) DO UPDATE SET position_ticks = 0
+  `).run(userId, itemId)
 }
 
-export function saveProgress(itemId: string, positionTicks: number): void {
+export function saveProgress(itemId: string, positionTicks: number, userId = DEFAULT_ADMIN_USER_ID): void {
   if (positionTicks < MIN_RESUME_TICKS) {
-    const existing = getUserData(itemId)
+    const existing = getUserData(itemId, userId)
     if (existing.positionTicks >= MIN_RESUME_TICKS) return
-    clearProgress(itemId)
+    clearProgress(itemId, userId)
     return
   }
   getDb().prepare(`
-    INSERT INTO user_data (item_id, played, position_ticks, last_played_date)
-    VALUES (?, 0, ?, ?)
-    ON CONFLICT(item_id) DO UPDATE SET position_ticks = excluded.position_ticks
-                                        , played = 0
-                                        , last_played_date = excluded.last_played_date
-  `).run(itemId, positionTicks, new Date().toISOString())
+    INSERT INTO user_item_data (user_id, item_id, played, position_ticks, last_played_date)
+    VALUES (?, ?, 0, ?, ?)
+    ON CONFLICT(user_id, item_id) DO UPDATE SET position_ticks = excluded.position_ticks
+                                               , played = 0
+                                               , last_played_date = excluded.last_played_date
+  `).run(userId, itemId, positionTicks, new Date().toISOString())
 }
 
-export function listResumeItemIds(limit = 50, offset = 0): string[] {
+export function listResumeItemIds(limit = 50, offset = 0, userId = DEFAULT_ADMIN_USER_ID): string[] {
   const rows = getDb().prepare(`
     SELECT item_id
-    FROM user_data
-    WHERE position_ticks >= ?
+    FROM user_item_data
+    WHERE user_id = ?
+      AND position_ticks >= ?
       AND played = 0
     ORDER BY
       CASE WHEN last_played_date = '' THEN 1 ELSE 0 END,
@@ -1070,47 +1383,49 @@ export function listResumeItemIds(limit = 50, offset = 0): string[] {
       item_id ASC
     LIMIT ?
     OFFSET ?
-  `).all(MIN_RESUME_TICKS, limit, offset) as Array<{ item_id: string }>
+  `).all(userId, MIN_RESUME_TICKS, limit, offset) as Array<{ item_id: string }>
   return rows.map(r => r.item_id)
 }
 
-export function countResumeItems(): number {
+export function countResumeItems(userId = DEFAULT_ADMIN_USER_ID): number {
   const row = getDb().prepare(`
     SELECT COUNT(*) AS n
-    FROM user_data
-    WHERE position_ticks >= ?
+    FROM user_item_data
+    WHERE user_id = ?
+      AND position_ticks >= ?
       AND played = 0
-  `).get(MIN_RESUME_TICKS) as { n: number }
+  `).get(userId, MIN_RESUME_TICKS) as { n: number }
   return row.n
 }
 
-export function getAllPlayedItemIds(): Set<string> {
+export function getAllPlayedItemIds(userId = DEFAULT_ADMIN_USER_ID): Set<string> {
   const rows = getDb().prepare(`
     SELECT item_id
-    FROM user_data
-    WHERE played = 1
-  `).all() as Array<{ item_id: string }>
+    FROM user_item_data
+    WHERE user_id = ?
+      AND played = 1
+  `).all(userId) as Array<{ item_id: string }>
   return new Set(rows.map(r => r.item_id))
 }
 
-export function markPlayed(itemId: string): void {
+export function markPlayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
   getDb().prepare(`
-    INSERT INTO user_data (item_id, played, play_count, position_ticks, last_played_date)
-    VALUES (?, 1, 1, 0, ?)
-    ON CONFLICT(item_id) DO UPDATE SET
+    INSERT INTO user_item_data (user_id, item_id, played, play_count, position_ticks, last_played_date)
+    VALUES (?, ?, 1, 1, 0, ?)
+    ON CONFLICT(user_id, item_id) DO UPDATE SET
       played           = 1,
       play_count       = play_count + 1,
       position_ticks   = 0,
       last_played_date = excluded.last_played_date
-  `).run(itemId, new Date().toISOString())
+  `).run(userId, itemId, new Date().toISOString())
 }
 
-export function markUnplayed(itemId: string): void {
+export function markUnplayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
   getDb().prepare(`
-    INSERT INTO user_data (item_id, played, position_ticks)
-    VALUES (?, 0, 0)
-    ON CONFLICT(item_id) DO UPDATE SET
+    INSERT INTO user_item_data (user_id, item_id, played, position_ticks)
+    VALUES (?, ?, 0, 0)
+    ON CONFLICT(user_id, item_id) DO UPDATE SET
       played         = 0,
       position_ticks = 0
-  `).run(itemId)
+  `).run(userId, itemId)
 }

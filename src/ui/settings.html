@@ -18,7 +18,12 @@
     }
     *, *::before, *::after { box-sizing: border-box; }
     body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-    .shell { max-width: 760px; margin: 0 auto; padding: 20px 20px 80px; }
+    .shell {
+      width: min(1200px, calc(100vw - 40px));
+      max-width: 1200px;
+      margin: 0 auto;
+      padding: 20px 20px 80px;
+    }
 
     /* Topbar */
     .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 28px; }
@@ -37,7 +42,28 @@
     .page-header p { margin: 0; color: var(--muted); font-size: 14px; }
 
     /* Section */
-    .section { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
+    .section {
+      position: relative;
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)),
+        var(--surface);
+      border: 1px solid var(--border-strong);
+      border-radius: 18px;
+      padding: 22px;
+      margin-bottom: 18px;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.03),
+        0 10px 30px rgba(0,0,0,.14);
+    }
+    .section::before {
+      content: "";
+      position: absolute;
+      left: 0; right: 0; top: 0;
+      height: 3px;
+      border-radius: 18px 18px 0 0;
+      background: linear-gradient(90deg, rgba(157,110,240,.75), rgba(96,165,250,.45));
+      opacity: .65;
+    }
     .section-title { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
     .optional-tag { font-size: 10px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
 
@@ -92,6 +118,95 @@
       display: flex; align-items: center; gap: 10px; padding: 10px 12px;
       border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.02);
     }
+    .user-table-wrap {
+      margin-top: 14px;
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      overflow: hidden;
+      background:
+        linear-gradient(180deg, rgba(157,110,240,.05), rgba(255,255,255,.015)),
+        rgba(255,255,255,.02);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
+    }
+    .user-table-scroll {
+      max-height: 420px;
+      overflow: auto;
+    }
+    .user-table {
+      width: 100%;
+      min-width: 820px;
+      border-collapse: collapse;
+    }
+    .user-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      text-align: left;
+      padding: 12px 14px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--muted);
+      background: rgba(18,21,29,.97);
+      border-bottom: 1px solid var(--border-strong);
+      white-space: nowrap;
+    }
+    .user-table tbody td {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--border);
+      vertical-align: middle;
+    }
+    .user-table tbody tr:last-child td { border-bottom: none; }
+    .user-table tbody tr.deleted {
+      opacity: .45;
+      background: rgba(248,113,113,.06);
+    }
+    .user-table input,
+    .user-table select {
+      min-width: 0;
+      margin: 0;
+    }
+    .user-table .username-cell {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text);
+    }
+    .user-table .user-id-cell {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 3px;
+    }
+    .user-actions {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      white-space: nowrap;
+    }
+    .btn-danger {
+      color: #fecaca;
+      border-color: var(--red-border);
+      background: var(--red-dim);
+    }
+    .btn-danger:hover { background: rgba(248,113,113,.16); }
+    .password-state {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .password-state.pending { color: #bfdbfe; }
+    .btn-icon {
+      width: 38px;
+      height: 38px;
+      padding: 0;
+      justify-content: center;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .empty-table {
+      padding: 18px 16px;
+      font-size: 13px;
+      color: var(--muted);
+    }
     .check-item input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; }
     .check-meta { min-width: 0; }
     .check-title { font-size: 14px; color: var(--text); }
@@ -103,6 +218,54 @@
     /* Save bar */
     .save-bar { position: sticky; bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px)); margin-top: 20px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: rgba(18,21,29,.92); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
     .save-bar p { margin: 0; font-size: 13px; color: var(--muted); }
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+      background: rgba(7, 9, 14, .72);
+      backdrop-filter: blur(6px);
+      z-index: 1000;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      width: min(520px, 100%);
+      border-radius: 18px;
+      border: 1px solid var(--border-strong);
+      background:
+        linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)),
+        var(--surface);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.03),
+        0 20px 50px rgba(0,0,0,.35);
+      padding: 20px;
+    }
+    .modal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .modal-title {
+      margin: 0 0 4px;
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+    .modal-sub {
+      margin: 0;
+      font-size: 13px;
+      color: var(--muted);
+    }
+    .modal-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-top: 18px;
+    }
   </style>
 </head>
 <body>
@@ -205,6 +368,19 @@
     </div>
   </div>
 
+  <div class="section">
+    <div class="section-title">Users</div>
+    <div class="field-note">Admins can manage accounts and roles. Admin and user accounts are unrestricted. Kids accounts are limited to kid-safe ratings automatically. User edits save together when you click Save Settings.</div>
+    <div class="user-table-wrap">
+      <div class="user-table-scroll">
+        <div id="userList"></div>
+      </div>
+    </div>
+    <div class="btn-row">
+      <button type="button" class="btn btn-icon" onclick="openNewUserModal()" title="Add User" aria-label="Add User">+</button>
+    </div>
+  </div>
+
   <!-- Server -->
   <div class="section">
     <div class="section-title">Server</div>
@@ -254,12 +430,63 @@
   <div id="out" class="callout" style="display:none;margin-top:14px"></div>
 </div>
 
+<div class="modal-backdrop" id="userModalBackdrop" onclick="closeUserModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h2 class="modal-title" id="userModalTitle">Add User</h2>
+        <p class="modal-sub" id="userModalSubtitle">Queue a new account. It will be created when you save settings.</p>
+      </div>
+      <button type="button" class="icon-btn" onclick="closeUserModal()" aria-label="Close">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="field-grid">
+      <div class="field">
+        <label for="modalUsername">Username</label>
+        <input id="modalUsername" type="text" placeholder="username">
+      </div>
+      <div class="field">
+        <label for="modalPassword">Password</label>
+        <input id="modalPassword" type="password" placeholder="password">
+      </div>
+      <div class="field">
+        <label for="modalRole">Role</label>
+        <select id="modalRole">
+          <option value="admin">Admin</option>
+          <option value="user">User</option>
+          <option value="kids">Kids</option>
+        </select>
+      </div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="closeUserModal()">Cancel</button>
+      <button type="button" class="btn btn-primary" id="userModalConfirmBtn" onclick="confirmUserModal()">Add User</button>
+    </div>
+  </div>
+</div>
+
 <script>
   let selectedTraktLists = []
   let hasStoredRdApiKey = false
   let hasStoredTmdbApiKey = false
   let hasStoredTvdbApiKey = false
   let hasStoredTraktClientSecret = false
+  let managedUsers = []
+  let deletedUserIds = new Set()
+  let userModalMode = 'create'
+  let userModalTargetId = null
+
+  function escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;')
+  }
 
   function providerPlaceholder(idx) {
     return idx === 0
@@ -340,6 +567,9 @@
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
     document.getElementById('traktClientSecret').value = ''
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
+    managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
+    deletedUserIds = new Set()
+    renderUsers()
 
     if (hasStoredRdApiKey) {
       setPill('rdStatus', 'Configured', 'ok')
@@ -348,6 +578,157 @@
       setPill('rdStatus', 'Not set', '')
       document.getElementById('rdMeta').textContent = 'No API key configured'
     }
+  }
+
+  function roleOptions(selected) {
+    return [
+      ['admin', 'Admin'],
+      ['user', 'User'],
+      ['kids', 'Kids'],
+    ].map(([value, label]) => `<option value="${value}" ${value === selected ? 'selected' : ''}>${label}</option>`).join('')
+  }
+
+  function renderUsers() {
+    const el = document.getElementById('userList')
+    if (!managedUsers.length) {
+      el.innerHTML = '<div class="empty-table">No users configured.</div>'
+      return
+    }
+    el.innerHTML = `
+      <table class="user-table">
+        <thead>
+          <tr>
+            <th>Username</th>
+            <th>Role</th>
+            <th>Password</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${managedUsers.map(user => `
+            <tr class="${user.deleted ? 'deleted' : ''}">
+              <td>
+                <div class="username-cell">${escapeHtml(user.username)}</div>
+                <div class="user-id-cell">${user.isNew ? 'New user' : escapeHtml(user.id)}</div>
+              </td>
+              <td>
+                <select ${user.deleted ? 'disabled' : ''} onchange="updateUserRole('${user.id}', this.value)">
+                  ${roleOptions(user.role)}
+                </select>
+              </td>
+              <td>
+                <div class="user-actions">
+                  <button type="button" class="btn btn-sm" ${user.deleted ? 'disabled' : ''} onclick="setUserPassword('${user.id}')">${user.pendingPassword ? 'Change Again' : 'Change Password'}</button>
+                  <span class="password-state ${user.pendingPassword ? 'pending' : ''}">${user.pendingPassword ? 'Will update on save' : 'Unchanged'}</span>
+                </div>
+              </td>
+              <td>
+                <div class="user-actions">
+                  <button type="button" class="btn btn-sm ${user.deleted ? '' : 'btn-danger'}" onclick="toggleDeleteUser('${user.id}')">${user.deleted ? 'Undo Delete' : 'Delete User'}</button>
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    `
+  }
+
+  function queueNewUser() {
+    const username = document.getElementById('modalUsername').value.trim()
+    const password = document.getElementById('modalPassword').value
+    if (!username || !password) {
+      showOut('Enter a username and password for the new user.', 'error')
+      return
+    }
+    const tempId = `new-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    managedUsers.push({
+      id: tempId,
+      username,
+      role: document.getElementById('modalRole').value,
+      maxRating: 'unrestricted',
+      pendingPassword: password,
+      isNew: true,
+      deleted: false,
+    })
+    closeUserModal()
+    renderUsers()
+    showOut('User queued. Click Save Settings to apply.', 'info')
+  }
+
+  function updateUserField(id, key, value) {
+    const user = managedUsers.find(u => u.id === id)
+    if (!user) return
+    user[key] = value
+  }
+
+  function updateUserRole(id, value) {
+    const user = managedUsers.find(u => u.id === id)
+    if (!user) return
+    user.role = value
+    renderUsers()
+  }
+
+  function setUserPassword(id) {
+    const user = managedUsers.find(u => u.id === id)
+    if (!user || user.deleted) return
+    userModalMode = 'password'
+    userModalTargetId = id
+    document.getElementById('userModalTitle').textContent = 'Change Password'
+    document.getElementById('userModalSubtitle').textContent = `Set a new password for ${user.username}. It will be applied when you save settings.`
+    document.getElementById('modalUsername').value = user.username
+    document.getElementById('modalUsername').disabled = true
+    document.getElementById('modalPassword').value = ''
+    document.getElementById('modalRole').value = user.role
+    document.getElementById('modalRole').disabled = true
+    document.getElementById('userModalConfirmBtn').textContent = 'Set Password'
+    document.getElementById('userModalBackdrop').classList.add('open')
+    document.getElementById('modalPassword').focus()
+  }
+
+  function toggleDeleteUser(id) {
+    const user = managedUsers.find(u => u.id === id)
+    if (!user) return
+    user.deleted = !user.deleted
+    renderUsers()
+  }
+
+  function openNewUserModal() {
+    userModalMode = 'create'
+    userModalTargetId = null
+    document.getElementById('userModalTitle').textContent = 'Add User'
+    document.getElementById('userModalSubtitle').textContent = 'Queue a new account. It will be created when you save settings.'
+    document.getElementById('modalUsername').value = ''
+    document.getElementById('modalUsername').disabled = false
+    document.getElementById('modalPassword').value = ''
+    document.getElementById('modalRole').value = 'user'
+    document.getElementById('modalRole').disabled = false
+    document.getElementById('userModalConfirmBtn').textContent = 'Add User'
+    document.getElementById('userModalBackdrop').classList.add('open')
+    document.getElementById('modalUsername').focus()
+  }
+
+  function closeUserModal(event) {
+    if (event && event.target !== event.currentTarget) return
+    document.getElementById('userModalBackdrop').classList.remove('open')
+  }
+
+  function confirmUserModal() {
+    if (userModalMode === 'password') {
+      const password = document.getElementById('modalPassword').value
+      if (!password) {
+        showOut('Enter a new password before saving.', 'error')
+        return
+      }
+      const user = managedUsers.find(u => u.id === userModalTargetId)
+      if (!user) return
+      user.pendingPassword = password
+      closeUserModal()
+      renderUsers()
+      showOut(`Password update queued for ${user.username}.`, 'info')
+      return
+    }
+    queueNewUser()
   }
 
   async function loadTraktStatus() {
@@ -486,6 +867,49 @@
       showOut(d.error || 'Failed to save settings.', 'error')
       return
     }
+
+    for (const user of managedUsers) {
+      if (user.deleted && !user.isNew) {
+        const deleteRes = await fetch('/ui/users-data', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: user.id, action: 'delete' }),
+        })
+        if (!deleteRes.ok) {
+          const d = await deleteRes.json().catch(() => ({}))
+          showOut(d.error || `Failed to delete user ${user.username}.`, 'error')
+          return
+        }
+        continue
+      }
+      if (user.deleted && user.isNew) continue
+
+      const payload = user.isNew
+        ? {
+            username: user.username,
+            password: user.pendingPassword,
+            role: user.role,
+          }
+        : {
+            id: user.id,
+            username: user.username,
+            ...(user.pendingPassword ? { password: user.pendingPassword } : {}),
+            role: user.role,
+          }
+
+      const userRes = await fetch('/ui/users-data', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+      if (!userRes.ok) {
+        const d = await userRes.json().catch(() => ({}))
+        showOut(d.error || `Failed to save user ${user.username}.`, 'error')
+        return
+      }
+    }
+
+    await loadSettings()
     const btn = document.getElementById('saveBtn')
     btn.classList.add('saved')
     btn.innerHTML = `<svg width="15" height="15" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M5 13l4 4L19 7"/></svg> Saved`
