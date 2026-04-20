@@ -8,12 +8,23 @@ import {
 import { fetchEpisodeStillFallbacks } from './tvdb.js'
 
 const BASE = 'https://api.themoviedb.org/3'
+const MISSING_STILL_RETRY_MS = 7 * 24 * 60 * 60 * 1000
 
 async function tmdbGet(path: string): Promise<unknown> {
   const sep = path.includes('?') ? '&' : '?'
   const res = await fetch(`${BASE}${path}${sep}api_key=${config.tmdbApiKey}`)
   if (!res.ok) throw new Error(`TMDB ${res.status} for ${path}`)
   return res.json()
+}
+
+function shouldRetryMissingStillBackfill(episodes: Episode[]): boolean {
+  const now = Date.now()
+  return episodes.some(ep => {
+    if (ep.stillPath) return false
+    const syncedAt = Date.parse(ep.syncedAt)
+    if (Number.isNaN(syncedAt)) return true
+    return now - syncedAt >= MISSING_STILL_RETRY_MS
+  })
 }
 
 interface TmdbMovieRaw {
@@ -466,9 +477,10 @@ export async function ensureShowSeasonsCached(show: Show): Promise<void> {
 
     // Refresh already-cached seasons when aired episodes are missing stills.
     // This lets newly aired episodes pick up thumbnails after TMDB backfills
-    // still_path without forcing all seasons to be re-fetched on every sync.
+    // still_path without forcing all seasons with permanently missing artwork
+    // to be re-fetched on every sync.
     const airedEpisodes = getAiredEpisodesForSeason(show.tmdbId, n)
-    if (airedEpisodes.some(ep => !ep.stillPath)) {
+    if (shouldRetryMissingStillBackfill(airedEpisodes)) {
       await fetchAndCacheSeasonDetails(show.tmdbId, n)
     }
   }
