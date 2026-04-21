@@ -249,10 +249,26 @@ export async function fetchMovieCollection(movieTmdbId: number): Promise<MovieCo
   }
 }
 
-export function posterUrl(posterPath: string): string {
+type TmdbImageKind = 'poster' | 'backdrop' | 'logo'
+
+function pickTmdbImageSize(kind: TmdbImageKind, requestedWidth?: number | null): string {
+  const widths = kind === 'backdrop'
+    ? [300, 780, 1280]
+    : [92, 154, 185, 342, 500, 780]
+  const fallback = kind === 'backdrop' ? 1280 : 500
+  const target = requestedWidth && requestedWidth > 0 ? requestedWidth : fallback
+  const chosen = widths.find(width => width >= target) ?? widths[widths.length - 1]
+  return `w${chosen}`
+}
+
+export function posterUrl(
+  posterPath: string,
+  options?: { kind?: TmdbImageKind; width?: number | null },
+): string {
   if (!posterPath) return ''
   if (posterPath.startsWith('http://') || posterPath.startsWith('https://')) return posterPath
-  return `https://image.tmdb.org/t/p/original${posterPath}`
+  const size = pickTmdbImageSize(options?.kind ?? 'poster', options?.width)
+  return `https://image.tmdb.org/t/p/${size}${posterPath}`
 }
 
 // ── TV Shows ──────────────────────────────────────────────────────────────────

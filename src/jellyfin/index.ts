@@ -45,12 +45,22 @@ const ROOT_FOLDER_ART: Record<string, string> = {
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
 const IMAGE_PROXY_TTL_MS = 60 * 60 * 1000
+const PLAYED_COMPLETION_THRESHOLD = 0.95
 const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const LOGIN_MAX_ATTEMPTS = 10
 const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 const proxiedImageCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>()
+type ImageKind = 'poster' | 'backdrop' | 'logo'
+type ImageQuery = {
+  tag?: string
+  width?: string
+  maxWidth?: string
+  height?: string
+  maxHeight?: string
+  quality?: string
+}
 
 function tmdbToId(tmdbId: number): string {
   return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
@@ -191,14 +201,72 @@ async function fetchProxiedImage(url: string): Promise<{ buffer: Buffer; content
   }
 }
 
-async function sendImageUrl(reply: FastifyReply, pathOrUrl: string | undefined): Promise<FastifyReply> {
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  if (typeof value === 'string') return value
+  return value?.[0]
+}
+
+function parsePositiveInt(value: string | undefined): number | null {
+  if (!value) return null
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null
+}
+
+function requestedImageWidth(query: ImageQuery | undefined): number | null {
+  return parsePositiveInt(query?.width) ?? parsePositiveInt(query?.maxWidth)
+}
+
+function imageKindForType(type: string): ImageKind {
+  const normalized = type.toLowerCase()
+  if (normalized === 'logo') return 'logo'
+  if (normalized === 'backdrop' || normalized === 'thumb') return 'backdrop'
+  return 'poster'
+}
+
+function imageEtag(tag: string | undefined, url: string): string {
+  return `"${tag || createHash('sha1').update(url).digest('hex')}"`
+}
+
+async function sendImageUrl(
+  reply: FastifyReply,
+  headers: Record<string, string | string[] | undefined>,
+  pathOrUrl: string | undefined,
+  kind: ImageKind,
+  query?: ImageQuery,
+): Promise<FastifyReply> {
   if (!pathOrUrl) return reply.code(404).send()
-  const url = posterUrl(pathOrUrl)
+  const url = posterUrl(pathOrUrl, { kind, width: requestedImageWidth(query) })
+  const etag = imageEtag(query?.tag, url)
+  if (firstHeaderValue(headers['if-none-match']) === etag) {
+    reply.header('Cache-Control', 'public, max-age=31536000, immutable')
+    reply.header('ETag', etag)
+    return reply.code(304).send()
+  }
   const proxied = await fetchProxiedImage(url)
   if (!proxied) return reply.code(404).send()
-  reply.header('Cache-Control', 'public, max-age=3600')
+  reply.header('Cache-Control', 'public, max-age=31536000, immutable')
+  reply.header('ETag', etag)
   reply.type(proxied.contentType)
   return reply.send(proxied.buffer)
+}
+
+function runtimeTicksForItem(itemId: string): number | null {
+  const epRef = idToEpisode(itemId)
+  if (epRef) {
+    const episode = getEpisodesForSeason(epRef.showTmdbId, epRef.seasonNum)
+      .find(e => e.episodeNumber === epRef.episodeNum)
+    return episode ? (episode.runtimeMins || 45) * 60 * 10_000_000 : null
+  }
+
+  const tmdbId = idToTmdb(itemId)
+  if (!tmdbId) return null
+  const movie = getMovieByTmdbId(tmdbId)
+  return movie ? (movie.runtimeMins || 90) * 60 * 10_000_000 : null
+}
+
+function reachedCompletionThreshold(positionTicks: number | undefined, runtimeTicks: number | undefined): boolean {
+  if (positionTicks == null || runtimeTicks == null || runtimeTicks <= 0) return false
+  return (positionTicks / runtimeTicks) >= PLAYED_COMPLETION_THRESHOLD
 }
 
 function parseJsonArray<T>(value: string): T[] {
@@ -1257,13 +1325,15 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   async function handleImage(
     id: string,
     type: string,
-    tag: string | undefined,
+    query: ImageQuery | undefined,
+    headers: Record<string, string | string[] | undefined>,
     user: AppUser | null,
     reply: FastifyReply,
   ) {
     const isBackdrop = type.toLowerCase() === 'backdrop'
     const isLogo = type.toLowerCase() === 'logo'
     const isThumb = type.toLowerCase() === 'thumb'
+    const kind = imageKindForType(type)
     const rootFolderArt = ROOT_FOLDER_ART[id]
     if (rootFolderArt && existsSync(rootFolderArt)) {
       reply.type('image/png')
@@ -1274,14 +1344,14 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const epRef = idToEpisode(id)
     if (epRef) {
       const show = getShowByTmdbId(epRef.showTmdbId)
-      if (isLogo && show?.logoPath) return sendImageUrl(reply, show.logoPath)
+      if (isLogo && show?.logoPath) return sendImageUrl(reply, headers, show.logoPath, 'logo', query)
       const eps = getEpisodesForSeason(epRef.showTmdbId, epRef.seasonNum)
       const ep = eps.find(e => e.episodeNumber === epRef.episodeNum)
       const season = getSeason(epRef.showTmdbId, epRef.seasonNum)
-      if (isThumb && show?.backdropPath) return sendImageUrl(reply, show.backdropPath)
-      if (ep?.stillPath) return sendImageUrl(reply, ep.stillPath)
-      if (season?.posterPath) return sendImageUrl(reply, season.posterPath)
-      if (show?.posterPath) return sendImageUrl(reply, show.posterPath)
+      if (isThumb && show?.backdropPath) return sendImageUrl(reply, headers, show.backdropPath, 'backdrop', query)
+      if (ep?.stillPath) return sendImageUrl(reply, headers, ep.stillPath, kind, query)
+      if (season?.posterPath) return sendImageUrl(reply, headers, season.posterPath, 'poster', query)
+      if (show?.posterPath) return sendImageUrl(reply, headers, show.posterPath, 'poster', query)
       return reply.code(404).send()
     }
 
@@ -1290,10 +1360,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchShowTmdbId) {
       const show = await fetchShowByTmdbId(searchShowTmdbId)
       if (!show) return reply.code(404).send()
-      if (isLogo && show.logoPath) return sendImageUrl(reply, show.logoPath)
-      if (isThumb && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
-      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
-      if (show.posterPath) return sendImageUrl(reply, show.posterPath)
+      if (isLogo && show.logoPath) return sendImageUrl(reply, headers, show.logoPath, 'logo', query)
+      if (isThumb && show.backdropPath) return sendImageUrl(reply, headers, show.backdropPath, 'backdrop', query)
+      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, headers, show.backdropPath, 'backdrop', query)
+      if (show.posterPath) return sendImageUrl(reply, headers, show.posterPath, 'poster', query)
       return reply.code(404).send()
     }
 
@@ -1301,10 +1371,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (showTmdbId) {
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send()
-      if (isLogo && show.logoPath) return sendImageUrl(reply, show.logoPath)
-      if (isThumb && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
-      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, show.backdropPath)
-      if (show.posterPath) return sendImageUrl(reply, show.posterPath)
+      if (isLogo && show.logoPath) return sendImageUrl(reply, headers, show.logoPath, 'logo', query)
+      if (isThumb && show.backdropPath) return sendImageUrl(reply, headers, show.backdropPath, 'backdrop', query)
+      if (isBackdrop && show.backdropPath) return sendImageUrl(reply, headers, show.backdropPath, 'backdrop', query)
+      if (show.posterPath) return sendImageUrl(reply, headers, show.posterPath, 'poster', query)
       return reply.code(404).send()
     }
 
@@ -1316,9 +1386,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         await fetchAndCacheSeasonDetails(seasonRef.showTmdbId, seasonRef.seasonNum).catch(() => {})
         season = getSeason(seasonRef.showTmdbId, seasonRef.seasonNum)
       }
-      if (season?.posterPath) return sendImageUrl(reply, season.posterPath)
+      if (season?.posterPath) return sendImageUrl(reply, headers, season.posterPath, 'poster', query)
       const show = getShowByTmdbId(seasonRef.showTmdbId)
-      if (show?.posterPath) return sendImageUrl(reply, show.posterPath)
+      if (show?.posterPath) return sendImageUrl(reply, headers, show.posterPath, 'poster', query)
       return reply.code(404).send()
     }
 
@@ -1327,32 +1397,32 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (searchMovieTmdbId) {
       const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
       if (!movie) return reply.code(404).send()
-      if (isLogo && movie.logoPath) return sendImageUrl(reply, movie.logoPath)
-      if (isThumb && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
-      if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
-      if (movie.posterPath) return sendImageUrl(reply, movie.posterPath)
+      if (isLogo && movie.logoPath) return sendImageUrl(reply, headers, movie.logoPath, 'logo', query)
+      if (isThumb && movie.backdropPath) return sendImageUrl(reply, headers, movie.backdropPath, 'backdrop', query)
+      if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, headers, movie.backdropPath, 'backdrop', query)
+      if (movie.posterPath) return sendImageUrl(reply, headers, movie.posterPath, 'poster', query)
       return reply.code(404).send()
     }
 
     const tmdbId = idToTmdb(id)
     const movie = tmdbId ? (getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)) : null
     if (!movie) return reply.code(404).send()
-    if (isLogo && movie.logoPath) return sendImageUrl(reply, movie.logoPath)
-    if (isThumb && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
-    if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, movie.backdropPath)
-    if (movie.posterPath) return sendImageUrl(reply, movie.posterPath)
+    if (isLogo && movie.logoPath) return sendImageUrl(reply, headers, movie.logoPath, 'logo', query)
+    if (isThumb && movie.backdropPath) return sendImageUrl(reply, headers, movie.backdropPath, 'backdrop', query)
+    if (isBackdrop && movie.backdropPath) return sendImageUrl(reply, headers, movie.backdropPath, 'backdrop', query)
+    if (movie.posterPath) return sendImageUrl(reply, headers, movie.posterPath, 'poster', query)
     return reply.code(404).send()
   }
 
   app.get('/Items/:id/Images/:type', async (req, reply) => {
     const params = req.params as { id: string; type: string }
-    const query = req.query as { tag?: string } | undefined
-    return handleImage(params.id, params.type, query?.tag, requestUser(req.headers), reply as never)
+    const query = req.query as ImageQuery | undefined
+    return handleImage(params.id, params.type, query, req.headers, requestUser(req.headers), reply as never)
   })
   app.get('/Items/:id/Images/:type/:index', async (req, reply) => {
     const params = req.params as { id: string; type: string }
-    const query = req.query as { tag?: string } | undefined
-    return handleImage(params.id, params.type, query?.tag, requestUser(req.headers), reply as never)
+    const query = req.query as ImageQuery | undefined
+    return handleImage(params.id, params.type, query, req.headers, requestUser(req.headers), reply as never)
   })
 
   // Stubs for endpoints Infuse probes but we don't need to implement
@@ -1380,11 +1450,17 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId            = body?.ItemId             as string  | undefined
     const positionTicks     = body?.PositionTicks      as number  | undefined
+    const bodyRuntimeTicks  = body?.RunTimeTicks       as number  | undefined
     const playedToCompletion = body?.PlayedToCompletion as boolean | undefined
     if (itemId) {
-      if (playedToCompletion) {
+      const runtimeTicks = bodyRuntimeTicks ?? runtimeTicksForItem(itemId) ?? undefined
+      if (playedToCompletion || reachedCompletionThreshold(positionTicks, runtimeTicks)) {
         markPlayed(itemId, user.id)
-        app.log.info(`progress: marked played ${itemId}`)
+        if (playedToCompletion) {
+          app.log.info(`progress: marked played ${itemId}`)
+        } else {
+          app.log.info(`progress: auto-marked played ${itemId} at ${positionTicks} / ${runtimeTicks} ticks`)
+        }
       } else if (positionTicks != null) {
         saveProgress(itemId, positionTicks, user.id)
         app.log.info(`progress: stopped ${itemId} at ${positionTicks} ticks`)
