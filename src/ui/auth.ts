@@ -1,5 +1,4 @@
 import { randomBytes } from 'crypto'
-import { config } from '../config.js'
 import { authEnabled, getUserById, verifyUserCredentials, type AppUser } from '../db.js'
 
 type SessionRecord = { userId: string; expiresAt: number }
@@ -75,5 +74,5 @@ export function getTokenFromCookie(cookieHeader: string | undefined): string | n
 }
 
 export function isUiAuthConfigured(): boolean {
-  return authEnabled() || !!config.uiPassword
+  return authEnabled()
 }

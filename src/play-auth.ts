@@ -5,7 +5,6 @@ const PLAY_TOKEN_TTL_SECS = 5 * 60
 
 function playTokenSecret(): string {
   return [
-    config.uiPassword,
     config.rdApiKey,
     config.traktClientSecret,
     config.tmdbApiKey,

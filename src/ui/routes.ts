@@ -4,13 +4,13 @@ import { fileURLToPath } from 'url'
 import { join, dirname } from 'path'
 import {
   listMovies, countMovies, listShows, countShows, countAiredEpisodes,
-  addSourceItem, getMovieByTmdbId, getShowByTmdbId, getSetting, getManualShowSubscription,
+  addSourceItem, getEffectiveShowMode, getMovieByTmdbId, getShowByTmdbId, getSetting,
   getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate,
   getManualMovieAvailabilityOverride,
   hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
-  removeManualShowSubscription, removeSourceItem, setManualMovieAvailabilityOverride,
+  removeSourceItem, setManualMovieAvailabilityOverride,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
-  authEnabled, canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, updateUser,
+  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, updateUser,
 } from '../db.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
@@ -19,7 +19,7 @@ import {
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
-import { normalizeSootioUrl, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
+import { normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 
@@ -118,11 +118,34 @@ export async function uiRoutes(app: FastifyInstance) {
   })
 
   // ── Auth endpoints (no session required) ─────────────────────────────────
-  app.get('/ui/login', async (_req, reply) => reply.type('text/html').send(html('login.html')))
+  app.get('/ui/login', async (_req, reply) => {
+    if (!isUiAuthConfigured()) return reply.redirect('/ui/setup-admin', 302)
+    return reply.type('text/html').send(html('login.html'))
+  })
+
+  app.get('/ui/setup-admin', async (_req, reply) => {
+    if (isUiAuthConfigured()) return reply.redirect('/ui/login', 302)
+    return reply.type('text/html').send(html('setup-admin.html'))
+  })
+
+  app.post('/ui/auth/setup', async (req, reply) => {
+    if (isUiAuthConfigured()) {
+      return reply.code(409).send({ error: 'Setup already completed' })
+    }
+    const body = req.body as { username?: string; password?: string } | undefined
+    try {
+      const user = createUser(body?.username ?? '', body?.password ?? '', 'admin', 'unrestricted')
+      const token = createSession(user.id)
+      reply.header('Set-Cookie', getSessionCookie(token, req.headers as never))
+      return { ok: true }
+    } catch (err) {
+      return reply.code(400).send({ error: err instanceof Error ? err.message : 'Failed to create admin account' })
+    }
+  })
 
   app.post('/ui/auth/login', async (req, reply) => {
     if (!isUiAuthConfigured()) {
-      return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
+      return reply.code(409).send({ error: 'Setup required. Create an admin account first.' })
     }
     const rateKey = clientIp(req as never)
     const state = loginRateState(rateKey)
@@ -153,7 +176,7 @@ export async function uiRoutes(app: FastifyInstance) {
   // Auth status — tells the client whether auth is enabled
   app.get('/ui/auth/check', async (req, reply) => {
     if (!isUiAuthConfigured()) {
-      return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
+      return reply.code(503).send({ error: 'Setup required', setupRequired: true })
     }
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token)) {
@@ -172,6 +195,7 @@ export async function uiRoutes(app: FastifyInstance) {
     // Skip public routes
     if (
       url === '/ui/login' ||
+      url === '/ui/setup-admin' ||
       url.startsWith('/ui/auth/') ||
       url.startsWith('/ui/static/')
     ) return
@@ -179,9 +203,9 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!isUiAuthConfigured()) {
       const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
       if (isApiRoute) {
-        return reply.code(503).send({ error: 'UI auth is not configured. Create an admin account first.' })
+        return reply.code(503).send({ error: 'Setup required. Create an admin account first.' })
       }
-      return reply.code(503).type('text/plain').send('UI auth is not configured. Create an admin account first.')
+      return reply.redirect('/ui/setup-admin', 302)
     }
 
     const token = getTokenFromCookie(req.headers.cookie)
@@ -201,7 +225,7 @@ export async function uiRoutes(app: FastifyInstance) {
   app.get('/apple-touch-icon.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
   app.get('/apple-touch-icon-precomposed.png', async (_req, reply) => reply.redirect('/ui/static/fetcherr.svg', 302))
   app.get('/ui/dashboard',  async (_req, reply) => reply.type('text/html').send(html('dashboard.html')))
-  app.get('/ui/setup',      async (_req, reply) => reply.redirect('/ui/settings'))
+  app.get('/ui/setup',      async (_req, reply) => reply.redirect(isUiAuthConfigured() ? '/ui/settings' : '/ui/setup-admin'))
   app.get('/ui/logs',       async (req, reply) => {
     if (!requireAdmin(req, reply as never)) return
     return reply.type('text/html').send(html('logs.html'))
@@ -290,7 +314,7 @@ export async function uiRoutes(app: FastifyInstance) {
         numSeasons: s.numSeasons,
         popularity: s.popularity,
         manualAdded: hasSourceItem('manual:ui', 'show', s.tmdbId),
-        manualMode: getManualShowSubscription(s.tmdbId)?.mode ?? null,
+        libraryMode: getEffectiveShowMode(s.tmdbId).mode,
         posterUrl:  s.posterPath ? `https://image.tmdb.org/t/p/w185${s.posterPath}` : null,
         imageId:    tmdbToShowGuid(s.tmdbId),
       })),
@@ -325,6 +349,7 @@ export async function uiRoutes(app: FastifyInstance) {
         overview: movie.overview,
         posterUrl: movie.posterPath ? `https://image.tmdb.org/t/p/w342${movie.posterPath}` : null,
         imdbId: movie.imdbId,
+        inLibrary: hasAnySourceItem('movie', movie.tmdbId),
         manualAdded: hasSourceItem('manual:ui', 'movie', movie.tmdbId),
         visibleToInfuse: isAvailable,
         libraryStatusLabel: isAvailable
@@ -361,6 +386,7 @@ export async function uiRoutes(app: FastifyInstance) {
       overview: show.overview,
       posterUrl: show.posterPath ? `https://image.tmdb.org/t/p/w342${show.posterPath}` : null,
       imdbId: show.imdbId,
+      inLibrary: hasAnySourceItem('show', show.tmdbId),
       manualAdded: hasSourceItem('manual:ui', 'show', show.tmdbId),
       visibleToInfuse,
       libraryStatusLabel: visibleToInfuse ? 'In Library' : 'Pending First Episode',
@@ -368,7 +394,7 @@ export async function uiRoutes(app: FastifyInstance) {
       nextEpisodeName: nextEpisode?.name || null,
       nextEpisodeSeasonNumber: nextEpisode?.seasonNumber ?? null,
       nextEpisodeEpisodeNumber: nextEpisode?.episodeNumber ?? null,
-      manualMode: getManualShowSubscription(show.tmdbId)?.mode ?? null,
+      libraryMode: getEffectiveShowMode(show.tmdbId).mode,
       status: show.status,
       numSeasons: show.numSeasons,
     }
@@ -397,6 +423,8 @@ export async function uiRoutes(app: FastifyInstance) {
       englishStreamMode: config.englishStreamMode,
       serverUrl:         config.serverUrl,
       traktClientId:     config.traktClientId,
+      traktWatchlistMovies: config.traktWatchlistMovies,
+      traktWatchlistShows: config.traktWatchlistShows,
       traktLists:        config.traktLists,
       hasSootioUrl:      !!getSetting('sootioUrl'),
       hasRdApiKey:       !!getSetting('rdApiKey'),
@@ -429,7 +457,7 @@ export async function uiRoutes(app: FastifyInstance) {
   app.post('/ui/settings-data', async (req, reply) => {
     const user = currentUiUser(req as never)
     if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
-    const body = (req.body ?? {}) as Record<string, string | string[]>
+    const body = (req.body ?? {}) as Record<string, string | string[] | boolean>
     const editable: (keyof typeof config)[] = [
       'sootioUrl', 'rdApiKey', 'tmdbApiKey', 'tvdbApiKey', 'serverUrl', 'traktClientId', 'traktClientSecret',
     ]
@@ -451,6 +479,16 @@ export async function uiRoutes(app: FastifyInstance) {
       const mode = parseEnglishStreamMode(body.englishStreamMode)
       setSetting('englishStreamMode', mode)
       config.englishStreamMode = mode
+    }
+    if (body.traktWatchlistMovies != null) {
+      const enabled = parseBooleanSetting(String(body.traktWatchlistMovies), true)
+      setSetting('traktWatchlistMovies', enabled ? 'true' : 'false')
+      config.traktWatchlistMovies = enabled
+    }
+    if (body.traktWatchlistShows != null) {
+      const enabled = parseBooleanSetting(String(body.traktWatchlistShows), true)
+      setSetting('traktWatchlistShows', enabled ? 'true' : 'false')
+      config.traktWatchlistShows = enabled
     }
     if (Array.isArray(body.traktLists)) {
       const lists = body.traktLists.map(v => String(v).trim()).filter(Boolean)
@@ -562,6 +600,27 @@ export async function uiRoutes(app: FastifyInstance) {
     return reply.code(400).send({ error: 'type must be movie or tv' })
   })
 
+  app.post('/ui/library/show-mode', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+    const body = (req.body ?? {}) as { tmdbId?: number; mode?: string }
+    const tmdbId = body.tmdbId
+    const mode = body.mode === 'latest' ? 'latest' : body.mode === 'all' ? 'all' : ''
+    if (!tmdbId || !mode) return reply.code(400).send({ error: 'tmdbId and mode are required' })
+
+    const show = getShowByTmdbId(tmdbId) ?? await fetchShowByTmdbId(tmdbId)
+    if (!show) return reply.code(404).send({ error: 'Show not found' })
+    if (!hasAnySourceItem('show', tmdbId)) return reply.code(404).send({ error: 'Show not found in library' })
+    if (!canUserAccessShow(user, show)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
+
+    await ensureShowSeasonsCached(show).catch(() => {})
+    const activeSeasonNumber = mode === 'latest'
+      ? (getLatestSeasonNumberForShow(tmdbId) ?? Math.max(show.numSeasons, 1))
+      : 0
+    upsertManualShowSubscription(tmdbId, mode, activeSeasonNumber)
+    return { ok: true, title: show.title, mode, activeSeasonNumber }
+  })
+
   app.post('/ui/library/movie-availability', async (req, reply) => {
     const user = currentUiUser(req as never)
     if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
@@ -603,7 +662,6 @@ export async function uiRoutes(app: FastifyInstance) {
 
     if (type === 'tv') {
       const removed = removeSourceItem('manual:ui', 'show', tmdbId)
-      removeManualShowSubscription(tmdbId)
       const pruned = pruneOrphanedShows([tmdbId])
       const stillPresent = !!getShowByTmdbId(tmdbId)
       return {

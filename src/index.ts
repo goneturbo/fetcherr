@@ -1,5 +1,5 @@
 import Fastify from 'fastify'
-import { config, normalizeSootioUrl, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from './config.js'
+import { config, normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { castRoutes } from './cast/routes.js'
@@ -10,7 +10,7 @@ import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, startDeviceAuth, tokenStatus } from './trakt.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
-import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, upsertManualShowSubscription } from './db.js'
+import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { verifySignedPlaybackPath } from './play-auth.js'
@@ -37,6 +37,8 @@ initCastSchema()
   if (s.traktClientId)      config.traktClientId       = s.traktClientId
   if (s.traktClientSecret)  config.traktClientSecret   = s.traktClientSecret
   if (s.traktLists != null) config.traktLists          = parseTraktLists(s.traktLists)
+  if (s.traktWatchlistMovies != null) config.traktWatchlistMovies = parseBooleanSetting(s.traktWatchlistMovies, true)
+  if (s.traktWatchlistShows != null)  config.traktWatchlistShows  = parseBooleanSetting(s.traktWatchlistShows, true)
   if (s.streamProviderUrls != null) config.streamProviderUrls = parseStreamProviderUrls(s.streamProviderUrls)
   if (s.englishStreamMode != null) config.englishStreamMode = parseEnglishStreamMode(s.englishStreamMode)
 }
@@ -367,8 +369,26 @@ let currentSync: Promise<void> | null = null
 
 // Sync on startup, then every 60 minutes
 async function runSyncInternal() {
-  await syncTraktWatchlist()
-  await syncTraktShowsWatchlist()
+  if (config.traktWatchlistMovies) {
+    await syncTraktWatchlist()
+  } else {
+    const removed = removeSourceKey('trakt:watchlist:movies', 'movie')
+    const pruned = pruneAllOrphanedMovies()
+    if (removed.length || pruned) {
+      app.log.info(`sync: movie watchlist disabled; removed ${removed.length} source items and pruned ${pruned} movies`)
+    }
+  }
+
+  if (config.traktWatchlistShows) {
+    await syncTraktShowsWatchlist()
+  } else {
+    const removed = removeSourceKey('trakt:watchlist:shows', 'show')
+    const pruned = pruneAllOrphanedShows()
+    if (removed.length || pruned) {
+      app.log.info(`sync: show watchlist disabled; removed ${removed.length} source items and pruned ${pruned} shows`)
+    }
+  }
+
   for (const slug of config.traktLists) {
     await syncTraktList(slug).catch(err => app.log.error(`List sync "${slug}" failed: ${err}`))
   }

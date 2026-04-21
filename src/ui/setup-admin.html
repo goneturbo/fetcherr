@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>Fetcherr · Create Admin</title>
+  <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
+  <style>
+    :root {
+      --bg: #0b0d12; --surface: #12151d; --text: #eef2ff; --muted: #8892a4;
+      --accent: #9d6ef0; --accent-dim: rgba(157,110,240,.15); --accent-border: rgba(157,110,240,.35);
+      --red: #f87171; --red-dim: rgba(248,113,113,.1); --red-border: rgba(248,113,113,.28);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      min-height: 100vh;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 20px;
+    }
+    .card {
+      width: 100%;
+      max-width: 420px;
+      padding: 32px;
+      border-radius: 24px;
+      background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.1);
+      box-shadow: 0 24px 80px rgba(0,0,0,.45);
+    }
+    .logo {
+      display: flex;
+      justify-content: center;
+      margin-bottom: 20px;
+    }
+    .logo img {
+      width: 40px;
+      height: 40px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 22px;
+      text-align: center;
+    }
+    .sub {
+      margin: 0 0 24px;
+      font-size: 14px;
+      color: var(--muted);
+      text-align: center;
+      line-height: 1.5;
+    }
+    .field { margin-bottom: 14px; }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    input {
+      width: 100%;
+      padding: 11px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(255,255,255,.1);
+      background: rgba(255,255,255,.04);
+      color: var(--text);
+      font: inherit;
+      outline: none;
+    }
+    .btn {
+      width: 100%;
+      margin-top: 8px;
+      padding: 11px 16px;
+      border-radius: 10px;
+      border: 1px solid var(--accent-border);
+      background: var(--accent-dim);
+      color: #d8c6ff;
+      font: inherit;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .error {
+      display: none;
+      margin-top: 14px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid var(--red-border);
+      background: var(--red-dim);
+      color: #fecaca;
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <form class="card" onsubmit="createAdmin(event)">
+    <div class="logo"><img src="/ui/static/fetcherr.svg" alt="Fetcherr"></div>
+    <h1>Create Admin Account</h1>
+    <p class="sub">Finish first-time setup by creating the initial admin account. All other server settings can be configured after sign-in.</p>
+
+    <div class="field">
+      <label for="username">Username</label>
+      <input id="username" type="text" autocomplete="username">
+    </div>
+    <div class="field">
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="new-password">
+    </div>
+
+    <button class="btn" id="setupBtn" type="submit">Create Admin</button>
+    <div class="error" id="errMsg"></div>
+  </form>
+
+  <script>
+    async function createAdmin(event) {
+      event?.preventDefault()
+      const btn = document.getElementById('setupBtn')
+      const err = document.getElementById('errMsg')
+      btn.disabled = true
+      btn.textContent = 'Creating…'
+      err.style.display = 'none'
+      try {
+        const res = await fetch('/ui/auth/setup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            username: document.getElementById('username').value,
+            password: document.getElementById('password').value,
+          }),
+        })
+        if (res.ok) {
+          window.location.href = '/ui/settings'
+          return
+        }
+        const d = await res.json().catch(() => ({}))
+        err.textContent = d.error || 'Unable to create admin account'
+        err.style.display = ''
+      } catch {
+        err.textContent = 'Network error. Please try again.'
+        err.style.display = ''
+      } finally {
+        btn.disabled = false
+        btn.textContent = 'Create Admin'
+      }
+    }
+  </script>
+</body>
+</html>

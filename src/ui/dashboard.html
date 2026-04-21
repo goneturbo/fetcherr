@@ -168,6 +168,17 @@
     .item-link { font-size: 11px; color: var(--muted); text-decoration: none; }
     .item-link:hover { color: var(--text); }
     .item-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
+    .item-mode-toggle { display: inline-flex; gap: 4px; }
+    .item-mode-btn {
+      padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface-raised); color: var(--muted); font-size: 11px; font-weight: 600;
+      cursor: pointer; white-space: nowrap; transition: border-color .15s, background .15s, color .15s;
+    }
+    .item-mode-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
+    .item-mode-btn.active {
+      color: #d6b8ff; background: var(--accent-dim); border-color: var(--accent-border);
+    }
+    .item-mode-btn:disabled { opacity: .55; cursor: not-allowed; }
 
     /* Empty state */
     .empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 14px; }
@@ -579,6 +590,18 @@
       const removeBtn = item.manualAdded
         ? `<button class="btn-remove" title="Remove manual item" aria-label="Remove manual item" onclick="event.stopPropagation(); removeItem(${item.tmdbId}, '${isShow ? 'tv' : 'movie'}', this)"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>`
         : ''
+      const showModeToggle = isShow
+        ? `<div class="item-mode-toggle" onclick="event.stopPropagation()">
+             <button
+               class="item-mode-btn ${item.libraryMode === 'all' ? 'active' : ''}"
+               onclick="setShowLibraryMode(${item.tmdbId}, 'all', this)"
+             >Series</button>
+             <button
+               class="item-mode-btn ${item.libraryMode === 'latest' ? 'active' : ''}"
+               onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this)"
+             >Latest</button>
+           </div>`
+        : ''
 
       let metaRight = ''
       if (tab === 'all') {
@@ -615,7 +638,7 @@
             ${imdbLink}
           </div>
         </div>
-        <div class="item-actions">${removeBtn}</div>
+        <div class="item-actions">${showModeToggle}${removeBtn}</div>
       </div>`
     }).join('')
   }
@@ -745,9 +768,7 @@
     const imdbLink = item.imdbId
       ? `<a class="btn" href="https://www.imdb.com/title/${item.imdbId}" target="_blank" rel="noreferrer">IMDb ↗</a>`
       : ''
-    const manualModeValue = item.manualMode
-      ? (item.manualMode === 'latest' ? 'Latest Season' : 'Entire Series')
-      : '—'
+    const libraryModeValue = item.libraryMode === 'latest' ? 'Latest Season' : 'Entire Series'
     const hasCollection = !isShow && Array.isArray(item.collectionItems) && item.collectionItems.length > 0
     if (!hasCollection && activeDetailTab === 'collection') activeDetailTab = 'overview'
 
@@ -803,10 +824,15 @@
           <div class="detail-label">Visible to Infuse</div>
           <div class="detail-value">${item.visibleToInfuse ? 'Yes' : 'No'}</div>
         </div>
-        ${item.manualAdded ? `
+        ${item.inLibrary && isShow ? `
           <div class="detail-row">
-            <div class="detail-label">Manual library mode</div>
-            <div class="detail-value">${escapeHtml(isShow ? manualModeValue : 'Manual Movie')}</div>
+            <div class="detail-label">Series mode</div>
+            <div class="detail-value">${escapeHtml(libraryModeValue)}</div>
+          </div>
+        ` : item.manualAdded ? `
+          <div class="detail-row">
+            <div class="detail-label">Library source</div>
+            <div class="detail-value">Manual Movie</div>
           </div>
         ` : ''}
         ${isShow ? `
@@ -833,6 +859,27 @@
             class="btn"
             onclick="toggleMovieAvailabilityOverride(${item.tmdbId}, ${item.releaseGateOverridden ? 'false' : 'true'}, this)"
           >${item.releaseGateOverridden ? 'Respect Release Gate' : 'Ignore Release Gate'}</button>
+        </div>
+      `
+      : ''
+
+    const showModeCard = (isShow && item.inLibrary)
+      ? `
+        <div class="toggle-card">
+          <div class="toggle-copy">
+            <p class="toggle-title">Series Mode</p>
+            <p class="toggle-sub">Choose whether Fetcherr keeps the whole series visible in clients or limits this show to its latest season.</p>
+          </div>
+          <div class="item-actions">
+            <button
+              class="btn ${item.libraryMode === 'all' ? 'btn-primary' : ''}"
+              onclick="setShowLibraryMode(${item.tmdbId}, 'all', this)"
+            >Entire Series</button>
+            <button
+              class="btn ${item.libraryMode === 'latest' ? 'btn-primary' : ''}"
+              onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this)"
+            >Latest Season</button>
+          </div>
         </div>
       `
       : ''
@@ -895,6 +942,7 @@
         ${statusCard}
         ${timingCard}
       </div>
+      ${showModeCard}
       ${movieOverrideCard}
       <div class="detail-actions">
         ${imdbLink}
@@ -929,6 +977,29 @@
       loadItems(),
       loadStats(),
       openItemDetail('movie', tmdbId),
+    ])
+  }
+
+  async function setShowLibraryMode(tmdbId, mode, btn) {
+    const container = btn.closest('.item-actions') || btn.parentElement
+    const buttons = container ? [...container.querySelectorAll('button')] : [btn]
+    buttons.forEach(el => { el.disabled = true })
+    const res = await fetch('/ui/library/show-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdbId, mode }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      buttons.forEach(el => { el.disabled = false })
+      showSyncMsg(data.error || 'Failed to update series mode.')
+      return
+    }
+    showSyncMsg(`"${data.title}" set to ${mode === 'latest' ? 'latest season' : 'entire series'}.`)
+    await Promise.all([
+      loadItems(),
+      loadStats(),
+      openItemDetail('tv', tmdbId),
     ])
   }
 

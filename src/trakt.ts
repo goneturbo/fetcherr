@@ -1,5 +1,5 @@
 import { config } from './config.js'
-import { getDb, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems } from './db.js'
+import { getDb, getSetting, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems, setSetting } from './db.js'
 import { fetchMovieByTmdbId, fetchShowByTmdbId } from './tmdb.js'
 
 const TRAKT_MOVIES_SOURCE = 'trakt:watchlist:movies'
@@ -187,11 +187,33 @@ export interface TraktUserList {
   slug: string
 }
 
+async function syncAuthenticatedUsername(accessToken: string): Promise<string | null> {
+  const { status, data } = await traktRequest('GET', '/users/settings', undefined, accessToken)
+  if (status !== 200) throw new Error(`Trakt user settings fetch failed: ${status}`)
+  const username = (data as { user?: { username?: string } } | null)?.user?.username?.trim() ?? ''
+  if (!username) return null
+  setSetting('traktUsername', username)
+  config.traktUsername = username
+  return username
+}
+
+async function ensureTraktUsername(accessToken?: string | null): Promise<string | null> {
+  const configured = config.traktUsername.trim() || (getSetting('traktUsername') ?? '').trim()
+  if (configured) {
+    config.traktUsername = configured
+    return configured
+  }
+  if (!accessToken) return null
+  return syncAuthenticatedUsername(accessToken)
+}
+
 export async function fetchTraktUserLists(): Promise<TraktUserList[]> {
-  if (!config.traktClientId || !config.traktUsername) return []
+  if (!config.traktClientId) return []
   const accessToken = await getValidToken()
   if (!accessToken) return []
-  const { status, data } = await traktRequest('GET', `/users/${config.traktUsername}/lists`, undefined, accessToken)
+  const username = await ensureTraktUsername(accessToken)
+  if (!username) return []
+  const { status, data } = await traktRequest('GET', `/users/${username}/lists`, undefined, accessToken)
   if (status !== 200) throw new Error(`Trakt lists fetch failed: ${status}`)
   return ((data as Array<{ name?: string; ids?: { slug?: string } }>) ?? [])
     .map(item => ({ name: item.name ?? item.ids?.slug ?? '', slug: item.ids?.slug ?? '' }))
@@ -266,6 +288,9 @@ export async function startDeviceAuth(): Promise<{
           const t = d as DeviceTokenResponse
           const expiresAt = new Date((t.created_at + t.expires_in) * 1000)
           saveToken(t.access_token, t.refresh_token, expiresAt)
+          await syncAuthenticatedUsername(t.access_token).catch(err => {
+            console.error(`trakt: unable to detect authenticated username: ${err}`)
+          })
           console.log('trakt: authenticated successfully, token saved')
           resolve()
           return
@@ -300,8 +325,8 @@ interface TraktWatchlistItem {
 }
 
 export async function syncTraktWatchlist(): Promise<{ synced: number; total: number }> {
-  if (!config.traktClientId || !config.traktUsername) {
-    console.log('trakt: TRAKT_CLIENT_ID or TRAKT_USERNAME not configured, skipping')
+  if (!config.traktClientId) {
+    console.log('trakt: TRAKT_CLIENT_ID not configured, skipping')
     return { synced: 0, total: 0 }
   }
 
@@ -310,8 +335,13 @@ export async function syncTraktWatchlist(): Promise<{ synced: number; total: num
     console.log('trakt: not authenticated — run POST /trakt/auth to connect your account')
     return { synced: 0, total: 0 }
   }
+  const username = await ensureTraktUsername(accessToken)
+  if (!username) {
+    console.log('trakt: authenticated username unavailable, skipping')
+    return { synced: 0, total: 0 }
+  }
 
-  console.log(`trakt: syncing watchlist for @${config.traktUsername}`)
+  console.log(`trakt: syncing watchlist for @${username}`)
 
   const items: TraktWatchlistItem[] = []
   let page = 1
@@ -319,7 +349,7 @@ export async function syncTraktWatchlist(): Promise<{ synced: number; total: num
 
   while (page <= totalPages) {
     const res = await fetch(
-      `https://api.trakt.tv/users/${config.traktUsername}/watchlist/movies?limit=1000&page=${page}`,
+      `https://api.trakt.tv/users/${username}/watchlist/movies?limit=1000&page=${page}`,
       {
         headers: {
           'trakt-api-version': '2',
@@ -374,8 +404,8 @@ interface TraktShowWatchlistItem {
 }
 
 export async function syncTraktShowsWatchlist(): Promise<{ synced: number; total: number }> {
-  if (!config.traktClientId || !config.traktUsername) {
-    console.log('trakt: TRAKT_CLIENT_ID or TRAKT_USERNAME not configured, skipping shows sync')
+  if (!config.traktClientId) {
+    console.log('trakt: TRAKT_CLIENT_ID not configured, skipping shows sync')
     return { synced: 0, total: 0 }
   }
 
@@ -384,8 +414,13 @@ export async function syncTraktShowsWatchlist(): Promise<{ synced: number; total
     console.log('trakt: not authenticated — run POST /trakt/auth to connect your account')
     return { synced: 0, total: 0 }
   }
+  const username = await ensureTraktUsername(accessToken)
+  if (!username) {
+    console.log('trakt: authenticated username unavailable, skipping shows sync')
+    return { synced: 0, total: 0 }
+  }
 
-  console.log(`trakt: syncing shows watchlist for @${config.traktUsername}`)
+  console.log(`trakt: syncing shows watchlist for @${username}`)
 
   const items: TraktShowWatchlistItem[] = []
   let page = 1
@@ -393,7 +428,7 @@ export async function syncTraktShowsWatchlist(): Promise<{ synced: number; total
 
   while (page <= totalPages) {
     const res = await fetch(
-      `https://api.trakt.tv/users/${config.traktUsername}/watchlist/shows?limit=1000&page=${page}`,
+      `https://api.trakt.tv/users/${username}/watchlist/shows?limit=1000&page=${page}`,
       {
         headers: {
           'trakt-api-version': '2',
@@ -448,15 +483,20 @@ interface TraktListItem {
 export async function syncTraktList(
   slug: string,
 ): Promise<{ movies: number; shows: number }> {
-  if (!config.traktClientId || !config.traktUsername) return { movies: 0, shows: 0 }
+  if (!config.traktClientId) return { movies: 0, shows: 0 }
 
   const accessToken = await getValidToken()
   if (!accessToken) {
     console.log('trakt: not authenticated, skipping list sync')
     return { movies: 0, shows: 0 }
   }
+  const username = await ensureTraktUsername(accessToken)
+  if (!username) {
+    console.log(`trakt: authenticated username unavailable, skipping list "${slug}"`)
+    return { movies: 0, shows: 0 }
+  }
 
-  console.log(`trakt: syncing list "${slug}" for @${config.traktUsername}`)
+  console.log(`trakt: syncing list "${slug}" for @${username}`)
 
   const items: TraktListItem[] = []
   let page = 1
@@ -464,7 +504,7 @@ export async function syncTraktList(
 
   while (page <= totalPages) {
     const res = await fetch(
-      `https://api.trakt.tv/users/${config.traktUsername}/lists/${slug}/items?limit=1000&page=${page}`,
+      `https://api.trakt.tv/users/${username}/lists/${slug}/items?limit=1000&page=${page}`,
       {
         headers: {
           'trakt-api-version': '2',

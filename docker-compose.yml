@@ -10,20 +10,8 @@ services:
     environment:
       PORT: "9990"
       DATABASE_PATH: /app/data/fetcherr.db
-      TMDB_API_KEY: "${TMDB_API_KEY}"
-      TVDB_API_KEY: "${TVDB_API_KEY:-}"
-      AIOSTREAM_URL: "${AIOSTREAM_URL:-}"
-      STREAM_PROVIDER_URLS: "${STREAM_PROVIDER_URLS:-}"
-      ENGLISH_STREAM_MODE: "${ENGLISH_STREAM_MODE:-prefer}"
       SERVER_NAME: "${SERVER_NAME:-Fetcherr}"
       SERVER_ID: "${SERVER_ID:-fetcherr-001}"
-      RD_API_KEY: "${RD_API_KEY}"
-      TRAKT_CLIENT_ID: "${TRAKT_CLIENT_ID}"
-      TRAKT_CLIENT_SECRET: "${TRAKT_CLIENT_SECRET}"
-      TRAKT_USERNAME: "${TRAKT_USERNAME}"
-      TRAKT_LISTS: "${TRAKT_LISTS:-}"
       SERVER_URL: "${SERVER_URL:-http://localhost:9990}"
-      UI_USERNAME: "${UI_USERNAME:-admin}"
-      UI_PASSWORD: "${UI_PASSWORD:-}"
     volumes:
       - ./data:/app/data

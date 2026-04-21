@@ -13,6 +13,14 @@ export function parseTraktLists(value: string): string[] {
   return value.split(',').map(s => s.trim()).filter(Boolean)
 }
 
+export function parseBooleanSetting(value: string | undefined, fallback = false): boolean {
+  if (value == null || value === '') return fallback
+  const normalized = value.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  return fallback
+}
+
 export type EnglishStreamMode = 'off' | 'prefer' | 'require'
 
 export function parseEnglishStreamMode(value: string): EnglishStreamMode {
@@ -33,9 +41,9 @@ export const config = {
   traktClientSecret: process.env.TRAKT_CLIENT_SECRET ?? '',
   traktUsername:     process.env.TRAKT_USERNAME ?? '',
   traktLists:        parseTraktLists(process.env.TRAKT_LISTS ?? ''),
+  traktWatchlistMovies: parseBooleanSetting(process.env.TRAKT_WATCHLIST_MOVIES, true),
+  traktWatchlistShows:  parseBooleanSetting(process.env.TRAKT_WATCHLIST_SHOWS, true),
   streamProviderUrls: parseStreamProviderUrls(process.env.STREAM_PROVIDER_URLS ?? ''),
   englishStreamMode: parseEnglishStreamMode(process.env.ENGLISH_STREAM_MODE ?? ''),
   serverUrl:         (process.env.SERVER_URL ?? 'http://localhost:9990').replace(/\/$/, ''),
-  uiUsername:        process.env.UI_USERNAME ?? 'admin',
-  uiPassword:        process.env.UI_PASSWORD ?? '',
 }

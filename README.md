@@ -2,13 +2,13 @@
 
 Fetcherr gives Infuse a Stremio-like streaming experience using your Trakt library and Real-Debrid, without needing a traditional media server or local mount.
 
-It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Infuse. Fetcherr builds an Infuse-ready library from your Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
+It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Infuse. Fetcherr builds an Infuse-ready library from your optional Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
 
 The goal is simple: open Infuse, browse your library, and press play. Fetcherr handles stream discovery, prefers cached Real-Debrid results, and automatically picks the best match instead of making you choose from a stream list every time.
 
 ## What It Does
 
-- Syncs movies and shows from Trakt watchlists and selected Trakt lists
+- Syncs movies and shows from optional Trakt watchlists and selected Trakt lists
 - Exposes a Jellyfin-style library for Infuse
 - Resolves playback through direct providers such as Torrentio and Debridio
 - Verifies ambiguous audio with `ffprobe` when needed
@@ -22,11 +22,11 @@ The goal is simple: open Infuse, browse your library, and press play. Fetcherr h
 
 ## Requirements
 
-- TMDB API key
-- Optional TVDB API key for episode-image fallback
-- Real-Debrid API key
-- Trakt client ID and secret
-- A Trakt account
+- Docker
+- A TMDB API key
+- A Real-Debrid API key
+- Optional: TVDB API key for episode-image fallback
+- Optional: Trakt client ID and secret
 
 ## Get the Code
 
@@ -40,31 +40,25 @@ cd fetcherr
 ## Setup
 
 1. Copy `.env.example` to `.env`
-2. Fill in your API keys and Trakt username
-3. Set:
-   - `UI_PASSWORD`
-4. Optionally set:
-   - `UI_USERNAME`
-   - `STREAM_PROVIDER_URLS`
-   - `ENGLISH_STREAM_MODE`
-5. Start the app:
+2. Adjust `SERVER_URL` if needed
+3. Start the app:
 
 ```bash
 docker compose up -d --build
 ```
 
-6. Open:
+4. Open:
 
 ```text
-http://YOUR_SERVER:9990/ui/setup
+http://YOUR_SERVER:9990/ui/setup-admin
 ```
 
-7. Connect Trakt
-8. Open Settings and configure provider URLs if needed
+5. Create the first admin account
+6. Open Settings and enter your API keys, provider URLs, and any Trakt settings you want to use
 
 ## Usage
 
-- Connect Trakt in `/ui/setup`
+- Complete first-run setup in `/ui/setup-admin`
 - Configure providers and preferences in `/ui/settings`
 - Add Fetcherr to Infuse as a Jellyfin server
 - Browse and play from Infuse
@@ -74,19 +68,7 @@ http://YOUR_SERVER:9990/ui/setup
 
 | Variable | Required | Description |
 | --- | --- | --- |
-| `TMDB_API_KEY` | Yes | TMDB metadata and artwork |
-| `TVDB_API_KEY` | No | Optional TVDB fallback for missing episode still images |
-| `RD_API_KEY` | Yes | Real-Debrid API access |
-| `TRAKT_CLIENT_ID` | Yes | Trakt OAuth client ID |
-| `TRAKT_CLIENT_SECRET` | Yes | Trakt OAuth client secret |
-| `TRAKT_USERNAME` | Yes | Trakt username to sync from |
-| `TRAKT_LISTS` | No | Comma-separated Trakt list slugs to sync in addition to watchlists |
 | `SERVER_URL` | Yes | External base URL used for playback redirects |
-| `UI_USERNAME` | No | Web UI login username |
-| `UI_PASSWORD` | Recommended | Web UI login password; set this for browser UI access |
-| `AIOSTREAM_URL` | No | Optional legacy AIOStreams manifest or base URL |
-| `STREAM_PROVIDER_URLS` | No | Optional provider URLs, one per line |
-| `ENGLISH_STREAM_MODE` | No | `off`, `prefer`, or `require` |
 
 ## Tips
 
@@ -94,13 +76,13 @@ http://YOUR_SERVER:9990/ui/setup
 > Provider order matters. Earlier providers are tried first.
 
 > [!IMPORTANT]
+> Stream addons must return stream URLs containing a usable torrent hash. Fetcherr extracts that hash and resolves playback through Real-Debrid. Proxy-only addon URLs that hide the hash are not compatible.
+
+> [!IMPORTANT]
 > `ENGLISH_STREAM_MODE=require` is the strictest option for English audio.
 
 > [!NOTE]
-> Full manifest URLs are accepted and normalized automatically. `SOOTIO_URL` is still supported as a backward-compatible alias for `AIOSTREAM_URL`.
-
-> [!NOTE]
-> `TVDB_API_KEY` is optional and intended only as a fallback for missing episode stills. Check TheTVDB's attribution and licensing requirements before enabling it.
+> Most runtime configuration now lives in the web UI and is stored in Fetcherr's database. `.env` is intentionally minimal and mainly used to define the external server URL.
 
 > [!WARNING]
 > Real-Debrid multi-location and IP restrictions still apply.
@@ -110,3 +92,4 @@ http://YOUR_SERVER:9990/ui/setup
 - Anime has not been validated thoroughly yet
 - Some metadata may still be enriched by Infuse itself
 - `Logo` image behavior may vary by client
+- Trakt Smart Lists are not currently supported because Trakt's public lists API does not expose them

@@ -281,7 +281,6 @@ export function getDb(): Database.Database {
     try { _db.exec(`ALTER TABLE movies ADD COLUMN release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     try { _db.exec(`ALTER TABLE movies ADD COLUMN digital_release_date TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     migrateAppUserRoles(_db)
-    bootstrapDefaultAdmin(_db)
     migrateLegacyUserData(_db)
   }
   return _db
@@ -359,18 +358,6 @@ function migrateAppUserRoles(db: Database.Database): void {
       ALTER TABLE app_users_new RENAME TO app_users;
     `)
   })()
-}
-
-function bootstrapDefaultAdmin(db: Database.Database): void {
-  const existing = db.prepare(`SELECT COUNT(*) AS n FROM app_users`).get() as { n: number }
-  if (existing.n > 0) return
-  const username = normalizeUsername(config.uiUsername || 'admin')
-  const password = config.uiPassword.trim()
-  if (!username || !password) return
-  db.prepare(`
-    INSERT INTO app_users (id, username, password_hash, role, max_rating, updated_at)
-    VALUES (?, ?, ?, 'admin', 'unrestricted', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-  `).run(DEFAULT_ADMIN_USER_ID, username, hashPassword(password))
 }
 
 function migrateLegacyUserData(db: Database.Database): void {
@@ -1114,26 +1101,8 @@ export function getEffectiveShowMode(showTmdbId: number): {
   if (!manual) {
     return { mode: 'all', manualMode: null, activeSeasonNumber: null }
   }
-
-  const nonManual = !!getDb().prepare(`
-    SELECT 1
-    FROM source_items
-    WHERE media_type = 'show'
-      AND tmdb_id = ?
-      AND source_key != 'manual:ui'
-    LIMIT 1
-  `).get(showTmdbId)
-
-  if (manual.mode === 'latest' && !nonManual) {
-    return {
-      mode: 'latest',
-      manualMode: 'latest',
-      activeSeasonNumber: manual.activeSeasonNumber || null,
-    }
-  }
-
   return {
-    mode: 'all',
+    mode: manual.mode,
     manualMode: manual.mode,
     activeSeasonNumber: manual.activeSeasonNumber || null,
   }

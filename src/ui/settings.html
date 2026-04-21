@@ -44,6 +44,7 @@
     /* Section */
     .section {
       position: relative;
+      overflow: hidden;
       background:
         linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)),
         var(--surface);
@@ -308,7 +309,7 @@
     <div class="field">
       <label for="sootioUrl">URL</label>
       <input id="sootioUrl" type="url" placeholder="https://your-aiostreams.example.com">
-      <div class="field-note">Optional legacy fallback for stream lookups. You can paste the full AIOStreams <code>manifest.json</code> URL.</div>
+      <div class="field-note">Optional legacy fallback for stream lookups. You can paste the full AIOStreams <code>manifest.json</code> URL. Provider stream URLs must include a usable torrent hash so Fetcherr can resolve playback through Real-Debrid.</div>
     </div>
     <div class="field">
       <label for="streamProviderList">Direct Stream Providers</label>
@@ -316,7 +317,7 @@
       <div class="provider-actions">
         <button type="button" class="btn btn-sm" onclick="addProviderRow()">+ Add Provider</button>
       </div>
-      <div class="field-note">Optional. Query provider base URLs directly and rank the results. Paste one full manifest or base URL per line.</div>
+      <div class="field-note">Optional. Query provider base URLs directly and rank the results. Paste one full manifest or base URL per line. Providers that only return proxy URLs and do not expose a torrent hash will not be playable by Fetcherr.</div>
     </div>
     <div class="field">
       <label for="englishStreamMode">English Audio</label>
@@ -415,7 +416,24 @@
       <button class="btn" onclick="connectTrakt()">Connect Trakt</button>
     </div>
     <div id="traktCallout" class="callout info" style="display:none"></div>
-    <div class="field-note" style="margin-top:14px">Choose which Trakt lists to sync in addition to your movie and show watchlists.</div>
+    <div class="checklist" style="margin-top:14px">
+      <label class="check-item">
+        <input id="traktWatchlistMovies" type="checkbox">
+        <div class="check-meta">
+          <div class="check-title">Sync Movie Watchlist</div>
+          <div class="check-slug">Imports your Trakt movie watchlist into Fetcherr.</div>
+        </div>
+      </label>
+      <label class="check-item">
+        <input id="traktWatchlistShows" type="checkbox">
+        <div class="check-meta">
+          <div class="check-title">Sync Show Watchlist</div>
+          <div class="check-slug">Imports your Trakt show watchlist into Fetcherr.</div>
+        </div>
+      </label>
+    </div>
+    <div class="field-note" style="margin-top:14px">Choose which Trakt lists to sync in addition to any enabled watchlists.</div>
+    <div class="field-note" style="margin-top:8px">Trakt Smart Lists are not shown here yet because Trakt's public lists API does not currently expose them.</div>
     <div id="traktLists" class="checklist">
       <div class="field-note">Connect Trakt to load your lists.</div>
     </div>
@@ -470,6 +488,9 @@
 
 <script>
   let selectedTraktLists = []
+  let traktAuthPending = false
+  let traktAuthPollId = null
+  let traktAuthTimeoutId = null
   let hasStoredRdApiKey = false
   let hasStoredTmdbApiKey = false
   let hasStoredTvdbApiKey = false
@@ -566,6 +587,8 @@
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
     document.getElementById('traktClientSecret').value = ''
+    document.getElementById('traktWatchlistMovies').checked = d.traktWatchlistMovies !== false
+    document.getElementById('traktWatchlistShows').checked = d.traktWatchlistShows !== false
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
     managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
     deletedUserIds = new Set()
@@ -736,11 +759,21 @@
     if (!res.ok) return
     const d = await res.json()
     if (d.authenticated) {
+      traktAuthPending = false
+      if (traktAuthPollId) {
+        clearInterval(traktAuthPollId)
+        traktAuthPollId = null
+      }
+      if (traktAuthTimeoutId) {
+        clearTimeout(traktAuthTimeoutId)
+        traktAuthTimeoutId = null
+      }
+      document.getElementById('traktCallout').style.display = 'none'
       setPill('traktStatus', 'Connected', 'ok')
       document.getElementById('traktMeta').textContent = d.expiresAt
         ? `Token expires ${new Date(d.expiresAt).toLocaleDateString()}`
         : 'Authenticated'
-    } else {
+    } else if (!traktAuthPending) {
       setPill('traktStatus', 'Not connected', '')
       document.getElementById('traktMeta').textContent = 'No active Trakt connection'
     }
@@ -807,6 +840,8 @@
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         traktClientId:     document.getElementById('traktClientId').value,
+        traktWatchlistMovies: document.getElementById('traktWatchlistMovies').checked,
+        traktWatchlistShows: document.getElementById('traktWatchlistShows').checked,
         ...(traktClientSecret ? { traktClientSecret } : {}),
       }),
     })
@@ -817,18 +852,27 @@
     if (!res.ok) { showOut(d.error || 'Failed to start Trakt auth.', 'error'); return }
 
     const callout = document.getElementById('traktCallout')
+    traktAuthPending = true
+    if (traktAuthPollId) clearInterval(traktAuthPollId)
+    if (traktAuthTimeoutId) clearTimeout(traktAuthTimeoutId)
     callout.style.display = ''
     callout.innerHTML = `1. Open <a href="${d.verificationUrl}" target="_blank">${d.verificationUrl}</a>\n2. Enter code: <strong>${d.code}</strong>\n3. This page will update automatically once authorized.`
     setPill('traktStatus', 'Awaiting authorization', 'pending')
     document.getElementById('traktMeta').textContent = 'Waiting for Trakt authorization…'
 
     // Poll until authenticated
-    const pollId = setInterval(async () => {
+    traktAuthPollId = setInterval(async () => {
       const check = await fetch('/trakt/auth')
       if (!check.ok) return
       const status = await check.json()
       if (status.authenticated) {
-        clearInterval(pollId)
+        traktAuthPending = false
+        clearInterval(traktAuthPollId)
+        traktAuthPollId = null
+        if (traktAuthTimeoutId) {
+          clearTimeout(traktAuthTimeoutId)
+          traktAuthTimeoutId = null
+        }
         callout.style.display = 'none'
         setPill('traktStatus', 'Connected', 'ok')
         document.getElementById('traktMeta').textContent = 'Trakt connected successfully'
@@ -837,7 +881,13 @@
       }
     }, 5000)
     // Stop polling after 10 minutes
-    setTimeout(() => clearInterval(pollId), 600_000)
+    traktAuthTimeoutId = setTimeout(() => {
+      if (traktAuthPollId) {
+        clearInterval(traktAuthPollId)
+        traktAuthPollId = null
+      }
+      traktAuthPending = false
+    }, 600_000)
   }
 
   async function saveSettings() {
@@ -851,6 +901,8 @@
       englishStreamMode: document.getElementById('englishStreamMode').value,
       serverUrl:         document.getElementById('serverUrl').value,
       traktClientId:     document.getElementById('traktClientId').value,
+      traktWatchlistMovies: document.getElementById('traktWatchlistMovies').checked,
+      traktWatchlistShows: document.getElementById('traktWatchlistShows').checked,
       traktLists:        selectedTraktLists,
       ...(rdApiKey ? { rdApiKey } : {}),
       ...(tmdbApiKey ? { tmdbApiKey } : {}),
