@@ -191,8 +191,28 @@
     }
 
     @media (max-width: 600px) {
+      .shell { padding: 14px 12px 78px; }
+      .topbar { border-radius: 14px; }
       .page-header { flex-direction: column; align-items: flex-start; }
+      .header-actions, .header-actions .btn { width: 100%; }
+      .header-actions .btn { justify-content: center; }
       .stats { grid-template-columns: repeat(2,1fr); }
+      .sync-bar { flex-direction: column; gap: 6px; }
+      .sync-bar span { white-space: normal; }
+      .controls { flex-direction: column; }
+      .controls input, .controls select { width: 100%; }
+      .item { align-items: flex-start; flex-wrap: wrap; gap: 10px; }
+      .item-body { flex: 1 1 calc(100% - 52px); }
+      .item-title { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+      .item-actions {
+        width: 100%;
+        margin-left: 48px;
+        justify-content: space-between;
+        align-items: stretch;
+      }
+      .item-mode-toggle { flex: 1; }
+      .item-mode-btn { flex: 1; text-align: center; }
+      .btn-remove { width: 38px; height: 38px; flex-shrink: 0; }
     }
 
     /* Search modal */
@@ -628,11 +648,11 @@
         ? `<div class="item-mode-toggle" onclick="event.stopPropagation()">
              <button
                class="item-mode-btn ${item.libraryMode === 'all' ? 'active' : ''}"
-               onclick="setShowLibraryMode(${item.tmdbId}, 'all', this)"
+               onclick="event.stopPropagation(); setShowLibraryMode(${item.tmdbId}, 'all', this)"
              >Entire Series</button>
              <button
                class="item-mode-btn ${item.libraryMode === 'latest' ? 'active' : ''}"
-               onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this)"
+               onclick="event.stopPropagation(); setShowLibraryMode(${item.tmdbId}, 'latest', this)"
              >Latest Season</button>
            </div>`
         : ''
@@ -909,11 +929,11 @@
           <div class="item-actions">
             <button
               class="btn ${item.libraryMode === 'all' ? 'btn-primary' : ''}"
-              onclick="setShowLibraryMode(${item.tmdbId}, 'all', this)"
+              onclick="setShowLibraryMode(${item.tmdbId}, 'all', this, true)"
             >Entire Series</button>
             <button
               class="btn ${item.libraryMode === 'latest' ? 'btn-primary' : ''}"
-              onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this)"
+              onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this, true)"
             >Latest Season</button>
           </div>
         </div>
@@ -1016,7 +1036,7 @@
     ])
   }
 
-  async function setShowLibraryMode(tmdbId, mode, btn) {
+  async function setShowLibraryMode(tmdbId, mode, btn, refreshDetail = false) {
     const container = btn.closest('.item-actions') || btn.parentElement
     const buttons = container ? [...container.querySelectorAll('button')] : [btn]
     buttons.forEach(el => { el.disabled = true })
@@ -1032,11 +1052,9 @@
       return
     }
     showSyncMsg(`"${data.title}" set to ${mode === 'latest' ? 'latest season' : 'entire series'}.`)
-    await Promise.all([
-      loadItems(),
-      loadStats(),
-      openItemDetail('tv', tmdbId),
-    ])
+    const updates = [loadItems(), loadStats()]
+    if (refreshDetail) updates.push(openItemDetail('tv', tmdbId))
+    await Promise.all(updates)
   }
 
   async function addCollectionMovie(tmdbId, btn) {
