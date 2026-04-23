@@ -1,8 +1,6 @@
 services:
   fetcherr:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ghcr.io/goneturbo/fetcherr:latest
     container_name: fetcherr
     restart: unless-stopped
     ports:
