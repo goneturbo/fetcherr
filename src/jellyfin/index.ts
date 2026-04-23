@@ -38,8 +38,8 @@ const SERVER_GUID      = 'a0000000-0000-0000-0000-000000000001'
 const FOLDER_ID = MOVIES_FOLDER_ID
 const __dir = dirname(fileURLToPath(import.meta.url))
 const ROOT_FOLDER_ART: Record<string, string> = {
-  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.png'),
-  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.png'),
+  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.svg'),
+  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.svg'),
 }
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
@@ -1345,7 +1345,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const kind = imageKindForType(type)
     const rootFolderArt = ROOT_FOLDER_ART[id]
     if (rootFolderArt && existsSync(rootFolderArt)) {
-      reply.type('image/png')
+      reply.type(rootFolderArt.endsWith('.svg') ? 'image/svg+xml' : 'image/png')
       return reply.send(readFileSync(rootFolderArt))
     }
 

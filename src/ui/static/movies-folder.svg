@@ -1,24 +1,42 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" fill="none">
   <defs>
-    <linearGradient id="bg" x1="120" y1="84" x2="1080" y2="591" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#131826"/>
-      <stop offset="1" stop-color="#0C111B"/>
+    <linearGradient id="bg" x1="82" y1="58" x2="1094" y2="607" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#111827"/>
+      <stop offset="0.55" stop-color="#19172A"/>
+      <stop offset="1" stop-color="#0B1220"/>
     </linearGradient>
-    <linearGradient id="card" x1="270" y1="122" x2="936" y2="567" gradientUnits="userSpaceOnUse">
-      <stop stop-color="#F59E0B"/>
-      <stop offset="1" stop-color="#EA580C"/>
+    <linearGradient id="wash" x1="216" y1="90" x2="964" y2="564" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#F59E0B" stop-opacity=".75"/>
+      <stop offset=".48" stop-color="#FB7185" stop-opacity=".36"/>
+      <stop offset="1" stop-color="#0F172A" stop-opacity="0"/>
     </linearGradient>
+    <radialGradient id="glowA" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(946 166) rotate(152.3) scale(484 282)">
+      <stop stop-color="#FB923C" stop-opacity=".34"/>
+      <stop offset="1" stop-color="#FB923C" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="glowB" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(282 482) rotate(-13.1) scale(418 246)">
+      <stop stop-color="#FDE68A" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#FDE68A" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="blur" x="0" y="0" width="1200" height="675" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feGaussianBlur stdDeviation="24"/>
+    </filter>
   </defs>
   <rect width="1200" height="675" rx="40" fill="url(#bg)"/>
-  <circle cx="1015" cy="150" r="118" fill="#1E293B" fill-opacity=".55"/>
-  <circle cx="168" cy="562" r="156" fill="#111827" fill-opacity=".72"/>
-  <rect x="210" y="116" width="780" height="443" rx="34" fill="url(#card)"/>
-  <rect x="247" y="153" width="706" height="369" rx="24" fill="#111827" fill-opacity=".88"/>
-  <rect x="275" y="181" width="650" height="46" rx="16" fill="#FBBF24" fill-opacity=".16"/>
-  <circle cx="335" cy="339" r="86" fill="#F59E0B" fill-opacity=".18"/>
-  <path d="M363 339L307 372V306L363 339Z" fill="#FDE68A"/>
-  <path d="M446 275H849" stroke="#FDE68A" stroke-width="22" stroke-linecap="round" stroke-opacity=".88"/>
-  <path d="M446 339H788" stroke="#FDBA74" stroke-width="18" stroke-linecap="round" stroke-opacity=".85"/>
-  <path d="M446 395H714" stroke="#FB923C" stroke-width="18" stroke-linecap="round" stroke-opacity=".82"/>
-  <text x="210" y="632" fill="#FFF7ED" font-family="ui-sans-serif, system-ui, sans-serif" font-size="88" font-weight="700" letter-spacing="-2">Movies</text>
+  <g opacity=".9">
+    <path d="M0 509C88 453 148 415 238 391C347 362 436 351 557 362C682 373 786 428 893 446C1000 464 1090 443 1200 392V675H0V509Z" fill="#0B1120"/>
+    <path d="M0 552C117 491 201 472 310 465C436 457 515 500 636 512C790 528 964 501 1200 421V675H0V552Z" fill="#0F1727"/>
+  </g>
+  <g opacity=".42">
+    <path d="M95 426L156 358L199 387L246 328L306 392L365 298L428 363L496 308L577 372L658 281L728 347L814 270L905 352L975 301L1044 363L1112 316V519H95V426Z" fill="#F8FAFC"/>
+    <path d="M122 517V418M181 517V381M239 517V406M301 517V347M364 517V423M427 517V386M494 517V331M556 517V401M621 517V364M686 517V320M752 517V392M816 517V349M882 517V409M948 517V372M1011 517V417M1076 517V389" stroke="#E5E7EB" stroke-opacity=".34" stroke-width="8" stroke-linecap="round"/>
+  </g>
+  <g filter="url(#blur)" opacity=".55">
+    <circle cx="952" cy="170" r="158" fill="#FB923C"/>
+    <circle cx="268" cy="470" r="132" fill="#F59E0B"/>
+  </g>
+  <rect width="1200" height="675" rx="40" fill="url(#wash)"/>
+  <rect width="1200" height="675" rx="40" fill="url(#glowA)"/>
+  <rect width="1200" height="675" rx="40" fill="url(#glowB)"/>
+  <rect x="30" y="30" width="1140" height="615" rx="34" stroke="rgba(255,255,255,.06)"/>
 </svg>
