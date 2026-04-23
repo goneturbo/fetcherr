@@ -424,10 +424,12 @@
     <input type="text" id="searchInput" placeholder="Search…" oninput="onSearch()">
     <select id="sortSelect" onchange="loadItems()">
       <option value="popularity:DESC">Most popular</option>
+      <option value="dateAdded:DESC">Recently added</option>
+      <option value="dateAdded:ASC">Oldest added</option>
       <option value="title:ASC">Title A→Z</option>
       <option value="title:DESC">Title Z→A</option>
-      <option value="year:DESC">Newest first</option>
-      <option value="year:ASC">Oldest first</option>
+      <option value="year:DESC">Newest release</option>
+      <option value="year:ASC">Oldest release</option>
     </select>
   </div>
 
@@ -488,6 +490,7 @@
   let activeDetailItem = null
   let activeDetailTab = 'overview'
   let activeDetailData = null
+  let defaultShowAddMode = 'all'
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -553,7 +556,16 @@
         if (sortBy === 'title') return sortOrder === 'ASC'
           ? a.title.localeCompare(b.title)
           : b.title.localeCompare(a.title)
-        if (sortBy === 'year') return sortOrder === 'ASC' ? a.year - b.year : b.year - a.year
+        if (sortBy === 'year') {
+          const aTime = a.releaseSortDate ? new Date(a.releaseSortDate).getTime() : (a.year || 0)
+          const bTime = b.releaseSortDate ? new Date(b.releaseSortDate).getTime() : (b.year || 0)
+          return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
+        }
+        if (sortBy === 'dateAdded') {
+          const aTime = a.syncedAt ? new Date(a.syncedAt).getTime() : 0
+          const bTime = b.syncedAt ? new Date(b.syncedAt).getTime() : 0
+          return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
+        }
         return sortOrder === 'ASC' ? a.popularity - b.popularity : b.popularity - a.popularity
       })
       renderItems(merged, 'all')
@@ -595,11 +607,11 @@
              <button
                class="item-mode-btn ${item.libraryMode === 'all' ? 'active' : ''}"
                onclick="setShowLibraryMode(${item.tmdbId}, 'all', this)"
-             >Series</button>
+             >Entire Series</button>
              <button
                class="item-mode-btn ${item.libraryMode === 'latest' ? 'active' : ''}"
                onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this)"
-             >Latest</button>
+             >Latest Season</button>
            </div>`
         : ''
 
@@ -852,13 +864,15 @@
       ? `
         <div class="toggle-card">
           <div class="toggle-copy">
-            <p class="toggle-title">Ignore release gate</p>
-            <p class="toggle-sub">Show this movie in Infuse before the expected eligible date. This overrides the default release gating for this title only.</p>
+            <p class="toggle-title">Release Window</p>
+            <p class="toggle-sub">${item.releaseGateOverridden
+              ? `Added early via override. Switch back to wait for your default ${escapeHtml((item.releaseWindowLabel || 'release window').toLowerCase())} before showing it in clients.`
+              : `This film has not reached your current ${escapeHtml((item.releaseWindowLabel || 'release window').toLowerCase())}${item.eligibleDate ? ` (est. ${fmtShortDate(item.eligibleDate)})` : ''}. Add it now or wait.`}</p>
           </div>
           <button
             class="btn"
             onclick="toggleMovieAvailabilityOverride(${item.tmdbId}, ${item.releaseGateOverridden ? 'false' : 'true'}, this)"
-          >${item.releaseGateOverridden ? 'Respect Release Gate' : 'Ignore Release Gate'}</button>
+          >${item.releaseGateOverridden ? `Wait for ${escapeHtml(item.releaseWindowLabel || 'Default Window')}` : 'Add Now'}</button>
         </div>
       `
       : ''
@@ -972,7 +986,7 @@
       showSyncMsg(data.error || 'Failed to update movie availability.')
       return
     }
-    showSyncMsg(ignoreReleaseGate ? 'Release gate override enabled.' : 'Release gate restored.')
+    showSyncMsg(ignoreReleaseGate ? 'Movie added ahead of digital release.' : 'Movie will wait for digital release again.')
     await Promise.all([
       loadItems(),
       loadStats(),
@@ -1045,7 +1059,15 @@
     }
   }
 
+  async function loadClientConfig() {
+    const res = await fetch('/ui/client-config')
+    if (!res.ok) return
+    const d = await res.json().catch(() => ({}))
+    defaultShowAddMode = d.showAddDefaultMode === 'latest' ? 'latest' : 'all'
+  }
+
   loadStats()
+  loadClientConfig()
   loadItems()
   checkAuth()
   setInterval(loadStats, 60000)
@@ -1106,6 +1128,8 @@
         ? `<img class="result-poster" src="${r.poster}" alt="" loading="lazy" onerror="this.style.display='none';this.nextSibling.style.display='flex'">`
           + `<div class="result-poster-ph" style="display:none">${r.type === 'tv' ? '📺' : '🎬'}</div>`
         : `<div class="result-poster-ph">${r.type === 'tv' ? '📺' : '🎬'}</div>`
+      const tvPrimaryMode = defaultShowAddMode === 'latest' ? 'latest' : 'all'
+      const tvSecondaryMode = tvPrimaryMode === 'latest' ? 'all' : 'latest'
       const action = r.inLibrary || inLibrarySet.has(r.tmdbId)
         ? `<span class="badge-in-lib">In Library</span>`
         : r.type === 'tv'
@@ -1116,8 +1140,8 @@
                 </svg>
               </button>
               <div class="tv-add-menu ${openTvMenuTmdbId === r.tmdbId ? 'open' : ''}" id="tvAddMenu-${r.tmdbId}" onclick="event.stopPropagation()">
-                <button class="btn-add" onclick="addItem(${r.tmdbId},'${r.type}','all',this)">Entire Series</button>
-                <button class="btn-add secondary" onclick="addItem(${r.tmdbId},'${r.type}','latest',this)">Latest Season</button>
+                <button class="btn-add" onclick="addItem(${r.tmdbId},'${r.type}','${tvPrimaryMode}',this)">${tvPrimaryMode === 'latest' ? 'Latest Season' : 'Entire Series'}</button>
+                <button class="btn-add secondary" onclick="addItem(${r.tmdbId},'${r.type}','${tvSecondaryMode}',this)">${tvSecondaryMode === 'latest' ? 'Latest Season' : 'Entire Series'}</button>
               </div>
             </div>`
           : `<button class="btn-add icon" title="Add movie" aria-label="Add movie" onclick="addItem(${r.tmdbId},'${r.type}','all',this)">
@@ -1178,7 +1202,7 @@
       const badge = Object.assign(document.createElement('span'), { className: 'badge-in-lib', textContent: 'In Library' })
       if (actions) actions.replaceWith(badge)
       else btn.replaceWith(badge)
-      showModalToast(`"${d.title}" added as ${type === 'tv' && mode === 'latest' ? 'latest season' : (type === 'tv' ? 'whole series' : 'movie')}.`, 'success')
+      showModalToast(`"${d.title}" added as ${type === 'tv' && mode === 'latest' ? 'latest season' : (type === 'tv' ? 'entire series' : 'movie')}.`, 'success')
       Promise.all([loadStats(), loadItems()])
     } else {
       buttons.forEach(el => { el.disabled = false })

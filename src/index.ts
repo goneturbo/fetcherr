@@ -1,5 +1,5 @@
 import Fastify from 'fastify'
-import { config, normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from './config.js'
+import { config, normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseTraktLists } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { castRoutes } from './cast/routes.js'
@@ -39,6 +39,8 @@ initCastSchema()
   if (s.traktLists != null) config.traktLists          = parseTraktLists(s.traktLists)
   if (s.traktWatchlistMovies != null) config.traktWatchlistMovies = parseBooleanSetting(s.traktWatchlistMovies, true)
   if (s.traktWatchlistShows != null)  config.traktWatchlistShows  = parseBooleanSetting(s.traktWatchlistShows, true)
+  if (s.showAddDefaultMode != null) config.showAddDefaultMode = parseShowAddDefaultMode(s.showAddDefaultMode)
+  if (s.movieReleaseMode != null) config.movieReleaseMode = parseMovieReleaseMode(s.movieReleaseMode)
   if (s.streamProviderUrls != null) config.streamProviderUrls = parseStreamProviderUrls(s.streamProviderUrls)
   if (s.englishStreamMode != null) config.englishStreamMode = parseEnglishStreamMode(s.englishStreamMode)
 }
@@ -48,6 +50,7 @@ wrapFastifyLogger(app)
 
 // Register routes
 await app.register(jellyfinRoutes)
+await app.register(jellyfinRoutes, { prefix: '/emby' })
 await app.register(castRoutes)
 await app.register(uiRoutes)
 

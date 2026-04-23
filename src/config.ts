@@ -22,9 +22,19 @@ export function parseBooleanSetting(value: string | undefined, fallback = false)
 }
 
 export type EnglishStreamMode = 'off' | 'prefer' | 'require'
+export type ShowAddDefaultMode = 'all' | 'latest'
+export type MovieReleaseMode = 'digital' | 'theatrical'
 
 export function parseEnglishStreamMode(value: string): EnglishStreamMode {
   return value === 'off' || value === 'require' ? value : 'prefer'
+}
+
+export function parseShowAddDefaultMode(value: string | undefined): ShowAddDefaultMode {
+  return value === 'latest' ? 'latest' : 'all'
+}
+
+export function parseMovieReleaseMode(value: string | undefined): MovieReleaseMode {
+  return value === 'theatrical' ? 'theatrical' : 'digital'
 }
 
 export const config = {
@@ -43,6 +53,8 @@ export const config = {
   traktLists:        parseTraktLists(process.env.TRAKT_LISTS ?? ''),
   traktWatchlistMovies: parseBooleanSetting(process.env.TRAKT_WATCHLIST_MOVIES, true),
   traktWatchlistShows:  parseBooleanSetting(process.env.TRAKT_WATCHLIST_SHOWS, true),
+  showAddDefaultMode: parseShowAddDefaultMode(process.env.SHOW_ADD_DEFAULT_MODE),
+  movieReleaseMode: parseMovieReleaseMode(process.env.MOVIE_RELEASE_MODE),
   streamProviderUrls: parseStreamProviderUrls(process.env.STREAM_PROVIDER_URLS ?? ''),
   englishStreamMode: parseEnglishStreamMode(process.env.ENGLISH_STREAM_MODE ?? ''),
   serverUrl:         (process.env.SERVER_URL ?? 'http://localhost:9990').replace(/\/$/, ''),

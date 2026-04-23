@@ -99,6 +99,13 @@ export interface ManualMovieAvailabilityOverride {
   updatedAt: string
 }
 
+export interface UiSession {
+  token: string
+  userId: string
+  expiresAt: number
+  createdAt: string
+}
+
 export const DEFAULT_ADMIN_USER_ID = 'a0000000-0000-0000-0000-000000000002'
 export const MAX_RATING_OPTIONS = [
   'unrestricted',
@@ -213,6 +220,15 @@ CREATE TABLE IF NOT EXISTS app_users (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+CREATE TABLE IF NOT EXISTS ui_sessions (
+  token         TEXT PRIMARY KEY,
+  user_id       TEXT NOT NULL,
+  expires_at    INTEGER NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS ui_sessions_user_id    ON ui_sessions(user_id);
+CREATE INDEX IF NOT EXISTS ui_sessions_expires_at ON ui_sessions(expires_at);
+
 CREATE TABLE IF NOT EXISTS source_items (
   source_key TEXT    NOT NULL,
   media_type TEXT    NOT NULL CHECK (media_type IN ('movie', 'show')),
@@ -232,6 +248,12 @@ CREATE TABLE IF NOT EXISTS manual_show_subscriptions (
 CREATE TABLE IF NOT EXISTS manual_movie_availability_overrides (
   movie_tmdb_id          INTEGER PRIMARY KEY,
   ignore_release_gate    INTEGER NOT NULL DEFAULT 0,
+  updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+
+CREATE TABLE IF NOT EXISTS movie_release_preferences (
+  movie_tmdb_id          INTEGER PRIMARY KEY,
+  mode                   TEXT    NOT NULL CHECK (mode IN ('digital', 'theatrical')),
   updated_at             TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
@@ -261,6 +283,8 @@ export function getDb(): Database.Database {
   if (!_db) {
     _db = new Database(config.dbPath)
     _db.pragma('journal_mode = WAL')
+    _db.pragma('busy_timeout = 5000')
+    _db.pragma('synchronous = NORMAL')
     _db.exec(schema)
     // Migrations for columns added after initial schema
     try { _db.exec(`ALTER TABLE movies ADD COLUMN backdrop_path TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
@@ -447,14 +471,58 @@ function todayIsoDate(): string {
 
 export function getMovieEligibleDate(
   movie: Pick<Movie, 'releaseDate' | 'digitalReleaseDate'>,
+  mode?: 'digital' | 'theatrical',
 ): string | null {
+  const effectiveMode = mode ?? config.movieReleaseMode
+  if (effectiveMode === 'theatrical') {
+    if (movie.releaseDate) return movie.releaseDate
+    if (movie.digitalReleaseDate) return movie.digitalReleaseDate
+    return null
+  }
   if (movie.digitalReleaseDate) return movie.digitalReleaseDate
   if (movie.releaseDate) return addDaysIso(movie.releaseDate, 45) || null
   return null
 }
 
-export function isMovieAvailable(movie: Pick<Movie, 'releaseDate' | 'digitalReleaseDate'>, today = todayIsoDate()): boolean {
-  const eligibleDate = getMovieEligibleDate(movie)
+export function getMovieReleaseModeForLibrary(movieTmdbId: number): 'digital' | 'theatrical' {
+  const row = getDb().prepare(`
+    SELECT mode
+    FROM movie_release_preferences
+    WHERE movie_tmdb_id = ?
+  `).get(movieTmdbId) as { mode?: string } | undefined
+  return row?.mode === 'theatrical' ? 'theatrical' : row?.mode === 'digital' ? 'digital' : config.movieReleaseMode
+}
+
+export function setMovieReleaseModePreference(movieTmdbId: number, mode: 'digital' | 'theatrical'): void {
+  getDb().prepare(`
+    INSERT INTO movie_release_preferences (movie_tmdb_id, mode, updated_at)
+    VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    ON CONFLICT(movie_tmdb_id) DO UPDATE SET
+      mode = excluded.mode,
+      updated_at = excluded.updated_at
+  `).run(movieTmdbId, mode)
+}
+
+export function materializeMovieReleaseModeForExistingLibrary(mode: 'digital' | 'theatrical'): number {
+  const info = getDb().prepare(`
+    INSERT INTO movie_release_preferences (movie_tmdb_id, mode, updated_at)
+    SELECT DISTINCT si.tmdb_id, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM source_items si
+    WHERE si.media_type = 'movie'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM movie_release_preferences mp
+        WHERE mp.movie_tmdb_id = si.tmdb_id
+      )
+  `).run(mode)
+  return info.changes
+}
+
+export function isMovieAvailable(
+  movie: Pick<Movie, 'tmdbId' | 'releaseDate' | 'digitalReleaseDate'>,
+  today = todayIsoDate(),
+): boolean {
+  const eligibleDate = getMovieEligibleDate(movie, getMovieReleaseModeForLibrary(movie.tmdbId))
   if (eligibleDate && eligibleDate <= today) return true
   return false
 }
@@ -518,10 +586,15 @@ function movieSortSpec(sortBy?: string, userId = DEFAULT_ADMIN_USER_ID): SortSpe
       directional: true,
     }
   }
-  if (['productionyear', 'year'].includes(normalized)) return { expr: 'year', directional: true }
+  if (['productionyear', 'year', 'releasedate', 'premieredate'].includes(normalized)) {
+    return {
+      expr: "coalesce(nullif(release_date, ''), nullif(digital_release_date, ''), printf('%04d-01-01', year))",
+      directional: true,
+    }
+  }
   if (['communityrating', 'imdbrating', 'rating'].includes(normalized)) return { expr: 'community_rating', directional: true }
   if (['officialrating', 'parentalrating'].includes(normalized)) return { expr: 'official_rating collate nocase', directional: true }
-  if (['releasedate', 'premieredate', 'datecreated'].includes(normalized)) return { expr: "coalesce(nullif(release_date, ''), nullif(digital_release_date, ''), '')", directional: true }
+  if (['datecreated'].includes(normalized)) return { expr: "coalesce(nullif(release_date, ''), nullif(digital_release_date, ''), '')", directional: true }
   if (['dateshowadded', 'dateadded', 'addeddate'].includes(normalized)) return { expr: 'synced_at', directional: true }
   if (['dateplayed', 'lastplayeddate'].includes(normalized)) {
     return {
@@ -584,23 +657,48 @@ function movieAvailabilityWhere(availableOnly: boolean): string {
     )`,
   ]
   if (availableOnly) {
-    clauses.push(`(
-      EXISTS (
-        SELECT 1
-        FROM manual_movie_availability_overrides
-        WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
-          AND manual_movie_availability_overrides.ignore_release_gate = 1
-      )
-      OR
-      (
-      (digital_release_date != '' AND digital_release_date <= date('now'))
-      OR (
-        digital_release_date = ''
-        AND release_date != ''
-        AND date(release_date, '+45 day') <= date('now')
-      )
-      )
-    )`)
+    // This SQL path intentionally uses the current global movieReleaseMode.
+    // Per-movie pinned release modes live in movie_release_preferences and are
+    // honored by isMovieAvailable()/isMovieVisibleToLibrary(), but we do not
+    // join that table here because this query is used as a broad library-listing
+    // filter and we want to keep it simple/cheap. The practical mismatch only
+    // affects movies that were pinned to an older mode before a later global
+    // setting change.
+    clauses.push(config.movieReleaseMode === 'theatrical'
+      ? `(
+        EXISTS (
+          SELECT 1
+          FROM manual_movie_availability_overrides
+          WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
+            AND manual_movie_availability_overrides.ignore_release_gate = 1
+        )
+        OR
+        (
+          (release_date != '' AND release_date <= date('now'))
+          OR (
+            release_date = ''
+            AND digital_release_date != ''
+            AND digital_release_date <= date('now')
+          )
+        )
+      )`
+      : `(
+        EXISTS (
+          SELECT 1
+          FROM manual_movie_availability_overrides
+          WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
+            AND manual_movie_availability_overrides.ignore_release_gate = 1
+        )
+        OR
+        (
+          (digital_release_date != '' AND digital_release_date <= date('now'))
+          OR (
+            digital_release_date = ''
+            AND release_date != ''
+            AND date(release_date, '+45 day') <= date('now')
+          )
+        )
+      )`)
   }
   return `WHERE ${clauses.join('\n  AND ')}`
 }
@@ -957,6 +1055,7 @@ export function deleteUser(userId: string): void {
     if (admins.n <= 1) throw new Error('Cannot delete the last admin')
   }
   db.transaction(() => {
+    db.prepare(`DELETE FROM ui_sessions WHERE user_id = ?`).run(userId)
     db.prepare(`DELETE FROM user_item_data WHERE user_id = ?`).run(userId)
     db.prepare(`DELETE FROM app_users WHERE id = ?`).run(userId)
   })()
@@ -964,6 +1063,37 @@ export function deleteUser(userId: string): void {
 
 export function authEnabled(): boolean {
   return countUsers() > 0
+}
+
+export function purgeExpiredUiSessions(now = Date.now()): number {
+  const info = getDb().prepare(`DELETE FROM ui_sessions WHERE expires_at <= ?`).run(now)
+  return info.changes
+}
+
+export function createUiSession(token: string, userId: string, expiresAt: number): void {
+  purgeExpiredUiSessions()
+  getDb().prepare(`
+    INSERT INTO ui_sessions (token, user_id, expires_at, created_at)
+    VALUES (?, ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    ON CONFLICT(token) DO UPDATE SET
+      user_id = excluded.user_id,
+      expires_at = excluded.expires_at
+  `).run(token, userId, expiresAt)
+}
+
+export function getUiSession(token: string): UiSession | null {
+  const row = getDb().prepare(`SELECT * FROM ui_sessions WHERE token = ?`).get(token) as Record<string, unknown> | undefined
+  if (!row) return null
+  const session = row2uiSession(row)
+  if (session.expiresAt <= Date.now()) {
+    getDb().prepare(`DELETE FROM ui_sessions WHERE token = ?`).run(token)
+    return null
+  }
+  return session
+}
+
+export function deleteUiSession(token: string): void {
+  getDb().prepare(`DELETE FROM ui_sessions WHERE token = ?`).run(token)
 }
 
 function normalizeOfficialRating(rating: string): string {
@@ -1034,6 +1164,15 @@ function row2manualShowSubscription(r: Record<string, unknown>): ManualShowSubsc
   }
 }
 
+function row2uiSession(r: Record<string, unknown>): UiSession {
+  return {
+    token: r.token as string,
+    userId: r.user_id as string,
+    expiresAt: Number(r.expires_at ?? 0),
+    createdAt: r.created_at as string,
+  }
+}
+
 export function upsertManualShowSubscription(
   showTmdbId: number,
   mode: ManualShowMode,
@@ -1062,6 +1201,40 @@ export function listLatestSeasonShowSubscriptions(): ManualShowSubscription[] {
     WHERE mode = 'latest'
     ORDER BY show_tmdb_id ASC
   `).all() as Record<string, unknown>[]).map(row2manualShowSubscription)
+}
+
+export function materializeShowDefaultModeForExistingLibrary(mode: ManualShowMode): number {
+  const latestSeasonNumberExpr = `
+    COALESCE((
+      SELECT MAX(s.season_number)
+      FROM seasons s
+      WHERE s.show_tmdb_id = si.tmdb_id
+        AND s.season_number > 0
+        AND s.air_date != ''
+        AND s.air_date <= date('now')
+    ), (
+      SELECT MAX(s.season_number)
+      FROM seasons s
+      WHERE s.show_tmdb_id = si.tmdb_id
+        AND s.season_number > 0
+    ), 0)
+  `
+  const info = getDb().prepare(`
+    INSERT INTO manual_show_subscriptions (show_tmdb_id, mode, active_season_number, updated_at)
+    SELECT DISTINCT
+      si.tmdb_id,
+      ?,
+      CASE WHEN ? = 'latest' THEN ${latestSeasonNumberExpr} ELSE 0 END,
+      strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    FROM source_items si
+    WHERE si.media_type = 'show'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM manual_show_subscriptions ms
+        WHERE ms.show_tmdb_id = si.tmdb_id
+      )
+  `).run(mode, mode)
+  return info.changes
 }
 
 export function removeManualShowSubscription(showTmdbId: number): number {
@@ -1104,7 +1277,9 @@ export function getEffectiveShowMode(showTmdbId: number): {
   return {
     mode: manual.mode,
     manualMode: manual.mode,
-    activeSeasonNumber: manual.activeSeasonNumber || null,
+    activeSeasonNumber: manual.mode === 'latest'
+      ? (manual.activeSeasonNumber || getLatestSeasonNumberForShow(showTmdbId))
+      : null,
   }
 }
 
@@ -1263,10 +1438,13 @@ function findAllOrphanedTmdbIds(mediaType: MediaType): number[] {
 export function pruneOrphanedMovies(tmdbIds: number[]): number {
   const orphaned = findOrphanedTmdbIds('movie', tmdbIds)
   if (!orphaned.length) return 0
-  const info = getDb().prepare(`
-    DELETE FROM movies WHERE tmdb_id IN (${sqlPlaceholders(orphaned.length)})
-  `).run(...orphaned)
-  return info.changes
+  const db = getDb()
+  db.transaction(() => {
+    db.prepare(`DELETE FROM movie_release_preferences WHERE movie_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
+    db.prepare(`DELETE FROM manual_movie_availability_overrides WHERE movie_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
+    db.prepare(`DELETE FROM movies WHERE tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
+  })()
+  return orphaned.length
 }
 
 export function pruneAllOrphanedMovies(): number {

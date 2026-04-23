@@ -5,8 +5,8 @@ import { join, dirname } from 'path'
 import {
   listMovies, countMovies, listShows, countShows, countAiredEpisodes,
   addSourceItem, getEffectiveShowMode, getMovieByTmdbId, getShowByTmdbId, getSetting,
-  getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate,
-  getManualMovieAvailabilityOverride,
+  getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate, getMovieReleaseModeForLibrary,
+  getManualMovieAvailabilityOverride, materializeMovieReleaseModeForExistingLibrary,
   hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
   removeSourceItem, setManualMovieAvailabilityOverride,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
@@ -19,7 +19,7 @@ import {
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
-import { normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
+import { normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 
@@ -239,7 +239,7 @@ export async function uiRoutes(app: FastifyInstance) {
     const visibleShows = listShows({ limit: 10_000, offset: 0, userId: user.id }).filter(show => canUserAccessShow(user, show))
     const movies   = visibleMovies.length
     const shows    = visibleShows.length
-    const episodes = visibleShows.reduce((sum, show) => sum + getEpisodesForShow(show.tmdbId).filter(ep => !!ep.airDate && ep.airDate <= todayIsoDate()).length, 0)
+    const episodes = countAiredEpisodes()
     return {
       movies,
       shows,
@@ -272,13 +272,15 @@ export async function uiRoutes(app: FastifyInstance) {
         imdbId:       m.imdbId,
         title:        m.title,
         year:         m.year,
+        releaseSortDate: m.releaseDate || m.digitalReleaseDate || (m.year ? `${m.year}-01-01` : ''),
         overview:     m.overview,
+        syncedAt:     m.syncedAt,
         genres:       JSON.parse(m.genres || '[]') as string[],
         runtimeMins:  m.runtimeMins,
         popularity:   m.popularity,
         manualAdded:  hasSourceItem('manual:ui', 'movie', m.tmdbId),
         isAvailable:  isMovieVisibleToLibrary(m),
-        pendingLabel: isMovieVisibleToLibrary(m) ? null : 'Pending Digital Release',
+        pendingLabel: isMovieVisibleToLibrary(m) ? null : `Pending ${getMovieReleaseModeForLibrary(m.tmdbId) === 'theatrical' ? 'Theatrical Release' : 'Digital Release'}`,
         posterUrl:    m.posterPath ? `https://image.tmdb.org/t/p/w185${m.posterPath}` : null,
         imageId:      tmdbToMovieGuid(m.tmdbId),
       })),
@@ -308,7 +310,9 @@ export async function uiRoutes(app: FastifyInstance) {
         imdbId:     s.imdbId,
         title:      s.title,
         year:       s.year,
+        releaseSortDate: s.year ? `${s.year}-01-01` : '',
         overview:   s.overview,
+        syncedAt:   s.syncedAt,
         genres:     JSON.parse(s.genres || '[]') as string[],
         status:     s.status,
         numSeasons: s.numSeasons,
@@ -337,9 +341,11 @@ export async function uiRoutes(app: FastifyInstance) {
       if (!movie) return reply.code(404).send({ error: 'Movie not found' })
       if (!canUserAccessMovie(user, movie)) return reply.code(404).send({ error: 'Movie not found' })
 
-      const eligibleDate = getMovieEligibleDate(movie)
+      const movieReleaseMode = getMovieReleaseModeForLibrary(movie.tmdbId)
+      const eligibleDate = getMovieEligibleDate(movie, movieReleaseMode)
       const releaseGateOverridden = getManualMovieAvailabilityOverride(movie.tmdbId)
       const isAvailable = isMovieVisibleToLibrary(movie)
+      const releaseWindowLabel = movieReleaseMode === 'theatrical' ? 'Theatrical Release' : 'Digital Release'
 
       return {
         type,
@@ -354,8 +360,9 @@ export async function uiRoutes(app: FastifyInstance) {
         visibleToInfuse: isAvailable,
         libraryStatusLabel: isAvailable
           ? (releaseGateOverridden && !isMovieAvailable(movie) ? 'In Library via Override' : 'In Library')
-          : 'Pending Digital Release',
+          : `Pending ${releaseWindowLabel}`,
         releaseGateOverridden,
+        releaseWindowLabel,
         eligibleDate,
         releaseDate: movie.releaseDate || null,
         digitalReleaseDate: movie.digitalReleaseDate || null,
@@ -425,6 +432,8 @@ export async function uiRoutes(app: FastifyInstance) {
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
       traktWatchlistShows: config.traktWatchlistShows,
+      showAddDefaultMode: config.showAddDefaultMode,
+      movieReleaseMode: config.movieReleaseMode,
       traktLists:        config.traktLists,
       hasSootioUrl:      !!getSetting('sootioUrl'),
       hasRdApiKey:       !!getSetting('rdApiKey'),
@@ -437,6 +446,15 @@ export async function uiRoutes(app: FastifyInstance) {
         role: user.role,
         maxRating: user.maxRating,
       })),
+    }
+  })
+
+  app.get('/ui/client-config', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+    return {
+      showAddDefaultMode: config.showAddDefaultMode,
+      movieReleaseMode: config.movieReleaseMode,
     }
   })
 
@@ -489,6 +507,19 @@ export async function uiRoutes(app: FastifyInstance) {
       const enabled = parseBooleanSetting(String(body.traktWatchlistShows), true)
       setSetting('traktWatchlistShows', enabled ? 'true' : 'false')
       config.traktWatchlistShows = enabled
+    }
+    if (typeof body.showAddDefaultMode === 'string') {
+      const mode = parseShowAddDefaultMode(body.showAddDefaultMode)
+      setSetting('showAddDefaultMode', mode)
+      config.showAddDefaultMode = mode
+    }
+    if (typeof body.movieReleaseMode === 'string') {
+      const mode = parseMovieReleaseMode(body.movieReleaseMode)
+      if (mode !== config.movieReleaseMode) {
+        materializeMovieReleaseModeForExistingLibrary(config.movieReleaseMode)
+      }
+      setSetting('movieReleaseMode', mode)
+      config.movieReleaseMode = mode
     }
     if (Array.isArray(body.traktLists)) {
       const lists = body.traktLists.map(v => String(v).trim()).filter(Boolean)
@@ -572,7 +603,7 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!user) return reply.code(401).send({ error: 'Unauthorized' })
     const body = (req.body ?? {}) as { tmdbId?: number; type?: string; mode?: string }
     const { tmdbId, type } = body
-    const mode = body.mode === 'latest' ? 'latest' : 'all'
+    const mode = body.mode === 'latest' ? 'latest' : body.mode === 'all' ? 'all' : config.showAddDefaultMode
     if (!tmdbId || !type) return reply.code(400).send({ error: 'tmdbId and type required' })
     if (!config.tmdbApiKey) return reply.code(503).send({ error: 'TMDB API key not configured' })
 

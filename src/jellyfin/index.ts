@@ -227,6 +227,11 @@ function imageEtag(tag: string | undefined, url: string): string {
   return `"${tag || createHash('sha1').update(url).digest('hex')}"`
 }
 
+function jellyfinPremiereDate(date: string | undefined): string | undefined {
+  if (!date || !/^\d{4}-\d{2}-\d{2}$/.test(date)) return undefined
+  return `${date}T00:00:00.000Z`
+}
+
 async function sendImageUrl(
   reply: FastifyReply,
   headers: Record<string, string | string[] | undefined>,
@@ -357,6 +362,7 @@ function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
     OfficialRating:     m.officialRating || undefined,
     CommunityRating:    m.communityRating || undefined,
     ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
+    PremiereDate:       jellyfinPremiereDate(m.releaseDate || m.digitalReleaseDate),
     DateCreated:        m.syncedAt,
     RunTimeTicks:       runtimeTicks,
     IsFolder:           false,
@@ -467,6 +473,7 @@ function movieToSearchItem(m: Movie) {
     OfficialRating:     m.officialRating || undefined,
     CommunityRating:    m.communityRating || undefined,
     ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
+    PremiereDate:       jellyfinPremiereDate(m.releaseDate || m.digitalReleaseDate),
     DateCreated:        m.syncedAt,
     IsFolder:           false,
     ImageTags:          {
@@ -660,6 +667,7 @@ function seasonToItem(season: Season, show: Show, userId = DEFAULT_ADMIN_USER_ID
     CanDownload:        false,
     ProductionYear:     season.airDate ? parseInt(season.airDate.slice(0, 4)) : show.year,
     Overview:           season.overview,
+    PremiereDate:       jellyfinPremiereDate(season.airDate),
     DateCreated:        season.syncedAt,
     IsFolder:           true,
     IndexNumber:        season.seasonNumber,
@@ -712,6 +720,7 @@ function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) 
     OfficialRating:        undefined,
     CommunityRating:       ep.communityRating || undefined,
     ExternalUrls:          null,
+    PremiereDate:          jellyfinPremiereDate(ep.airDate),
     DateCreated:           ep.syncedAt,
     IsFolder:              false,
     IndexNumber:           ep.episodeNumber,
@@ -1431,7 +1440,21 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Users/:userId/Items/:itemId/SpecialFeatures', async () => [])
   app.post('/Sessions/Playing',         async () => ({}))
   app.post('/Sessions/Playing/Progress', async (req) => {
-    const user = requestUser(req.headers)
+    const user = requestUser((req as { headers: Record<string, string | string[] | undefined> }).headers)
+    if (!user) return {}
+    const body = (req as never as { body: Record<string, unknown> }).body
+    const itemId       = body?.ItemId       as string | undefined
+    const positionTicks = body?.PositionTicks as number | undefined
+    if (itemId && positionTicks != null) {
+      saveProgress(itemId, positionTicks, user.id)
+      app.log.info(`progress: saved ${itemId} at ${positionTicks} ticks`)
+    } else {
+      app.log.warn(`progress: missing item or position in /Sessions/Playing/Progress payload`)
+    }
+    return {}
+  })
+  app.post('/Sessions/Playing/Progres', async (req) => {
+    const user = requestUser((req as { headers: Record<string, string | string[] | undefined> }).headers)
     if (!user) return {}
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId       = body?.ItemId       as string | undefined

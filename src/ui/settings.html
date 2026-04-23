@@ -115,6 +115,11 @@
     .callout.error { color: #fecaca; border-color: var(--red-border); background: var(--red-dim); }
     .callout.info { color: #bfdbfe; border-color: var(--blue-border); background: var(--blue-dim); }
     .checklist { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+    .checklist.scrollable {
+      max-height: 420px;
+      overflow: auto;
+      padding-right: 2px;
+    }
     .check-item {
       display: flex; align-items: center; gap: 10px; padding: 10px 12px;
       border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.02);
@@ -392,6 +397,28 @@
     </div>
   </div>
 
+  <div class="section">
+    <div class="section-title">Library Defaults</div>
+    <div class="field-grid field">
+      <div>
+        <label for="showAddDefaultMode">TV Show Add Default</label>
+        <select id="showAddDefaultMode">
+          <option value="all">Entire Series</option>
+          <option value="latest">Latest Season</option>
+        </select>
+        <div class="field-note">Applies to new manual adds and Trakt-imported shows that do not already have a series-mode override.</div>
+      </div>
+      <div>
+        <label for="movieReleaseMode">Movie Release Window</label>
+        <select id="movieReleaseMode">
+          <option value="digital">Digital Release</option>
+          <option value="theatrical">Theatrical Release</option>
+        </select>
+        <div class="field-note">Controls when movies become visible to clients by default. Per-movie overrides can still add titles earlier.</div>
+      </div>
+    </div>
+  </div>
+
   <!-- Trakt -->
   <div class="section">
     <div class="section-title">Trakt</div>
@@ -434,7 +461,11 @@
     </div>
     <div class="field-note" style="margin-top:14px">Choose which Trakt lists to sync in addition to any enabled watchlists.</div>
     <div class="field-note" style="margin-top:8px">Trakt Smart Lists are not shown here yet because Trakt's public lists API does not currently expose them.</div>
-    <div id="traktLists" class="checklist">
+    <div class="btn-row" style="margin-top:12px">
+      <button type="button" class="btn btn-sm" onclick="selectAllTraktLists()">Select All</button>
+      <button type="button" class="btn btn-sm" onclick="clearAllTraktLists()">Clear All</button>
+    </div>
+    <div id="traktLists" class="checklist scrollable">
       <div class="field-note">Connect Trakt to load your lists.</div>
     </div>
   </div>
@@ -585,6 +616,8 @@
     document.getElementById('tmdbApiKey').value        = ''
     document.getElementById('tvdbApiKey').value        = ''
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
+    document.getElementById('showAddDefaultMode').value = d.showAddDefaultMode || 'all'
+    document.getElementById('movieReleaseMode').value = d.movieReleaseMode || 'digital'
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
     document.getElementById('traktClientSecret').value = ''
     document.getElementById('traktWatchlistMovies').checked = d.traktWatchlistMovies !== false
@@ -814,6 +847,19 @@
     }
   }
 
+  function selectAllTraktLists() {
+    const inputs = [...document.querySelectorAll('#traktLists input[type="checkbox"]')]
+    selectedTraktLists = inputs.map(input => input.value)
+    inputs.forEach(input => { input.checked = true })
+  }
+
+  function clearAllTraktLists() {
+    selectedTraktLists = []
+    document.querySelectorAll('#traktLists input[type="checkbox"]').forEach(input => {
+      input.checked = false
+    })
+  }
+
   async function validateRD() {
     const key = document.getElementById('rdApiKey').value.trim()
     if (!key) { showOut('Enter an API key first.', 'error'); return }
@@ -900,6 +946,8 @@
       streamProviderUrls: collectProviderUrls().join('\n'),
       englishStreamMode: document.getElementById('englishStreamMode').value,
       serverUrl:         document.getElementById('serverUrl').value,
+      showAddDefaultMode: document.getElementById('showAddDefaultMode').value,
+      movieReleaseMode: document.getElementById('movieReleaseMode').value,
       traktClientId:     document.getElementById('traktClientId').value,
       traktWatchlistMovies: document.getElementById('traktWatchlistMovies').checked,
       traktWatchlistShows: document.getElementById('traktWatchlistShows').checked,

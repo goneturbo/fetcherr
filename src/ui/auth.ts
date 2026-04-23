@@ -1,41 +1,35 @@
 import { randomBytes } from 'crypto'
-import { authEnabled, getUserById, verifyUserCredentials, type AppUser } from '../db.js'
-
-type SessionRecord = { userId: string; expiresAt: number }
-
-// In-memory session store: token → { userId, expiry }
-const sessions = new Map<string, SessionRecord>()
+import {
+  authEnabled,
+  createUiSession,
+  deleteUiSession,
+  getUiSession,
+  getUserById,
+  purgeExpiredUiSessions,
+  verifyUserCredentials,
+  type AppUser,
+} from '../db.js'
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 
 export function createSession(userId: string): string {
   const token = randomBytes(32).toString('hex')
-  sessions.set(token, { userId, expiresAt: Date.now() + SESSION_TTL_MS })
+  createUiSession(token, userId, Date.now() + SESSION_TTL_MS)
   return token
 }
 
 export function isValidSession(token: string): boolean {
-  const session = sessions.get(token)
-  if (!session) return false
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(token)
-    return false
-  }
-  return true
+  return !!getUiSession(token)
 }
 
 export function getSessionUser(token: string): AppUser | null {
-  const session = sessions.get(token)
+  const session = getUiSession(token)
   if (!session) return null
-  if (Date.now() > session.expiresAt) {
-    sessions.delete(token)
-    return null
-  }
   return getUserById(session.userId)
 }
 
 export function deleteSession(token: string): void {
-  sessions.delete(token)
+  deleteUiSession(token)
 }
 
 export function checkCredentials(username: string, password: string): AppUser | null {
@@ -74,5 +68,6 @@ export function getTokenFromCookie(cookieHeader: string | undefined): string | n
 }
 
 export function isUiAuthConfigured(): boolean {
+  purgeExpiredUiSessions()
   return authEnabled()
 }

@@ -1,21 +1,21 @@
 # Fetcherr
 
-Fetcherr gives Infuse a Stremio-like streaming experience using your Trakt library and Real-Debrid, without needing a traditional media server or local mount.
+Fetcherr gives Infuse and VidHub a Stremio-like streaming experience using your Trakt library and Real-Debrid, without needing a traditional media server or local mount.
 
-It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Infuse. Fetcherr builds an Infuse-ready library from your optional Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
+It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Jellyfin-compatible clients like Infuse and VidHub. Fetcherr builds a client-ready library from your optional Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
 
 The goal is simple: open Infuse, browse your library, and press play. Fetcherr handles stream discovery, prefers cached Real-Debrid results, and automatically picks the best match instead of making you choose from a stream list every time.
 
 ## What It Does
 
 - Syncs movies and shows from optional Trakt watchlists and selected Trakt lists
-- Exposes a Jellyfin-style library for Infuse
+- Exposes a Jellyfin-style library for Infuse and VidHub
 - Resolves playback through direct providers such as Torrentio and Debridio
 - Verifies ambiguous audio with `ffprobe` when needed
 
 ## How It Differs
 
-- Unlike Stremio and Stremio-style addons, Fetcherr is built around Infuse as the primary client.
+- Unlike Stremio and Stremio-style addons, Fetcherr is built around Jellyfin-compatible clients such as Infuse and VidHub.
 - Unlike WebDAV, `rclone`, or mounted-library workflows, it does not rely on local mounts or Infuse scraping metadata on its own.
 - Unlike traditional media servers, it does not require you to maintain a local media collection.
 - To keep your Real-Debrid library cleaner, Fetcherr resolves cached links for playback and removes the associated torrent hash afterward.
@@ -60,8 +60,8 @@ http://YOUR_SERVER:9990/ui/setup-admin
 
 - Complete first-run setup in `/ui/setup-admin`
 - Configure providers and preferences in `/ui/settings`
-- Add Fetcherr to Infuse as a Jellyfin server
-- Browse and play from Infuse
+- Add Fetcherr to Infuse or VidHub as a Jellyfin server
+- Browse and play from your client of choice
 - Use `/ui/logs` when sync or playback fails
 
 ## Environment
@@ -92,4 +92,5 @@ http://YOUR_SERVER:9990/ui/setup-admin
 - Anime has not been validated thoroughly yet
 - Some metadata may still be enriched by Infuse itself
 - `Logo` image behavior may vary by client
+- VidHub support has been validated against the Jellyfin-compatible `/emby` API surface, but some client-specific edge cases may still surface
 - Trakt Smart Lists are not currently supported because Trakt's public lists API does not expose them

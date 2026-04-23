@@ -1,5 +1,5 @@
 import { config } from './config.js'
-import { getDb, getSetting, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems, setSetting } from './db.js'
+import { getDb, getSetting, hasAnySourceItem, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems, setSetting, upsertManualShowSubscription } from './db.js'
 import { fetchMovieByTmdbId, fetchShowByTmdbId } from './tmdb.js'
 
 const TRAKT_MOVIES_SOURCE = 'trakt:watchlist:movies'
@@ -137,7 +137,10 @@ async function refreshAccessToken(refreshToken: string): Promise<StoredToken> {
     redirect_uri:  'urn:ietf:wg:oauth:2.0:oob',
     grant_type:    'refresh_token',
   })
-  if (status !== 200) throw new Error(`Token refresh failed: ${status}`)
+  if (status !== 200) {
+    const detail = data == null ? '' : ` ${JSON.stringify(data)}`
+    throw new Error(`Token refresh failed: ${status}${detail}`)
+  }
   const d = data as { access_token: string; refresh_token: string; expires_in: number; created_at: number }
   const expiresAt = new Date((d.created_at + d.expires_in) * 1000)
   saveToken(d.access_token, d.refresh_token, expiresAt)
@@ -459,8 +462,12 @@ export async function syncTraktShowsWatchlist(): Promise<{ synced: number; total
       console.log(`trakt: skipping "${item.show?.title}" — no TMDB ID`)
       continue
     }
+    const isNewToLibrary = !hasAnySourceItem('show', tmdbId)
     tmdbIds.push(tmdbId)
     const show = await fetchShowByTmdbId(tmdbId, item.listed_at)
+    if (show && isNewToLibrary && config.showAddDefaultMode === 'latest') {
+      upsertManualShowSubscription(tmdbId, 'latest', 0)
+    }
     if (show) synced++
   }
 
@@ -536,8 +543,13 @@ export async function syncTraktList(
       const m = await fetchMovieByTmdbId(item.movie.ids.tmdb, item.listed_at)
       if (m) movies++
     } else if (item.type === 'show' && item.show?.ids?.tmdb) {
-      showTmdbIds.push(item.show.ids.tmdb)
-      const s = await fetchShowByTmdbId(item.show.ids.tmdb, item.listed_at)
+      const tmdbId = item.show.ids.tmdb
+      const isNewToLibrary = !hasAnySourceItem('show', tmdbId)
+      showTmdbIds.push(tmdbId)
+      const s = await fetchShowByTmdbId(tmdbId, item.listed_at)
+      if (s && isNewToLibrary && config.showAddDefaultMode === 'latest') {
+        upsertManualShowSubscription(tmdbId, 'latest', 0)
+      }
       if (s) shows++
     }
   }
