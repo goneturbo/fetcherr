@@ -422,7 +422,7 @@
 
   <div class="controls">
     <input type="text" id="searchInput" placeholder="Search…" oninput="onSearch()">
-    <select id="sortSelect" onchange="loadItems()">
+    <select id="sortSelect" onchange="onSortChange()">
       <option value="popularity:DESC">Most popular</option>
       <option value="dateAdded:DESC">Recently added</option>
       <option value="dateAdded:ASC">Oldest added</option>
@@ -491,6 +491,7 @@
   let activeDetailTab = 'overview'
   let activeDetailData = null
   let defaultShowAddMode = 'all'
+  const librarySortStorageKey = 'fetcherr.librarySort'
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -538,6 +539,27 @@
   function getSort() {
     const [sortBy, sortOrder] = document.getElementById('sortSelect').value.split(':')
     return { sortBy, sortOrder }
+  }
+
+  function restoreLibrarySort() {
+    let savedSort = null
+    try {
+      savedSort = localStorage.getItem(librarySortStorageKey)
+    } catch {
+      return
+    }
+    if (!savedSort) return
+
+    const sortSelect = document.getElementById('sortSelect')
+    const hasOption = [...sortSelect.options].some(option => option.value === savedSort)
+    if (hasOption) sortSelect.value = savedSort
+  }
+
+  function onSortChange() {
+    try {
+      localStorage.setItem(librarySortStorageKey, document.getElementById('sortSelect').value)
+    } catch {}
+    loadItems()
   }
 
   async function loadItems() {
@@ -1066,6 +1088,7 @@
     defaultShowAddMode = d.showAddDefaultMode === 'latest' ? 'latest' : 'all'
   }
 
+  restoreLibrarySort()
   loadStats()
   loadClientConfig()
   loadItems()
