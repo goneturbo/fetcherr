@@ -25,4 +25,7 @@ RUN mkdir -p /app/data
 
 EXPOSE 9990
 
+HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
+  CMD wget -q -O - http://127.0.0.1:9990/healthz >/dev/null || exit 1
+
 CMD ["node", "dist/index.js"]

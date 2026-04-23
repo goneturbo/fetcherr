@@ -1,0 +1,75 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: fetcherr-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fetcherr
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: fetcherr
+  template:
+    metadata:
+      labels:
+        app: fetcherr
+    spec:
+      containers:
+        - name: fetcherr
+          image: ghcr.io/goneturbo/fetcherr:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9990
+              name: http
+          env:
+            - name: PORT
+              value: "9990"
+            - name: DATABASE_PATH
+              value: /app/data/fetcherr.db
+            - name: SERVER_NAME
+              value: Fetcherr
+            - name: SERVER_ID
+              value: fetcherr-001
+            - name: SERVER_URL
+              value: https://fetcherr.example.com
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: fetcherr-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: fetcherr
+spec:
+  selector:
+    app: fetcherr
+  ports:
+    - name: http
+      port: 9990
+      targetPort: http
+  type: ClusterIP

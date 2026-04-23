@@ -28,33 +28,62 @@ The goal is simple: open Infuse, browse your library, and press play. Fetcherr h
 - Optional: TVDB API key for episode-image fallback
 - Optional: Trakt client ID and secret
 
-## Get the Code
+## Container Image
 
-`git clone` creates the `fetcherr` directory automatically, so you do not need to run `mkdir` first.
+GitHub Actions builds and publishes a container image to GitHub Container Registry on pushes to `main`, version tags, and manual runs.
 
-```bash
-git clone https://github.com/goneturbo/fetcherr.git
-cd fetcherr
+Use:
+
+```text
+ghcr.io/goneturbo/fetcherr:latest
 ```
 
-## Setup
+## Docker Compose
 
-1. Copy `.env.example` to `.env`
-2. Adjust `SERVER_URL` if needed
-3. Start the app:
+1. Create a `docker-compose.yml`:
 
-```bash
-docker compose up -d --build
+```yaml
+services:
+  fetcherr:
+    image: ghcr.io/goneturbo/fetcherr:latest
+    container_name: fetcherr
+    restart: unless-stopped
+    ports:
+      - "9990:9990"
+    environment:
+      PORT: "9990"
+      DATABASE_PATH: /app/data/fetcherr.db
+      SERVER_NAME: "${SERVER_NAME:-Fetcherr}"
+      SERVER_ID: "${SERVER_ID:-fetcherr-001}"
+      SERVER_URL: "${SERVER_URL:-http://localhost:9990}"
+    volumes:
+      - ./data:/app/data
 ```
 
-4. Open:
+2. Start the container:
+
+```bash
+docker compose up -d
+```
+
+3. Open:
 
 ```text
 http://YOUR_SERVER:9990/ui/setup-admin
 ```
 
-5. Create the first admin account
-6. Open Settings and enter your API keys, provider URLs, and any Trakt settings you want to use
+4. Create the first admin account.
+5. Open Settings and enter your API keys, provider URLs, and any Trakt settings you want to use.
+
+## Kubernetes
+
+1. Open [`deploy/kubernetes/fetcherr.yaml`](deploy/kubernetes/fetcherr.yaml).
+2. Set `SERVER_URL`.
+3. Apply the manifest:
+
+```bash
+kubectl apply -f deploy/kubernetes/fetcherr.yaml
+```
 
 ## Usage
 
