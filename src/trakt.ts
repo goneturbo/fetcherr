@@ -84,7 +84,7 @@ async function traktRequest(
   path: string,
   body?: unknown,
   accessToken?: string,
-): Promise<{ status: number; data: unknown }> {
+): Promise<{ status: number; data: unknown; headers: Headers }> {
   let lastError: Error | null = null
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
@@ -115,7 +115,7 @@ async function traktRequest(
         await new Promise(r => setTimeout(r, 500 * (attempt + 1)))
         continue
       }
-      return { status: res.status, data }
+      return { status: res.status, data, headers: res.headers }
     } catch (err) {
       lastError = err as Error
       if (attempt < 2) {
@@ -216,11 +216,31 @@ export async function fetchTraktUserLists(): Promise<TraktUserList[]> {
   if (!accessToken) return []
   const username = await ensureTraktUsername(accessToken)
   if (!username) return []
-  const { status, data } = await traktRequest('GET', `/users/${username}/lists`, undefined, accessToken)
-  if (status !== 200) throw new Error(`Trakt lists fetch failed: ${status}`)
-  return ((data as Array<{ name?: string; ids?: { slug?: string } }>) ?? [])
-    .map(item => ({ name: item.name ?? item.ids?.slug ?? '', slug: item.ids?.slug ?? '' }))
-    .filter(item => item.slug)
+
+  const lists: TraktUserList[] = []
+  const limit = 1000
+  let page = 1
+  let totalPages = 1
+
+  while (page <= totalPages) {
+    const { status, data, headers } = await traktRequest(
+      'GET',
+      `/users/${username}/lists?limit=${limit}&page=${page}`,
+      undefined,
+      accessToken,
+    )
+    if (status !== 200) throw new Error(`Trakt lists fetch failed: ${status}`)
+
+    lists.push(...(((data as Array<{ name?: string; ids?: { slug?: string } }>) ?? [])
+      .map(item => ({ name: item.name ?? item.ids?.slug ?? '', slug: item.ids?.slug ?? '' }))
+      .filter(item => item.slug)))
+
+    const pageCount = parseInt(headers.get('X-Pagination-Page-Count') ?? '1')
+    totalPages = Number.isFinite(pageCount) && pageCount > 0 ? Math.min(pageCount, 100) : 1
+    page++
+  }
+
+  return lists
 }
 
 // ── Device auth flow ───────────────────────────────────────────────────────────
