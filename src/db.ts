@@ -1567,6 +1567,24 @@ export function markPlayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void
   `).run(userId, itemId, new Date().toISOString())
 }
 
+export function syncPlayed(itemId: string, lastPlayedDate: string, userId = DEFAULT_ADMIN_USER_ID): void {
+  const playedAt = lastPlayedDate || new Date().toISOString()
+  getDb().prepare(`
+    INSERT INTO user_item_data (user_id, item_id, played, play_count, position_ticks, last_played_date)
+    VALUES (?, ?, 1, 1, 0, ?)
+    ON CONFLICT(user_id, item_id) DO UPDATE SET
+      played           = 1,
+      play_count       = CASE WHEN play_count > 0 THEN play_count ELSE 1 END,
+      position_ticks   = 0,
+      last_played_date = CASE
+        WHEN user_item_data.last_played_date = '' THEN excluded.last_played_date
+        WHEN excluded.last_played_date = '' THEN user_item_data.last_played_date
+        WHEN excluded.last_played_date > user_item_data.last_played_date THEN excluded.last_played_date
+        ELSE user_item_data.last_played_date
+      END
+  `).run(userId, itemId, playedAt)
+}
+
 export function markUnplayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
   getDb().prepare(`
     INSERT INTO user_item_data (user_id, item_id, played, position_ticks)

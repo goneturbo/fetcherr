@@ -1,5 +1,5 @@
 import { config } from './config.js'
-import { getDb, getSetting, hasAnySourceItem, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems, setSetting, upsertManualShowSubscription } from './db.js'
+import { DEFAULT_ADMIN_USER_ID, getDb, getSetting, hasAnySourceItem, listSourceKeys, pruneOrphanedMovies, pruneOrphanedShows, removeSourceKey, replaceSourceItems, setSetting, syncPlayed, upsertManualShowSubscription } from './db.js'
 import { fetchMovieByTmdbId, fetchShowByTmdbId } from './tmdb.js'
 
 const TRAKT_MOVIES_SOURCE = 'trakt:watchlist:movies'
@@ -7,6 +7,14 @@ const TRAKT_SHOWS_SOURCE = 'trakt:watchlist:shows'
 
 function traktListSource(slug: string): string {
   return `trakt:list:${slug}`
+}
+
+function movieItemId(tmdbId: number): string {
+  return `00000000-0000-4000-8000-${tmdbId.toString(16).padStart(12, '0')}`
+}
+
+function episodeItemId(showTmdbId: number, seasonNum: number, episodeNum: number): string {
+  return `00000000-0000-4000-8003-${showTmdbId.toString(16).padStart(6, '0')}${seasonNum.toString(16).padStart(3, '0')}${episodeNum.toString(16).padStart(3, '0')}`
 }
 
 export function cleanupRemovedTraktListSources(activeSlugs: string[]): {
@@ -584,4 +592,101 @@ export async function syncTraktList(
     `trakt: list "${slug}" sync complete — ${movies} movies, ${shows} shows, ${prunedMovies} movies removed, ${prunedShows} shows removed`
   )
   return { movies, shows }
+}
+
+interface TraktWatchedMovieItem {
+  last_watched_at?: string
+  plays?: number
+  movie?: {
+    ids?: { tmdb?: number }
+  }
+}
+
+interface TraktWatchedShowEpisode {
+  number?: number
+  last_watched_at?: string
+  plays?: number
+}
+
+interface TraktWatchedShowSeason {
+  number?: number
+  episodes?: TraktWatchedShowEpisode[]
+}
+
+interface TraktWatchedShowItem {
+  show?: {
+    ids?: { tmdb?: number }
+  }
+  seasons?: TraktWatchedShowSeason[]
+}
+
+export async function syncTraktWatchedStatus(): Promise<{ movies: number; episodes: number }> {
+  if (!config.traktClientId) return { movies: 0, episodes: 0 }
+
+  const accessToken = await getValidToken()
+  if (!accessToken) {
+    console.log('trakt: not authenticated, skipping watched-status sync')
+    return { movies: 0, episodes: 0 }
+  }
+
+  let syncedMovies = 0
+  let syncedEpisodes = 0
+
+  const syncPaged = async <T>(path: string, handlePage: (items: T[]) => void): Promise<void> => {
+    let page = 1
+    let totalPages = 1
+
+    while (page <= totalPages) {
+      const { status, data, headers } = await traktRequest(
+        'GET',
+        `${path}${path.includes('?') ? '&' : '?'}limit=1000&page=${page}`,
+        undefined,
+        accessToken,
+      )
+      if (status !== 200) throw new Error(`Trakt watched-status fetch failed: ${status} for ${path}`)
+
+      const items = (data as T[]) ?? []
+      if (!items.length) break
+      handlePage(items)
+
+      const pageCount = parseInt(headers.get('X-Pagination-Page-Count') ?? '1')
+      totalPages = Number.isFinite(pageCount) && pageCount > 0 ? Math.min(pageCount, 100) : 1
+      page++
+    }
+  }
+
+  console.log('trakt: syncing watched status for admin account')
+
+  await syncPaged<TraktWatchedMovieItem>('/sync/watched/movies', items => {
+    for (const item of items) {
+      const tmdbId = item.movie?.ids?.tmdb
+      if (!tmdbId) continue
+      syncPlayed(movieItemId(tmdbId), item.last_watched_at ?? '', DEFAULT_ADMIN_USER_ID)
+      syncedMovies++
+    }
+  })
+
+  await syncPaged<TraktWatchedShowItem>('/sync/watched/shows', items => {
+    for (const item of items) {
+      const showTmdbId = item.show?.ids?.tmdb
+      if (!showTmdbId) continue
+      for (const season of item.seasons ?? []) {
+        const seasonNum = season.number
+        if (!seasonNum) continue
+        for (const episode of season.episodes ?? []) {
+          const episodeNum = episode.number
+          if (!episodeNum) continue
+          syncPlayed(
+            episodeItemId(showTmdbId, seasonNum, episodeNum),
+            episode.last_watched_at ?? '',
+            DEFAULT_ADMIN_USER_ID,
+          )
+          syncedEpisodes++
+        }
+      }
+    }
+  })
+
+  console.log(`trakt: watched-status sync complete — ${syncedMovies} movies, ${syncedEpisodes} episodes marked for admin`)
+  return { movies: syncedMovies, episodes: syncedEpisodes }
 }

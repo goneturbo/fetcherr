@@ -7,7 +7,7 @@ import { initCastSchema } from './cast/db.js'
 import { uiRoutes } from './ui/routes.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
-import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, startDeviceAuth, tokenStatus } from './trakt.js'
+import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
 import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
@@ -39,6 +39,7 @@ initCastSchema()
   if (s.traktLists != null) config.traktLists          = parseTraktLists(s.traktLists)
   if (s.traktWatchlistMovies != null) config.traktWatchlistMovies = parseBooleanSetting(s.traktWatchlistMovies, true)
   if (s.traktWatchlistShows != null)  config.traktWatchlistShows  = parseBooleanSetting(s.traktWatchlistShows, true)
+  if (s.traktWatchHistory != null) config.traktWatchHistory = parseBooleanSetting(s.traktWatchHistory, false)
   if (s.showAddDefaultMode != null) config.showAddDefaultMode = parseShowAddDefaultMode(s.showAddDefaultMode)
   if (s.movieReleaseMode != null) config.movieReleaseMode = parseMovieReleaseMode(s.movieReleaseMode)
   if (s.streamProviderUrls != null) config.streamProviderUrls = parseStreamProviderUrls(s.streamProviderUrls)
@@ -394,6 +395,9 @@ async function runSyncInternal() {
 
   for (const slug of config.traktLists) {
     await syncTraktList(slug).catch(err => app.log.error(`List sync "${slug}" failed: ${err}`))
+  }
+  if (config.traktWatchHistory) {
+    await syncTraktWatchedStatus().catch(err => app.log.error(`Watched-status sync failed: ${err}`))
   }
   const staleListCleanup = cleanupRemovedTraktListSources(config.traktLists)
   if (staleListCleanup.removedSourceKeys.length) {
