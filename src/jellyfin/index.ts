@@ -1,15 +1,12 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { createHash } from 'node:crypto'
-import { readFileSync, existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { config } from '../config.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, type AppUser,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, listSourceItems, type AppUser,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -36,11 +33,6 @@ const SHOWS_FOLDER_ID  = 'a0000000-0000-4000-8000-000000000002'
 const SERVER_GUID      = 'a0000000-0000-0000-0000-000000000001'
 // Keep old name as alias so existing code still compiles
 const FOLDER_ID = MOVIES_FOLDER_ID
-const __dir = dirname(fileURLToPath(import.meta.url))
-const ROOT_FOLDER_ART: Record<string, string> = {
-  [MOVIES_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'movies-folder.svg'),
-  [SHOWS_FOLDER_ID]: join(__dir, '..', 'ui', 'static', 'shows-folder.svg'),
-}
 
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
@@ -98,6 +90,17 @@ function searchShowTmdbToId(tmdbId: number): string {
 function idToSearchShowTmdb(id: string): number | null {
   const m = id.match(/^00000000-0000-4000-8005-([0-9a-f]{12})$/i)
   return m ? parseInt(m[1], 16) : null
+}
+
+function traktCollectionSlugToId(slug: string): string {
+  const digest = createHash('md5').update(`trakt:list:${slug}`).digest('hex').slice(0, 12)
+  return `00000000-0000-4000-8006-${digest}`
+}
+
+function idToTraktCollectionSlug(id: string): string | null {
+  const m = id.match(/^00000000-0000-4000-8006-([0-9a-f]{12})$/i)
+  if (!m) return null
+  return config.traktLists.find(slug => traktCollectionSlugToId(slug) === id) ?? null
 }
 
 function seasonToId(showTmdbId: number, seasonNum: number): string {
@@ -267,6 +270,137 @@ function runtimeTicksForItem(itemId: string): number | null {
   if (!tmdbId) return null
   const movie = getMovieByTmdbId(tmdbId)
   return movie ? (movie.runtimeMins || 90) * 60 * 10_000_000 : null
+}
+
+function humanizeCollectionSlug(slug: string): string {
+  return slug
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map(part => part.charAt(0).toUpperCase() + part.slice(1))
+    .join(' ')
+}
+
+type CollectionMember = { mediaType: 'movie' | 'show'; tmdbId: number }
+
+function traktCollectionSourceKey(slug: string): string {
+  return `trakt:list:${slug}`
+}
+
+function collectionMembersForUser(user: AppUser, slug: string): CollectionMember[] {
+  return listSourceItems(traktCollectionSourceKey(slug))
+    .filter(item => {
+      if (item.mediaType === 'movie') {
+        const movie = getMovieByTmdbId(item.tmdbId)
+        return !!movie && canUserAccessMovie(user, movie)
+      }
+      const show = getShowByTmdbId(item.tmdbId)
+      return !!show && canUserAccessShow(user, show)
+    })
+}
+
+function traktCollectionImageTags(slug: string): Record<string, string> {
+  return { Primary: `trakt-list:${slug}`, Backdrop: `trakt-list:${slug}` }
+}
+
+function traktCollectionToItem(slug: string, user: AppUser) {
+  const members = collectionMembersForUser(user, slug)
+  return {
+    Id:                 traktCollectionSlugToId(slug),
+    ServerId:           SERVER_GUID,
+    Name:               humanizeCollectionSlug(slug),
+    SortName:           humanizeCollectionSlug(slug).toLowerCase(),
+    Type:               'BoxSet',
+    CollectionType:     'boxsets',
+    IsFolder:           true,
+    CanDelete:          false,
+    CanDownload:        false,
+    PlayAccess:         'Full',
+    ChildCount:         members.length,
+    RecursiveItemCount: members.length,
+    ImageTags:          traktCollectionImageTags(slug),
+    UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: traktCollectionSlugToId(slug) },
+  }
+}
+
+async function traktCollectionContents(slug: string, user: AppUser) {
+  const members = collectionMembersForUser(user, slug)
+  const items = []
+  for (const member of members) {
+    if (member.mediaType === 'movie') {
+      const movie = getMovieByTmdbId(member.tmdbId)
+      if (movie && canUserAccessMovie(user, movie)) items.push(movieToItem(movie, user.id))
+      continue
+    }
+    const show = getShowByTmdbId(member.tmdbId) ?? await fetchShowByTmdbId(member.tmdbId)
+    if (show && canUserAccessShow(user, show)) items.push(showToSeriesItem(show, user.id))
+  }
+  return items.sort((a, b) => String(a.SortName ?? a.Name ?? '').localeCompare(String(b.SortName ?? b.Name ?? '')))
+}
+
+async function sendTraktCollectionImage(
+  slug: string,
+  type: string,
+  query: ImageQuery | undefined,
+  headers: Record<string, string | string[] | undefined>,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const user = requestUser(headers) ?? fallbackUser()
+  const members = user ? collectionMembersForUser(user, slug) : listSourceItems(traktCollectionSourceKey(slug))
+  const ranked = members
+    .map(member => {
+      if (member.mediaType === 'movie') {
+        const movie = getMovieByTmdbId(member.tmdbId)
+        return movie ? { popularity: movie.popularity ?? 0, backdropPath: movie.backdropPath, posterPath: movie.posterPath } : null
+      }
+      const show = getShowByTmdbId(member.tmdbId)
+      return show ? { popularity: show.popularity ?? 0, backdropPath: show.backdropPath, posterPath: show.posterPath } : null
+    })
+    .filter((item): item is { popularity: number; backdropPath: string; posterPath: string } => item !== null)
+    .sort((a, b) => b.popularity - a.popularity)
+
+  for (const item of ranked) {
+    const preferredPath = item.backdropPath || item.posterPath
+    const fallbackPath = item.posterPath || item.backdropPath
+    if (preferredPath) return sendImageUrl(reply, headers, preferredPath, item.backdropPath ? 'backdrop' : 'poster', query)
+    if (fallbackPath) return sendImageUrl(reply, headers, fallbackPath, item.posterPath ? 'poster' : 'backdrop', query)
+  }
+  return reply.code(404).send()
+}
+
+function rootFolderImageTags(id: string) {
+  return (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID)
+    ? { Primary: 'root', Backdrop: 'root' }
+    : {}
+}
+
+function bestRootFolderImage(
+  id: string,
+  user: AppUser | null,
+): { path: string; kind: ImageKind } | null {
+  const visibleUser = user ?? fallbackUser()
+  if (!visibleUser) return null
+  if (id === MOVIES_FOLDER_ID) {
+    const movies = filterMoviesForUser(
+      visibleUser,
+      listMovies({ sortBy: 'popularity', sortOrder: 'DESC', limit: 100, offset: 0, userId: visibleUser.id, ...API_LIBRARY_FILTER }),
+    )
+    for (const movie of movies) {
+      if (movie.backdropPath) return { path: movie.backdropPath, kind: 'backdrop' }
+      if (movie.posterPath) return { path: movie.posterPath, kind: 'poster' }
+    }
+    return null
+  }
+  if (id === SHOWS_FOLDER_ID) {
+    const shows = filterShowsForUser(
+      visibleUser,
+      listShows({ sortBy: 'popularity', sortOrder: 'DESC', limit: 100, offset: 0, userId: visibleUser.id, ...API_LIBRARY_FILTER }),
+    )
+    for (const show of shows) {
+      if (show.backdropPath) return { path: show.backdropPath, kind: 'backdrop' }
+      if (show.posterPath) return { path: show.posterPath, kind: 'poster' }
+    }
+  }
+  return null
 }
 
 function reachedCompletionThreshold(positionTicks: number | undefined, runtimeTicks: number | undefined): boolean {
@@ -621,10 +755,6 @@ function requireRequestUser(
 function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
   if (limit <= 0) return []
   return items.slice(offset, offset + limit)
-}
-
-function rootFolderImageTags(id: string) {
-  return ROOT_FOLDER_ART[id] ? { Primary: 'root' } : {}
 }
 
 function compareEpisodeOrder(a: Pick<Episode, 'seasonNumber' | 'episodeNumber'>, b: Pick<Episode, 'seasonNumber' | 'episodeNumber'>): number {
@@ -1130,6 +1260,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { Items: episodes.map(e => episodeToItem(e, show, user.id)), TotalRecordCount: episodes.length, StartIndex: offset }
     }
 
+    const collectionSlug = ParentId ? idToTraktCollectionSlug(ParentId) : null
+    if (collectionSlug && config.traktCollections) {
+      const items = await traktCollectionContents(collectionSlug, user)
+      return { Items: pagedItems(items, offset, limit), TotalRecordCount: items.length, StartIndex: offset }
+    }
+
     // ── Search: movies + shows ─────────────────────────────────────────────────
     if (SearchTerm) {
       return buildSearchResultItems(SearchTerm, includeTypes, SortBy, SortOrder, limit, offset, user)
@@ -1146,6 +1282,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       if (includeTypes.includes('movie')) {
         const movies = filterMoviesForUser(user, listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
         return { Items: pagedItems(movies, offset, limit).map(movie => movieToItem(movie, user.id)), TotalRecordCount: movies.length, StartIndex: offset }
+      }
+      if (config.traktCollections && includeTypes.includes('boxset')) {
+        const collections = config.traktLists
+          .map(slug => traktCollectionToItem(slug, user))
+          .filter(item => (item.ChildCount ?? 0) > 0)
+        return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
       }
       // True root listing: return collection folders
       const nMovies = filterMoviesForUser(user, listMovies({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
@@ -1309,6 +1451,11 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID } }
     }
 
+    const collectionSlug = idToTraktCollectionSlug(id)
+    if (collectionSlug && config.traktCollections) {
+      return traktCollectionToItem(collectionSlug, currentUser)
+    }
+
     // Episode
     const epRef = idToEpisode(id)
     if (epRef) {
@@ -1452,10 +1599,16 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const isLogo = type.toLowerCase() === 'logo'
     const isThumb = type.toLowerCase() === 'thumb'
     const kind = imageKindForType(type)
-    const rootFolderArt = ROOT_FOLDER_ART[id]
-    if (rootFolderArt && existsSync(rootFolderArt)) {
-      reply.type(rootFolderArt.endsWith('.svg') ? 'image/svg+xml' : 'image/png')
-      return reply.send(readFileSync(rootFolderArt))
+    const rootFolderUser = requestUser(headers) ?? fallbackUser()
+    if (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID) {
+      const representative = bestRootFolderImage(id, rootFolderUser)
+      if (!representative) return reply.code(404).send()
+      return sendImageUrl(reply, headers, representative.path, representative.kind, query)
+    }
+
+    const collectionSlug = idToTraktCollectionSlug(id)
+    if (collectionSlug && config.traktCollections) {
+      return sendTraktCollectionImage(collectionSlug, type, query, headers, reply)
     }
 
     // Episode primary/backdrop still → fall back to season poster → series poster
