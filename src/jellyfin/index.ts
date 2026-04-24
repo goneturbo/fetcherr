@@ -826,13 +826,35 @@ function createJellyfinToken(userId: string): string {
   return token
 }
 
+function tokenFromHeaderValue(value: string | string[] | undefined): string | null {
+  const raw = firstHeaderValue(value)?.trim()
+  if (!raw) return null
+  if (!/[=,\s]/.test(raw)) return raw
+
+  const tokenMatch = raw.match(/\bToken="?([^",\s]+)"?/i)
+  if (tokenMatch) return tokenMatch[1]
+
+  const bearerMatch = raw.match(/^Bearer\s+(.+)$/i)
+  if (bearerMatch?.[1]) return bearerMatch[1].trim()
+
+  return null
+}
+
 function parseJellyfinToken(headers: Record<string, string | string[] | undefined>): string | null {
-  const direct = headers['x-emby-token'] ?? headers['x-mediabrowser-token']
-  if (typeof direct === 'string' && direct.trim()) return direct.trim()
-  const auth = headers.authorization
-  if (typeof auth !== 'string') return null
-  const match = auth.match(/\bToken="?([^",\s]+)"?/i)
-  return match ? match[1] : null
+  const directHeaders = [
+    headers['x-emby-token'],
+    headers['x-mediabrowser-token'],
+    headers['x-emby-authorization'],
+    headers['x-mediabrowser-authorization'],
+    headers.authorization,
+  ]
+
+  for (const value of directHeaders) {
+    const token = tokenFromHeaderValue(value)
+    if (token) return token
+  }
+
+  return null
 }
 
 export function resolveJellyfinUser(headers: Record<string, string | string[] | undefined>): AppUser | null {
