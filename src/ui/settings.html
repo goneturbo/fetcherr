@@ -465,6 +465,13 @@
           <div class="check-slug">Marks watched movies and episodes for the admin account based on the connected Trakt profile.</div>
         </div>
       </label>
+      <label class="check-item">
+        <input id="traktCollections" type="checkbox">
+        <div class="check-meta">
+          <div class="check-title">Show Trakt Lists as Collections</div>
+          <div class="check-slug">Exposes synced Trakt lists as supplemental collections in Jellyfin-compatible clients like Infuse and VidHub.</div>
+        </div>
+      </label>
     </div>
     <div class="field-note" style="margin-top:14px">Choose which Trakt lists to sync in addition to any enabled watchlists.</div>
     <div class="field-note" style="margin-top:8px">Trakt Smart Lists are not shown here yet because Trakt's public lists API does not currently expose them.</div>
@@ -630,6 +637,7 @@
     document.getElementById('traktWatchlistMovies').checked = d.traktWatchlistMovies !== false
     document.getElementById('traktWatchlistShows').checked = d.traktWatchlistShows !== false
     document.getElementById('traktWatchHistory').checked = d.traktWatchHistory === true
+    document.getElementById('traktCollections').checked = d.traktCollections === true
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
     managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
     deletedUserIds = new Set()
@@ -897,6 +905,7 @@
         traktWatchlistMovies: document.getElementById('traktWatchlistMovies').checked,
         traktWatchlistShows: document.getElementById('traktWatchlistShows').checked,
         traktWatchHistory: document.getElementById('traktWatchHistory').checked,
+        traktCollections: document.getElementById('traktCollections').checked,
         ...(traktClientSecret ? { traktClientSecret } : {}),
       }),
     })
@@ -961,6 +970,7 @@
       traktWatchlistMovies: document.getElementById('traktWatchlistMovies').checked,
       traktWatchlistShows: document.getElementById('traktWatchlistShows').checked,
       traktWatchHistory: document.getElementById('traktWatchHistory').checked,
+      traktCollections: document.getElementById('traktCollections').checked,
       traktLists:        selectedTraktLists,
       ...(rdApiKey ? { rdApiKey } : {}),
       ...(tmdbApiKey ? { tmdbApiKey } : {}),

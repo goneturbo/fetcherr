@@ -433,6 +433,7 @@ export async function uiRoutes(app: FastifyInstance) {
       traktWatchlistMovies: config.traktWatchlistMovies,
       traktWatchlistShows: config.traktWatchlistShows,
       traktWatchHistory: config.traktWatchHistory,
+      traktCollections: config.traktCollections,
       showAddDefaultMode: config.showAddDefaultMode,
       movieReleaseMode: config.movieReleaseMode,
       traktLists:        config.traktLists,
@@ -513,6 +514,11 @@ export async function uiRoutes(app: FastifyInstance) {
       const enabled = parseBooleanSetting(String(body.traktWatchHistory), false)
       setSetting('traktWatchHistory', enabled ? 'true' : 'false')
       config.traktWatchHistory = enabled
+    }
+    if (body.traktCollections != null) {
+      const enabled = parseBooleanSetting(String(body.traktCollections), false)
+      setSetting('traktCollections', enabled ? 'true' : 'false')
+      config.traktCollections = enabled
     }
     if (typeof body.showAddDefaultMode === 'string') {
       const mode = parseShowAddDefaultMode(body.showAddDefaultMode)
