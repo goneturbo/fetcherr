@@ -30,6 +30,7 @@ import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 
 const MOVIES_FOLDER_ID = 'a0000000-0000-4000-8000-000000000001'
 const SHOWS_FOLDER_ID  = 'a0000000-0000-4000-8000-000000000002'
+const COLLECTIONS_FOLDER_ID = 'a0000000-0000-4000-8007-000000000001'
 const SERVER_GUID      = 'a0000000-0000-0000-0000-000000000001'
 // Keep old name as alias so existing code still compiles
 const FOLDER_ID = MOVIES_FOLDER_ID
@@ -337,15 +338,31 @@ async function traktCollectionContents(slug: string, user: AppUser) {
   return items.sort((a, b) => String(a.SortName ?? a.Name ?? '').localeCompare(String(b.SortName ?? b.Name ?? '')))
 }
 
-async function sendTraktCollectionImage(
-  slug: string,
-  type: string,
-  query: ImageQuery | undefined,
-  headers: Record<string, string | string[] | undefined>,
-  reply: FastifyReply,
-): Promise<FastifyReply> {
-  const user = requestUser(headers) ?? fallbackUser()
-  const members = user ? collectionMembersForUser(user, slug) : listSourceItems(traktCollectionSourceKey(slug))
+function traktCollectionItemsForUser(user: AppUser) {
+  return config.traktLists
+    .map(slug => traktCollectionToItem(slug, user))
+    .filter(item => (item.ChildCount ?? 0) > 0)
+}
+
+function traktCollectionsFolderToItem(user: AppUser) {
+  const collections = traktCollectionItemsForUser(user)
+  const itemCount = collections.reduce((sum, item) => sum + Number(item.ChildCount ?? 0), 0)
+  return {
+    Name:               'Collections',
+    Id:                 COLLECTIONS_FOLDER_ID,
+    ServerId:           SERVER_GUID,
+    Type:               'CollectionFolder',
+    CollectionType:     'boxsets',
+    IsFolder:           true,
+    Path:               '/collections',
+    ChildCount:         collections.length,
+    RecursiveItemCount: itemCount,
+    ImageTags:          rootFolderImageTags(COLLECTIONS_FOLDER_ID),
+    UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: COLLECTIONS_FOLDER_ID },
+  }
+}
+
+function bestCollectionArtwork(members: CollectionMember[]): { path: string; kind: ImageKind } | null {
   const ranked = members
     .map(member => {
       if (member.mediaType === 'movie') {
@@ -359,16 +376,28 @@ async function sendTraktCollectionImage(
     .sort((a, b) => b.popularity - a.popularity)
 
   for (const item of ranked) {
-    const preferredPath = item.backdropPath || item.posterPath
-    const fallbackPath = item.posterPath || item.backdropPath
-    if (preferredPath) return sendImageUrl(reply, headers, preferredPath, item.backdropPath ? 'backdrop' : 'poster', query)
-    if (fallbackPath) return sendImageUrl(reply, headers, fallbackPath, item.posterPath ? 'poster' : 'backdrop', query)
+    if (item.backdropPath) return { path: item.backdropPath, kind: 'backdrop' }
+    if (item.posterPath) return { path: item.posterPath, kind: 'poster' }
   }
+  return null
+}
+
+async function sendTraktCollectionImage(
+  slug: string,
+  type: string,
+  query: ImageQuery | undefined,
+  headers: Record<string, string | string[] | undefined>,
+  reply: FastifyReply,
+): Promise<FastifyReply> {
+  const user = requestUser(headers) ?? fallbackUser()
+  const members = user ? collectionMembersForUser(user, slug) : listSourceItems(traktCollectionSourceKey(slug))
+  const representative = bestCollectionArtwork(members)
+  if (representative) return sendImageUrl(reply, headers, representative.path, representative.kind, query)
   return reply.code(404).send()
 }
 
 function rootFolderImageTags(id: string) {
-  return (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID)
+  return (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID || id === COLLECTIONS_FOLDER_ID)
     ? { Primary: 'root', Backdrop: 'root' }
     : {}
 }
@@ -399,6 +428,10 @@ function bestRootFolderImage(
       if (show.backdropPath) return { path: show.backdropPath, kind: 'backdrop' }
       if (show.posterPath) return { path: show.posterPath, kind: 'poster' }
     }
+  }
+  if (id === COLLECTIONS_FOLDER_ID && config.traktCollections) {
+    const members = config.traktLists.flatMap(slug => collectionMembersForUser(visibleUser, slug))
+    return bestCollectionArtwork(members)
   }
   return null
 }
@@ -1116,50 +1149,57 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Library/VirtualFolders', async () => ([
     { Name: 'Movies', CollectionType: 'movies', ItemId: MOVIES_FOLDER_ID, Locations: ['/movies'] },
     { Name: 'Shows',  CollectionType: 'tvshows', ItemId: SHOWS_FOLDER_ID,  Locations: ['/shows'] },
+    ...(config.traktCollections
+      ? [{ Name: 'Collections', CollectionType: 'boxsets', ItemId: COLLECTIONS_FOLDER_ID, Locations: ['/collections'] }]
+      : []),
   ]))
 
   // Grouping options
   app.get('/Users/:id/GroupingOptions', async () => ([
     { Name: 'Movies', Id: MOVIES_FOLDER_ID, Type: 'movies' },
     { Name: 'Shows',  Id: SHOWS_FOLDER_ID,  Type: 'tvshows' },
+    ...(config.traktCollections ? [{ Name: 'Collections', Id: COLLECTIONS_FOLDER_ID, Type: 'boxsets' }] : []),
   ]))
   app.get('/UserViews/GroupingOptions', async () => ([
     { Name: 'Movies', Id: MOVIES_FOLDER_ID, Type: 'movies' },
     { Name: 'Shows',  Id: SHOWS_FOLDER_ID,  Type: 'tvshows' },
+    ...(config.traktCollections ? [{ Name: 'Collections', Id: COLLECTIONS_FOLDER_ID, Type: 'boxsets' }] : []),
   ]))
 
   // Views — library sections
   function viewItemsResponse(user: AppUser) {
     const moviesCount = filterMoviesForUser(user, listMovies({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
     const showsCount = filterShowsForUser(user, listShows({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
+    const items = [
+      {
+        Name:               'Movies',
+        Id:                 MOVIES_FOLDER_ID,
+        ServerId:           SERVER_GUID,
+        Type:               'CollectionFolder',
+        CollectionType:     'movies',
+        ImageTags:          rootFolderImageTags(MOVIES_FOLDER_ID),
+        IsFolder:           true,
+        ChildCount:         moviesCount,
+        RecursiveItemCount: moviesCount,
+        UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
+      },
+      {
+        Name:               'Shows',
+        Id:                 SHOWS_FOLDER_ID,
+        ServerId:           SERVER_GUID,
+        Type:               'CollectionFolder',
+        CollectionType:     'tvshows',
+        ImageTags:          rootFolderImageTags(SHOWS_FOLDER_ID),
+        IsFolder:           true,
+        ChildCount:         showsCount,
+        RecursiveItemCount: showsCount,
+        UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
+      },
+      ...(config.traktCollections ? [traktCollectionsFolderToItem(user)] : []),
+    ]
     return {
-      Items: [
-        {
-          Name:               'Movies',
-          Id:                 MOVIES_FOLDER_ID,
-          ServerId:           SERVER_GUID,
-          Type:               'CollectionFolder',
-          CollectionType:     'movies',
-          ImageTags:          rootFolderImageTags(MOVIES_FOLDER_ID),
-          IsFolder:           true,
-          ChildCount:         moviesCount,
-          RecursiveItemCount: moviesCount,
-          UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
-        },
-        {
-          Name:               'Shows',
-          Id:                 SHOWS_FOLDER_ID,
-          ServerId:           SERVER_GUID,
-          Type:               'CollectionFolder',
-          CollectionType:     'tvshows',
-          ImageTags:          rootFolderImageTags(SHOWS_FOLDER_ID),
-          IsFolder:           true,
-          ChildCount:         showsCount,
-          RecursiveItemCount: showsCount,
-          UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
-        },
-      ],
-      TotalRecordCount: 2,
+      Items: items,
+      TotalRecordCount: items.length,
       StartIndex: 0,
     }
   }
@@ -1201,6 +1241,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       // includeItemTypes=Season  → flat list of all seasons across all shows
       // includeItemTypes=Episode → flat list of all aired episodes across all shows
       // includeItemTypes=Series  → list of series (default)
+      if (config.traktCollections && includeTypes.includes('boxset')) {
+        const collections = traktCollectionItemsForUser(user)
+        return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
+      }
       if (includeTypes.includes('season')) {
         const allPairs = await withReadCache(`items:season-pairs:${user.id}`, async () => {
           const shows = filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...API_LIBRARY_FILTER }))
@@ -1266,6 +1310,20 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { Items: pagedItems(items, offset, limit), TotalRecordCount: items.length, StartIndex: offset }
     }
 
+    if (ParentId === COLLECTIONS_FOLDER_ID && config.traktCollections) {
+      const collections = traktCollectionItemsForUser(user)
+      return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
+    }
+
+    if (
+      config.traktCollections &&
+      includeTypes.includes('boxset') &&
+      (!ParentId || ParentId === MOVIES_FOLDER_ID || ParentId === SHOWS_FOLDER_ID)
+    ) {
+      const collections = traktCollectionItemsForUser(user)
+      return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
+    }
+
     // ── Search: movies + shows ─────────────────────────────────────────────────
     if (SearchTerm) {
       return buildSearchResultItems(SearchTerm, includeTypes, SortBy, SortOrder, limit, offset, user)
@@ -1283,31 +1341,27 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         const movies = filterMoviesForUser(user, listMovies({ search: SearchTerm, sortBy: SortBy, sortOrder: SortOrder, limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER }))
         return { Items: pagedItems(movies, offset, limit).map(movie => movieToItem(movie, user.id)), TotalRecordCount: movies.length, StartIndex: offset }
       }
-      if (config.traktCollections && includeTypes.includes('boxset')) {
-        const collections = config.traktLists
-          .map(slug => traktCollectionToItem(slug, user))
-          .filter(item => (item.ChildCount ?? 0) > 0)
-        return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
-      }
       // True root listing: return collection folders
       const nMovies = filterMoviesForUser(user, listMovies({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
       const nShows  = filterShowsForUser(user, listShows({ limit: 10_000, offset: 0, userId: user.id, ...API_LIBRARY_FILTER })).length
+      const folders = [
+        {
+          Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Movies',
+          Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true,
+          ChildCount: nMovies, RecursiveItemCount: nMovies, ImageTags: rootFolderImageTags(MOVIES_FOLDER_ID),
+          UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
+        },
+        {
+          Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Shows',
+          Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true,
+          ChildCount: nShows, RecursiveItemCount: nShows, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
+          UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
+        },
+        ...(config.traktCollections ? [traktCollectionsFolderToItem(user)] : []),
+      ]
       return {
-        Items: [
-          {
-            Id: MOVIES_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Movies',
-            Type: 'CollectionFolder', CollectionType: 'movies', IsFolder: true,
-            ChildCount: nMovies, RecursiveItemCount: nMovies, ImageTags: rootFolderImageTags(MOVIES_FOLDER_ID),
-            UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: MOVIES_FOLDER_ID },
-          },
-          {
-            Id: SHOWS_FOLDER_ID, ServerId: SERVER_GUID, Name: 'Shows',
-            Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true,
-            ChildCount: nShows, RecursiveItemCount: nShows, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
-            UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID },
-          },
-        ],
-        TotalRecordCount: 2,
+        Items: folders,
+        TotalRecordCount: folders.length,
         StartIndex: offset,
       }
     }
@@ -1449,6 +1503,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
         Type: 'CollectionFolder', CollectionType: 'tvshows', IsFolder: true, Path: '/shows',
         RecursiveItemCount: n, ChildCount: n, ImageTags: rootFolderImageTags(SHOWS_FOLDER_ID),
         UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: SHOWS_FOLDER_ID } }
+    }
+    if (id === COLLECTIONS_FOLDER_ID && config.traktCollections) {
+      return traktCollectionsFolderToItem(currentUser)
     }
 
     const collectionSlug = idToTraktCollectionSlug(id)
@@ -1600,7 +1657,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const isThumb = type.toLowerCase() === 'thumb'
     const kind = imageKindForType(type)
     const rootFolderUser = requestUser(headers) ?? fallbackUser()
-    if (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID) {
+    if (id === MOVIES_FOLDER_ID || id === SHOWS_FOLDER_ID || id === COLLECTIONS_FOLDER_ID) {
       const representative = bestRootFolderImage(id, rootFolderUser)
       if (!representative) return reply.code(404).send()
       return sendImageUrl(reply, headers, representative.path, representative.kind, query)
