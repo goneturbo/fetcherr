@@ -1446,7 +1446,6 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     type: string,
     query: ImageQuery | undefined,
     headers: Record<string, string | string[] | undefined>,
-    user: AppUser | null,
     reply: FastifyReply,
   ) {
     const isBackdrop = type.toLowerCase() === 'backdrop'
@@ -1536,16 +1535,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Items/:id/Images/:type', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as ImageQuery | undefined
-    const user = requireRequestUser(req.headers, reply as never)
-    if (!user) return
-    return handleImage(params.id, params.type, query, req.headers, user, reply as never)
+    return handleImage(params.id, params.type, query, req.headers, reply as never)
   })
   app.get('/Items/:id/Images/:type/:index', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as ImageQuery | undefined
-    const user = requireRequestUser(req.headers, reply as never)
-    if (!user) return
-    return handleImage(params.id, params.type, query, req.headers, user, reply as never)
+    return handleImage(params.id, params.type, query, req.headers, reply as never)
   })
 
   // Stubs for endpoints Infuse probes but we don't need to implement
