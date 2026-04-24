@@ -3,6 +3,7 @@ import { config } from './config.js'
 export interface Stream {
   name:          string
   title:         string
+  description?:  string
   url?:          string
   behaviorHints?: Record<string, unknown>
   providerOrder?: number
@@ -268,7 +269,7 @@ async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
       const streams = await fetchStreams(url)
       return streams.map(s => ({
         ...s,
-        title: s.title || '',
+        title: s.title || s.description || '',
         name: s.name || '',
         providerOrder: idx,
       }))
