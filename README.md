@@ -123,3 +123,13 @@ kubectl apply -f deploy/kubernetes/fetcherr.yaml
 - `Logo` image behavior may vary by client
 - VidHub support has been validated against the Jellyfin-compatible `/emby` API surface, but some client-specific edge cases may still surface
 - Trakt Smart Lists are not currently supported because Trakt's public lists API does not expose them
+
+## FAQ
+
+### Does Fetcherr follow my Stremio add-on settings, or does it choose streams on its own?
+
+Both.
+
+Your add-on settings still matter because they control which streams each provider returns. Fetcherr then ranks those returned streams using its own playback criteria, such as Real-Debrid cache availability, language preference, match quality, and format compatibility.
+
+If you configure multiple provider URLs, Fetcherr also respects their order. Earlier providers are tried first, and Fetcherr then picks the best candidate within that provider's results before moving on to the next one.
