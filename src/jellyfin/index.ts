@@ -683,7 +683,7 @@ async function buildSearchResultItems(
   }
 }
 
-function findNextUpEpisode(show: Show, playedIds: Set<string>): Episode | null {
+function findNextUpEpisode(show: Show, playedIds: Set<string>, resumeIds: Set<string>): Episode | null {
   const airedEpisodes = visibleAiredEpisodesForShow(show)
   if (!airedEpisodes.length) return null
 
@@ -699,7 +699,9 @@ function findNextUpEpisode(show: Show, playedIds: Set<string>): Episode | null {
 
   for (const ep of airedEpisodes) {
     if (compareEpisodeOrder(ep, highestPlayed) <= 0) continue
-    if (!playedIds.has(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))) return ep
+    const episodeId = episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber)
+    if (resumeIds.has(episodeId)) continue
+    if (!playedIds.has(episodeId)) return ep
   }
 
   return null
@@ -1220,9 +1222,10 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const offset = parseInt(q.startindex ?? '0', 10)
     const nextUpItems = await withReadCache(`nextup:${user.id}`, async () => {
       const playedIds = getAllPlayedItemIds(user.id)
+      const resumeIds = new Set(listResumeItemIds(10_000, 0, user.id))
       return filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...API_LIBRARY_FILTER }))
         .map(show => {
-          const ep = findNextUpEpisode(show, playedIds)
+          const ep = findNextUpEpisode(show, playedIds, resumeIds)
           return ep ? { show, ep } : null
         })
         .filter((value): value is { show: Show; ep: Episode } => value !== null)
