@@ -9,7 +9,7 @@ import {
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessMovie, canUserAccessShow, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, type AppUser,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, type AppUser,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -557,8 +557,65 @@ function fallbackUser(): AppUser | null {
   return getUserById(DEFAULT_ADMIN_USER_ID)
 }
 
+function initJellyfinTokenSchema(): void {
+  getDb().exec(`
+    CREATE TABLE IF NOT EXISTS jellyfin_tokens (
+      token       TEXT PRIMARY KEY,
+      user_id     TEXT NOT NULL,
+      expires_at  INTEGER NOT NULL,
+      created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    );
+    CREATE INDEX IF NOT EXISTS jellyfin_tokens_user_id ON jellyfin_tokens(user_id);
+    CREATE INDEX IF NOT EXISTS jellyfin_tokens_expires_at ON jellyfin_tokens(expires_at);
+  `)
+}
+
+function purgeExpiredJellyfinTokens(): void {
+  initJellyfinTokenSchema()
+  getDb().prepare(`DELETE FROM jellyfin_tokens WHERE expires_at <= ?`).run(Date.now())
+}
+
+function storeJellyfinToken(token: string, userId: string, expiresAt: number): void {
+  initJellyfinTokenSchema()
+  getDb().prepare(`
+    INSERT INTO jellyfin_tokens (token, user_id, expires_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT(token) DO UPDATE SET
+      user_id = excluded.user_id,
+      expires_at = excluded.expires_at
+  `).run(token, userId, expiresAt)
+}
+
+function loadJellyfinToken(token: string): { userId: string; expiresAt: number } | null {
+  initJellyfinTokenSchema()
+  const row = getDb().prepare(`
+    SELECT user_id, expires_at
+    FROM jellyfin_tokens
+    WHERE token = ?
+  `).get(token) as { user_id: string; expires_at: number } | undefined
+  if (!row) return null
+  return { userId: row.user_id, expiresAt: Number(row.expires_at) }
+}
+
+function deleteJellyfinToken(token: string): void {
+  initJellyfinTokenSchema()
+  getDb().prepare(`DELETE FROM jellyfin_tokens WHERE token = ?`).run(token)
+}
+
 function requestUser(headers: Record<string, string | string[] | undefined>): AppUser | null {
   return resolveJellyfinUser(headers) ?? (authEnabled() ? null : fallbackUser())
+}
+
+function requireRequestUser(
+  headers: Record<string, string | string[] | undefined>,
+  reply: FastifyReply,
+): AppUser | null {
+  const user = requestUser(headers)
+  if (!user) {
+    reply.code(authEnabled() ? 401 : 503).send({ error: authEnabled() ? 'Unauthorized' : 'User auth is not configured.' })
+    return null
+  }
+  return user
 }
 
 function pagedItems<T>(items: T[], offset: number, limit: number): T[] {
@@ -761,8 +818,11 @@ function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) 
 }
 
 function createJellyfinToken(userId: string): string {
+  purgeExpiredJellyfinTokens()
   const token = createHash('sha256').update(`${userId}:${Date.now()}:${Math.random()}`).digest('hex')
-  jellyfinTokens.set(token, { userId, expiresAt: Date.now() + JELLYFIN_TOKEN_TTL_MS })
+  const expiresAt = Date.now() + JELLYFIN_TOKEN_TTL_MS
+  jellyfinTokens.set(token, { userId, expiresAt })
+  storeJellyfinToken(token, userId, expiresAt)
   return token
 }
 
@@ -778,10 +838,18 @@ function parseJellyfinToken(headers: Record<string, string | string[] | undefine
 export function resolveJellyfinUser(headers: Record<string, string | string[] | undefined>): AppUser | null {
   const token = parseJellyfinToken(headers)
   if (!token) return null
-  const record = jellyfinTokens.get(token)
+  let record = jellyfinTokens.get(token)
+  if (!record) {
+    const persisted = loadJellyfinToken(token)
+    if (persisted) {
+      jellyfinTokens.set(token, persisted)
+      record = persisted
+    }
+  }
   if (!record) return null
   if (record.expiresAt <= Date.now()) {
     jellyfinTokens.delete(token)
+    deleteJellyfinToken(token)
     return null
   }
   return getUserById(record.userId)
@@ -954,9 +1022,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   })
 
   // Browse + search — /Users/{id}/Items and /Items
-  async function handleItems(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
-    const user = requestUser(req.headers)
-    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
+  async function handleItems(
+    req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> },
+    reply: FastifyReply,
+  ) {
+    const user = requireRequestUser(req.headers, reply)
+    if (!user) return
     // Infuse sends params in camelCase (parentId, sortBy, startIndex, limit).
     // Normalize to lowercase keys so we handle both cases transparently.
     const q: Record<string, string> = {}
@@ -1086,12 +1157,15 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     return { Items: pagedItems(movies, offset, limit).map(movie => movieToItem(movie, user.id)), TotalRecordCount: movies.length, StartIndex: offset }
   }
 
-  app.get('/Items',           async (req) => handleItems(req as never))
-  app.get('/Users/:id/Items', async (req) => handleItems(req as never))
+  app.get('/Items',           async (req, reply) => handleItems(req as never, reply as never))
+  app.get('/Users/:id/Items', async (req, reply) => handleItems(req as never, reply as never))
 
-  async function handleSearchHints(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
-    const user = requestUser(req.headers)
-    if (!user) return { SearchHints: [], TotalRecordCount: 0 }
+  async function handleSearchHints(
+    req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> },
+    reply: FastifyReply,
+  ) {
+    const user = requireRequestUser(req.headers, reply)
+    if (!user) return
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
 
@@ -1111,12 +1185,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
   }
 
-  app.get('/Search/Hints', async (req) => handleSearchHints(req as never))
-  app.get('/Users/:id/Search/Hints', async (req) => handleSearchHints(req as never))
+  app.get('/Search/Hints', async (req, reply) => handleSearchHints(req as never, reply as never))
+  app.get('/Users/:id/Search/Hints', async (req, reply) => handleSearchHints(req as never, reply as never))
 
-  app.get('/Shows/NextUp', async (req) => {
-    const user = requestUser(req.headers)
-    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
+  app.get('/Shows/NextUp', async (req, reply) => {
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
     const rawQuery = (req as never as { query: Record<string, string> }).query
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
@@ -1147,9 +1221,12 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   })
 
   // Resume / Continue Watching
-  async function handleResumeItems(req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> }) {
-    const user = requestUser(req.headers)
-    if (!user) return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
+  async function handleResumeItems(
+    req: { query: Record<string, string>; headers: Record<string, string | string[] | undefined> },
+    reply: FastifyReply,
+  ) {
+    const user = requireRequestUser(req.headers, reply)
+    if (!user) return
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(req.query)) q[k.toLowerCase()] = v
     const limit = q.limit ? parseInt(q.limit, 10) : 50
@@ -1168,13 +1245,13 @@ export async function jellyfinRoutes(app: FastifyInstance) {
       return { Items: items, TotalRecordCount: countResumeItems(user.id), StartIndex: offset }
     })
   }
-  app.get('/Users/:id/Items/Resume', async (req) => handleResumeItems(req as never))
-  app.get('/UserItems/Resume', async (req) => handleResumeItems(req as never))
+  app.get('/Users/:id/Items/Resume', async (req, reply) => handleResumeItems(req as never, reply as never))
+  app.get('/UserItems/Resume', async (req, reply) => handleResumeItems(req as never, reply as never))
 
   // Latest / Recently Added
-  app.get('/Users/:id/Items/Latest', async (req) => {
-    const user = requestUser(req.headers)
-    if (!user) return []
+  app.get('/Users/:id/Items/Latest', async (req, reply) => {
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
     const rawQuery = (req as never as { query: Record<string, string> }).query
     const q: Record<string, string> = {}
     for (const [k, v] of Object.entries(rawQuery)) q[k.toLowerCase()] = v
@@ -1189,7 +1266,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
   // Single item — /Items/:id and /Users/:userId/Items/:itemId
   async function handleItem(id: string, reply: { code: (n: number) => { send: (v: unknown) => unknown } }, user?: AppUser | null) {
-    const currentUser = user ?? fallbackUser()
+    const currentUser = user === undefined ? fallbackUser() : user
     if (!currentUser) return reply.code(401).send({ error: 'Unauthorized' })
     // Collection folders
     if (id === MOVIES_FOLDER_ID) {
@@ -1272,8 +1349,16 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     return movieToItem(movie, currentUser.id)
   }
 
-  app.get('/Items/:id',                  async (req, reply) => handleItem((req.params as { id: string }).id, reply as never, requestUser(req.headers)))
-  app.get('/Users/:userId/Items/:itemId', async (req, reply) => handleItem((req.params as { itemId: string }).itemId, reply as never, requestUser(req.headers)))
+  app.get('/Items/:id', async (req, reply) => {
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
+    return handleItem((req.params as { id: string }).id, reply as never, user)
+  })
+  app.get('/Users/:userId/Items/:itemId', async (req, reply) => {
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
+    return handleItem((req.params as { itemId: string }).itemId, reply as never, user)
+  })
 
   // Seasons list for a series — Infuse calls this when opening a show
   app.get('/Shows/:seriesId/Seasons', async (req, reply) => {
@@ -1426,12 +1511,16 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/Items/:id/Images/:type', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as ImageQuery | undefined
-    return handleImage(params.id, params.type, query, req.headers, requestUser(req.headers), reply as never)
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
+    return handleImage(params.id, params.type, query, req.headers, user, reply as never)
   })
   app.get('/Items/:id/Images/:type/:index', async (req, reply) => {
     const params = req.params as { id: string; type: string }
     const query = req.query as ImageQuery | undefined
-    return handleImage(params.id, params.type, query, req.headers, requestUser(req.headers), reply as never)
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
+    return handleImage(params.id, params.type, query, req.headers, user, reply as never)
   })
 
   // Stubs for endpoints Infuse probes but we don't need to implement
@@ -1439,9 +1528,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
   app.get('/MediaSegments/:id', async () => ({ Items: [], TotalRecordCount: 0, StartIndex: 0 }))
   app.get('/Users/:userId/Items/:itemId/SpecialFeatures', async () => [])
   app.post('/Sessions/Playing',         async () => ({}))
-  app.post('/Sessions/Playing/Progress', async (req) => {
-    const user = requestUser((req as { headers: Record<string, string | string[] | undefined> }).headers)
-    if (!user) return {}
+  app.post('/Sessions/Playing/Progress', async (req, reply) => {
+    const user = requireRequestUser((req as { headers: Record<string, string | string[] | undefined> }).headers, reply as never)
+    if (!user) return
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId       = body?.ItemId       as string | undefined
     const positionTicks = body?.PositionTicks as number | undefined
@@ -1453,9 +1542,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
     return {}
   })
-  app.post('/Sessions/Playing/Progres', async (req) => {
-    const user = requestUser((req as { headers: Record<string, string | string[] | undefined> }).headers)
-    if (!user) return {}
+  app.post('/Sessions/Playing/Progres', async (req, reply) => {
+    const user = requireRequestUser((req as { headers: Record<string, string | string[] | undefined> }).headers, reply as never)
+    if (!user) return
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId       = body?.ItemId       as string | undefined
     const positionTicks = body?.PositionTicks as number | undefined
@@ -1467,9 +1556,9 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
     return {}
   })
-  app.post('/Sessions/Playing/Stopped', async (req) => {
-    const user = requestUser(req.headers)
-    if (!user) return {}
+  app.post('/Sessions/Playing/Stopped', async (req, reply) => {
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
     const body = (req as never as { body: Record<string, unknown> }).body
     const itemId            = body?.ItemId             as string  | undefined
     const positionTicks     = body?.PositionTicks      as number  | undefined
@@ -1493,18 +1582,18 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     }
     return {}
   })
-  app.post('/Users/:userId/PlayedItems/:itemId', async (req) => {
+  app.post('/Users/:userId/PlayedItems/:itemId', async (req, reply) => {
     const { itemId } = (req as never as { params: { itemId: string } }).params
-    const user = requestUser(req.headers)
-    if (!user) return {}
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
     markPlayed(itemId, user.id)
     const ud = getUserData(itemId, user.id)
     return { PlayCount: ud.playCount, Played: ud.played, LastPlayedDate: ud.lastPlayedDate || undefined }
   })
-  app.delete('/Users/:userId/PlayedItems/:itemId', async (req) => {
+  app.delete('/Users/:userId/PlayedItems/:itemId', async (req, reply) => {
     const { itemId } = (req as never as { params: { itemId: string } }).params
-    const user = requestUser(req.headers)
-    if (!user) return {}
+    const user = requireRequestUser(req.headers, reply as never)
+    if (!user) return
     markUnplayed(itemId, user.id)
     return {}
   })
