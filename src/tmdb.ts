@@ -12,7 +12,9 @@ const MISSING_STILL_RETRY_MS = 7 * 24 * 60 * 60 * 1000
 
 async function tmdbGet(path: string): Promise<unknown> {
   const sep = path.includes('?') ? '&' : '?'
-  const res = await fetch(`${BASE}${path}${sep}api_key=${config.tmdbApiKey}`)
+  const res = await fetch(`${BASE}${path}${sep}api_key=${config.tmdbApiKey}`, {
+    signal: AbortSignal.timeout(15_000),
+  })
   if (!res.ok) throw new Error(`TMDB ${res.status} for ${path}`)
   return res.json()
 }

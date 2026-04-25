@@ -241,7 +241,7 @@ async function resolveAndRedirect(
               app.log.warn(`play: ffprobe failed for ${resolved.filename}: ${err}`)
             }
           }
-          app.log.info(`play: RD resolved ${resolved.filename} → ${resolved.url.slice(0, 80)}…`)
+          app.log.info(`play: RD resolved ${resolved.filename} from hash ${hash.slice(0, 8)}…`)
           clearFailedPlay(cacheKey)
           return reply.redirect(resolved.url, 302)
         } catch (err) {
@@ -263,7 +263,7 @@ async function resolveAndRedirect(
     cacheFailedPlay(cacheKey, 'No streams found')
     return reply.code(404).send({ error: 'No usable stream available', message: 'No Streams Found' })
   }
-  app.log.info(`play: fallback direct → ${best.url.slice(0, 80)}…`)
+  app.log.info(`play: fallback direct stream selected for ${label}`)
   clearFailedPlay(cacheKey)
   return reply.redirect(best.url, 302)
 }

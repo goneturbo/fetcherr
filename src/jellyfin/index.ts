@@ -42,9 +42,11 @@ const PLAYED_COMPLETION_THRESHOLD = 0.95
 const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
 const LOGIN_MAX_ATTEMPTS = 10
+const TRAKT_COLLECTION_CACHE_TTL_MS = 3_000
 const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 const proxiedImageCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>()
+const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summaries: TraktCollectionSummary[] }>()
 type ImageKind = 'poster' | 'backdrop' | 'logo'
 type ImageQuery = {
   tag?: string
@@ -282,6 +284,8 @@ function humanizeCollectionSlug(slug: string): string {
 }
 
 type CollectionMember = { mediaType: 'movie' | 'show'; tmdbId: number }
+type TraktCollectionItem = ReturnType<typeof buildTraktCollectionItem>
+type TraktCollectionSummary = { slug: string; members: CollectionMember[]; item: TraktCollectionItem }
 
 function traktCollectionSourceKey(slug: string): string {
   return `trakt:list:${slug}`
@@ -303,13 +307,13 @@ function traktCollectionImageTags(slug: string): Record<string, string> {
   return { Primary: `trakt-list:${slug}`, Backdrop: `trakt-list:${slug}` }
 }
 
-function traktCollectionToItem(slug: string, user: AppUser) {
-  const members = collectionMembersForUser(user, slug)
+function buildTraktCollectionItem(slug: string, members: CollectionMember[]) {
+  const name = humanizeCollectionSlug(slug)
   return {
     Id:                 traktCollectionSlugToId(slug),
     ServerId:           SERVER_GUID,
-    Name:               humanizeCollectionSlug(slug),
-    SortName:           humanizeCollectionSlug(slug).toLowerCase(),
+    Name:               name,
+    SortName:           name.toLowerCase(),
     Type:               'BoxSet',
     CollectionType:     'boxsets',
     IsFolder:           true,
@@ -321,6 +325,10 @@ function traktCollectionToItem(slug: string, user: AppUser) {
     ImageTags:          traktCollectionImageTags(slug),
     UserData: { PlaybackPositionTicks: 0, PlayCount: 0, IsFavorite: false, Played: false, Key: traktCollectionSlugToId(slug) },
   }
+}
+
+function traktCollectionToItem(slug: string, user: AppUser) {
+  return buildTraktCollectionItem(slug, collectionMembersForUser(user, slug))
 }
 
 async function traktCollectionContents(slug: string, user: AppUser) {
@@ -338,15 +346,44 @@ async function traktCollectionContents(slug: string, user: AppUser) {
   return items.sort((a, b) => String(a.SortName ?? a.Name ?? '').localeCompare(String(b.SortName ?? b.Name ?? '')))
 }
 
-function traktCollectionItemsForUser(user: AppUser) {
-  return config.traktLists
-    .map(slug => traktCollectionToItem(slug, user))
-    .filter(item => (item.ChildCount ?? 0) > 0)
+function traktCollectionCacheKey(user: AppUser): string {
+  return `${user.id}:${config.traktLists.join('\u0000')}`
+}
+
+function pruneExpiredTraktCollectionSummaryCache(now = Date.now()): void {
+  for (const [key, entry] of traktCollectionSummaryCache.entries()) {
+    if (entry.expiresAt <= now) traktCollectionSummaryCache.delete(key)
+  }
+}
+
+function traktCollectionSummariesForUser(user: AppUser): TraktCollectionSummary[] {
+  const now = Date.now()
+  pruneExpiredTraktCollectionSummaryCache(now)
+  const key = traktCollectionCacheKey(user)
+  const cached = traktCollectionSummaryCache.get(key)
+  if (cached && cached.expiresAt > now) return cached.summaries
+
+  const summaries = config.traktLists
+    .map(slug => {
+      const members = collectionMembersForUser(user, slug)
+      return { slug, members, item: buildTraktCollectionItem(slug, members) }
+    })
+    .filter(summary => summary.members.length > 0)
+
+  traktCollectionSummaryCache.set(key, {
+    expiresAt: now + TRAKT_COLLECTION_CACHE_TTL_MS,
+    summaries,
+  })
+  return summaries
+}
+
+function traktCollectionItemsForUser(user: AppUser): TraktCollectionItem[] {
+  return traktCollectionSummariesForUser(user).map(summary => summary.item)
 }
 
 function traktCollectionsFolderToItem(user: AppUser) {
-  const collections = traktCollectionItemsForUser(user)
-  const itemCount = collections.reduce((sum, item) => sum + Number(item.ChildCount ?? 0), 0)
+  const collections = traktCollectionSummariesForUser(user)
+  const itemCount = collections.reduce((sum, summary) => sum + summary.members.length, 0)
   return {
     Name:               'Collections',
     Id:                 COLLECTIONS_FOLDER_ID,
@@ -430,7 +467,7 @@ function bestRootFolderImage(
     }
   }
   if (id === COLLECTIONS_FOLDER_ID && config.traktCollections) {
-    const members = config.traktLists.flatMap(slug => collectionMembersForUser(visibleUser, slug))
+    const members = traktCollectionSummariesForUser(visibleUser).flatMap(summary => summary.members)
     return bestCollectionArtwork(members)
   }
   return null
