@@ -180,6 +180,16 @@ function loginRateState(ip: string) {
   return existing
 }
 
+function bodyString(body: Record<string, unknown> | undefined, keys: string[]): string {
+  if (!body) return ''
+  for (const key of keys) {
+    const value = body[key]
+    if (typeof value === 'string') return value
+    if (value != null) return String(value)
+  }
+  return ''
+}
+
 async function fetchProxiedImage(url: string): Promise<{ buffer: Buffer; contentType: string } | null> {
   const now = Date.now()
   const cached = proxiedImageCache.get(url)
@@ -1146,7 +1156,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     Client:           'emby',
   }))
 
-  // Auth — verify credentials if UI_PASSWORD is set
+  // Auth — verify app user credentials for Jellyfin-compatible clients
   app.post('/Users/AuthenticateByName', async (req, reply) => {
     if (!authEnabled()) return reply.code(503).send({ error: 'User auth is not configured.' })
     const rateKey = clientIp(req.headers)
@@ -1154,12 +1164,15 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     if (state.count >= LOGIN_MAX_ATTEMPTS) {
       return reply.code(429).send({ error: 'Too many login attempts. Please try again later.' })
     }
-    const body = req.body as { Username?: string; Pw?: string } | undefined
-    const username = body?.Username ?? ''
-    const password = body?.Pw ?? ''
+    const body = req.body as Record<string, unknown> | undefined
+    const username = bodyString(body, ['Username', 'UserName', 'username', 'Name', 'name']).trim()
+    const password = bodyString(body, ['Pw', 'Password', 'password', 'Pass', 'pass'])
     const user = verifyUserCredentials(username, password)
     if (!user) {
       state.count += 1
+      app.log.warn(
+        `auth: Jellyfin login failed for ${username ? `"${username}"` : 'missing username'} from ${rateKey}`
+      )
       return reply.code(401).send({ error: 'Invalid credentials' })
     }
     loginAttempts.delete(rateKey)
