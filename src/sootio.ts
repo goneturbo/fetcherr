@@ -64,6 +64,7 @@ function nonEnglishPenalty(s: Stream): number {
   if (/\bukr\b|\bukrainian\b|🇺🇦/.test(text)) penalty += 2
   if (/\bita\b|\bitalian\b|🇮🇹/.test(text)) penalty += 2
   if (/\besp\b|\bspanish\b|🇪🇸/.test(text)) penalty += 2
+  if (/\bhindi\b|\btamil\b|\btelugu\b|\bkannada\b|\bmalayalam\b|\bhin\b|🇮🇳/.test(text)) penalty += 2
   return penalty
 }
 
@@ -108,10 +109,14 @@ function junkPenalty(s: Stream): number {
 
 function episodeSpecificityScore(s: Stream): number {
   const text = streamMetadataText(s)
+  const filename = typeof s.behaviorHints?.filename === 'string'
+    ? s.behaviorHints.filename.toLowerCase()
+    : ''
+  const filenameHasEpisode = /\bs\d{2}e\d{2}\b/.test(filename)
   let score = 0
   if (/\bs\d{2}e\d{2}\b/.test(text)) score += 4
   if (/\bs\d{2}e\d{2}[a-z]\b/.test(text)) score -= 2
-  if (/\[s\d{2}-s\d{2}\]|\bseasons?\b|\bcomplete\b|\bcollection\b/.test(text)) score -= 4
+  if (!filenameHasEpisode && /\[s\d{2}-s\d{2}\]|\bseasons?\b|\bcomplete\b|\bcollection\b/.test(text)) score -= 4
   if (/\bs\d{2}\b/.test(text) && !/\bs\d{2}e\d{2}\b/.test(text)) score -= 1
   return score
 }
