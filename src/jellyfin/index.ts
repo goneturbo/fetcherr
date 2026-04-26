@@ -6,7 +6,7 @@ import {
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, listSourceItems, type AppUser,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, listSourceItems, type AppUser,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -1170,8 +1170,16 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     const user = verifyUserCredentials(username, password)
     if (!user) {
       state.count += 1
+      const existingUser = username ? getUserByUsername(username) : null
+      const reason = !username
+        ? 'missing username'
+        : !existingUser
+          ? 'unknown user'
+          : !password
+            ? 'missing password'
+            : 'password mismatch'
       app.log.warn(
-        `auth: Jellyfin login failed for ${username ? `"${username}"` : 'missing username'} from ${rateKey}`
+        `auth: Jellyfin login failed for ${username ? `"${username}"` : 'missing username'} from ${rateKey} (${reason})`
       )
       return reply.code(401).send({ error: 'Invalid credentials' })
     }
