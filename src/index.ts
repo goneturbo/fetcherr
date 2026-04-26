@@ -197,19 +197,6 @@ function hasOnlyUndeterminedAudio(languages: string[]): boolean {
   return normalized.length > 0 && normalized.every(lang => lang === 'und' || lang === 'undetermined')
 }
 
-function groupStreamsByProvider<T extends { providerOrder?: number }>(streams: T[]): T[][] {
-  const groups = new Map<number, T[]>()
-  for (const stream of streams) {
-    const key = stream.providerOrder ?? 999
-    const existing = groups.get(key)
-    if (existing) existing.push(stream)
-    else groups.set(key, [stream])
-  }
-  return [...groups.entries()]
-    .sort((a, b) => a[0] - b[0])
-    .map(([, group]) => group)
-}
-
 async function resolveAndRedirect(
   streams: Awaited<ReturnType<typeof fetchRankedStreams>>,
   label: string,
@@ -218,52 +205,52 @@ async function resolveAndRedirect(
   fileHint?: string,
 ) {
   if (config.rdApiKey) {
-    const providerGroups = groupStreamsByProvider(streams)
-    for (const group of providerGroups) {
-      const providerOrder = group[0]?.providerOrder ?? 999
-      app.log.info(`play: trying providerOrder=${providerOrder} for ${label} (${group.length} candidate${group.length === 1 ? '' : 's'})`)
-      for (const stream of group) {
-        const hash = extractHashFromStreamUrl(stream.url)
-        if (!hash) continue
-        try {
-          app.log.info(`play: trying hash ${hash.slice(0, 8)}… for ${label}`)
-          if (config.englishStreamMode === 'require' && streamClearlyNonEnglish(stream)) {
-            app.log.info(`play: skipping stream metadata for ${label}, clearly non-English`)
-            continue
-          }
-          const resolved = await resolveStream(hash, fileHint)
-          if (!isVideoFile(resolved.filename)) {
-            app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
-            continue
-          }
-          if (isLikelyBadResolvedFilename(resolved.filename)) {
-            app.log.info(`play: skipping suspicious file ${resolved.filename}, trying next`)
-            continue
-          }
-          if (shouldProbeEnglishAudio(stream, resolved.filename)) {
-            try {
-              const audioLanguages = await probeAudioLanguages(resolved.url)
-              app.log.info(`play: ffprobe audio languages for ${resolved.filename}: ${audioLanguages.join(', ') || 'none'}`)
-              const allowsUndetermined = hasOnlyUndeterminedAudio(audioLanguages) && !streamClearlyNonEnglish(stream)
-              if (config.englishStreamMode === 'require' && !hasEnglishAudio(audioLanguages) && !allowsUndetermined) {
-                app.log.info(`play: skipping ${resolved.filename}, no English audio detected`)
-                continue
-              }
-            } catch (err) {
-              app.log.warn(`play: ffprobe failed for ${resolved.filename}: ${err}`)
-            }
-          }
-          app.log.info(`play: RD resolved ${resolved.filename} from hash ${hash.slice(0, 8)}…`)
-          clearFailedPlay(cacheKey)
-          return reply.redirect(resolved.url, 302)
-        } catch (err) {
-          if (err instanceof NotCachedError) {
-            app.log.info(`play: hash ${hash.slice(0, 8)}… not cached, trying next`)
-            continue
-          }
-          app.log.warn(`play: RD error for hash ${hash.slice(0, 8)}…: ${err}`)
-          break
+    const failedProviderOrders = new Set<number>()
+    app.log.info(`play: trying ${streams.length} ranked candidate${streams.length === 1 ? '' : 's'} for ${label}`)
+    for (const stream of streams) {
+      const providerOrder = stream.providerOrder ?? 999
+      if (failedProviderOrders.has(providerOrder)) continue
+
+      const hash = extractHashFromStreamUrl(stream.url)
+      if (!hash) continue
+      try {
+        app.log.info(`play: trying providerOrder=${providerOrder} hash ${hash.slice(0, 8)}… for ${label}`)
+        if (config.englishStreamMode === 'require' && streamClearlyNonEnglish(stream)) {
+          app.log.info(`play: skipping stream metadata for ${label}, clearly non-English`)
+          continue
         }
+        const resolved = await resolveStream(hash, fileHint)
+        if (!isVideoFile(resolved.filename)) {
+          app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
+          continue
+        }
+        if (isLikelyBadResolvedFilename(resolved.filename)) {
+          app.log.info(`play: skipping suspicious file ${resolved.filename}, trying next`)
+          continue
+        }
+        if (shouldProbeEnglishAudio(stream, resolved.filename)) {
+          try {
+            const audioLanguages = await probeAudioLanguages(resolved.url)
+            app.log.info(`play: ffprobe audio languages for ${resolved.filename}: ${audioLanguages.join(', ') || 'none'}`)
+            const allowsUndetermined = hasOnlyUndeterminedAudio(audioLanguages) && !streamClearlyNonEnglish(stream)
+            if (config.englishStreamMode === 'require' && !hasEnglishAudio(audioLanguages) && !allowsUndetermined) {
+              app.log.info(`play: skipping ${resolved.filename}, no English audio detected`)
+              continue
+            }
+          } catch (err) {
+            app.log.warn(`play: ffprobe failed for ${resolved.filename}: ${err}`)
+          }
+        }
+        app.log.info(`play: RD resolved ${resolved.filename} from hash ${hash.slice(0, 8)}…`)
+        clearFailedPlay(cacheKey)
+        return reply.redirect(resolved.url, 302)
+      } catch (err) {
+        if (err instanceof NotCachedError) {
+          app.log.info(`play: hash ${hash.slice(0, 8)}… not cached, trying next`)
+          continue
+        }
+        app.log.warn(`play: RD error for providerOrder=${providerOrder} hash ${hash.slice(0, 8)}…: ${err}; skipping remaining provider candidates`)
+        failedProviderOrders.add(providerOrder)
       }
     }
     app.log.warn(`play: no usable RD-cached stream found for ${label}`)
