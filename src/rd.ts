@@ -12,18 +12,29 @@ async function rdFetch(
   path: string,
   body?: Record<string, string>,
 ): Promise<unknown> {
-  const res = await fetch(`${BASE}${path}`, {
-    method,
-    headers: {
-      Authorization: `Bearer ${config.rdApiKey}`,
-      ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
-    },
-    body: body ? new URLSearchParams(body).toString() : undefined,
-    signal: AbortSignal.timeout(15_000),
-  })
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, {
+      method,
+      headers: {
+        Authorization: `Bearer ${config.rdApiKey}`,
+        ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+      },
+      body: body ? new URLSearchParams(body).toString() : undefined,
+      signal: AbortSignal.timeout(15_000),
+    })
+  } catch (err) {
+    throw new ProviderUnavailableError(`RD ${method} ${path} failed: ${String(err)}`)
+  }
   if (res.status === 204) return null
   const text = await res.text()
-  if (!res.ok) throw new Error(`RD ${method} ${path} → ${res.status}: ${text}`)
+  if (!res.ok) {
+    const message = `RD ${method} ${path} → ${res.status}: ${text}`
+    if (res.status === 401 || res.status === 403 || res.status === 429 || res.status >= 500) {
+      throw new ProviderUnavailableError(message)
+    }
+    throw new Error(message)
+  }
   return text ? JSON.parse(text) : null
 }
 
@@ -123,6 +134,11 @@ export async function waitDownloaded(
 
 export class NotCachedError extends Error {
   readonly code = 'NOT_CACHED'
+  constructor(msg: string) { super(msg) }
+}
+
+export class ProviderUnavailableError extends Error {
+  readonly code = 'PROVIDER_UNAVAILABLE'
   constructor(msg: string) { super(msg) }
 }
 

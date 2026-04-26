@@ -9,7 +9,7 @@ import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStream } from './sootio.js'
-import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
+import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError } from './rd.js'
 import { getMovieByTmdbId, getShowByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
@@ -275,8 +275,12 @@ async function resolveAndRedirect(
           app.log.info(`play: hash ${hashLabel}… not cached, trying next`)
           continue
         }
-        app.log.warn(`play: RD error for providerOrder=${providerOrder} hash ${hashLabel}…: ${err}; skipping remaining provider candidates`)
-        failedProviderOrders.add(providerOrder)
+        if (err instanceof ProviderUnavailableError) {
+          app.log.warn(`play: RD provider error for providerOrder=${providerOrder} hash ${hashLabel}…: ${err}; skipping remaining provider candidates`)
+          failedProviderOrders.add(providerOrder)
+          continue
+        }
+        app.log.warn(`play: hash ${hashLabel}… failed: ${err}; trying next`)
       }
     }
     app.log.warn(`play: no usable RD-cached stream found for ${label}`)
