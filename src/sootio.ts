@@ -116,6 +116,8 @@ function episodeSpecificityScore(s: Stream): number {
   let score = 0
   if (/\bs\d{2}e\d{2}\b/.test(text)) score += 4
   if (/\bs\d{2}e\d{2}[a-z]\b/.test(text)) score -= 2
+  if (/\bs\d{2}e\d{2}\s*-\s*(?:e)?\d{2}\b|\be\d{2}\s*-\s*e\d{2}\b/.test(text)) score -= 4
+  if (/\bextended[ ._-]*cinematic[ ._-]*format\b|\bcinematic[ ._-]*format\b|\bfan[ ._-]*edit\b/.test(text)) score -= 2
   if (!filenameHasEpisode && /\[s\d{2}-s\d{2}\]|\bseasons?\b|\bcomplete\b|\bcollection\b/.test(text)) score -= 4
   if (/\bs\d{2}\b/.test(text) && !/\bs\d{2}e\d{2}\b/.test(text)) score -= 1
   return score
