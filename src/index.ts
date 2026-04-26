@@ -151,24 +151,36 @@ function streamMetadataText(stream: { name?: string; title?: string; behaviorHin
   return `${stream.name ?? ''} ${stream.title ?? ''} ${filename}`.toLowerCase()
 }
 
+function hasNonEnglishAudioMarker(text: string): boolean {
+  return /\bdubbing\s*pl\b|\bpolish\b|\bpolski\b|\blektor\b|🇵🇱|\btruefrench\b|\bfrench\b|🇫🇷|\brus\b|\brussian\b|🇷🇺|\bukr\b|\bukrainian\b|🇺🇦|\bita\b|\bitalian\b|🇮🇹|\besp\b|\bspanish\b|🇪🇸|\bhindi\b|\bhin\b|\btamil\b|\btelugu\b|\bkannada\b|\bmalayalam\b|🇮🇳/.test(text)
+}
+
 function streamClearlyEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
   const hasEnglish = /\boriginal\s*\(?eng\)?\b|\benglish\b|\beng\b|🇬🇧/.test(text)
-  const hasNonEnglish = /\bdubbing\s*pl\b|\bpolish\b|\bpolski\b|\blektor\b|🇵🇱|\btruefrench\b|\bfrench\b|🇫🇷/.test(text)
+  const hasNonEnglish = hasNonEnglishAudioMarker(text)
   return hasEnglish && !hasNonEnglish
 }
 
 function streamClearlyNonEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
   const hasEnglish = /\boriginal\s*\(?eng\)?\b|\benglish\b|\beng\b|🇬🇧/.test(text)
-  const hasNonEnglish = /\bdubbing\s*pl\b|\bpolish\b|\bpolski\b|\blektor\b|🇵🇱|\btruefrench\b|\bfrench\b|🇫🇷/.test(text)
+  const hasNonEnglish = hasNonEnglishAudioMarker(text)
   return hasNonEnglish && !hasEnglish
 }
 
-function shouldProbeEnglishAudio(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
+function isRemoteAudioProbeUnreliable(filename: string): boolean {
+  return /\.(mp4|m4v)$/i.test(filename)
+}
+
+function shouldProbeEnglishAudio(
+  stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> },
+  filename: string,
+): boolean {
   if (config.englishStreamMode === 'off') return false
   if (streamClearlyEnglish(stream)) return false
   if (streamClearlyNonEnglish(stream)) return false
+  if (isRemoteAudioProbeUnreliable(filename)) return false
   return true
 }
 
@@ -228,7 +240,7 @@ async function resolveAndRedirect(
             app.log.info(`play: skipping suspicious file ${resolved.filename}, trying next`)
             continue
           }
-          if (shouldProbeEnglishAudio(stream)) {
+          if (shouldProbeEnglishAudio(stream, resolved.filename)) {
             try {
               const audioLanguages = await probeAudioLanguages(resolved.url)
               app.log.info(`play: ffprobe audio languages for ${resolved.filename}: ${audioLanguages.join(', ') || 'none'}`)

@@ -240,6 +240,8 @@ export async function resolveStream(
 export async function probeAudioLanguages(url: string): Promise<string[]> {
   const { stdout } = await execFile('ffprobe', [
     '-v', 'error',
+    '-probesize', '1048576',
+    '-analyzeduration', '0',
     '-show_entries', 'stream=codec_type:stream_tags=language,title',
     '-of', 'json',
     url,
