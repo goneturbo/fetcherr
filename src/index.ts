@@ -173,6 +173,16 @@ function isRemoteAudioProbeUnreliable(filename: string): boolean {
   return /\.(mp4|m4v)$/i.test(filename)
 }
 
+function isDirectPlaybackUrl(url?: string): url is string {
+  if (!url) return false
+  try {
+    const parsed = new URL(url)
+    return parsed.protocol === 'http:' || parsed.protocol === 'https:'
+  } catch {
+    return false
+  }
+}
+
 function shouldProbeEnglishAudio(
   stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> },
   filename: string,
@@ -212,13 +222,25 @@ async function resolveAndRedirect(
       if (failedProviderOrders.has(providerOrder)) continue
 
       const hash = extractHashFromStreamUrl(stream.url)
-      if (!hash) continue
+      const hashLabel = hash ? hash.slice(0, 8) : 'direct-url'
       try {
-        app.log.info(`play: trying providerOrder=${providerOrder} hash ${hash.slice(0, 8)}… for ${label}`)
         if (config.englishStreamMode === 'require' && streamClearlyNonEnglish(stream)) {
           app.log.info(`play: skipping stream metadata for ${label}, clearly non-English`)
           continue
         }
+
+        if (!hash) {
+          if (!isDirectPlaybackUrl(stream.url)) continue
+          if (config.englishStreamMode === 'require' && !streamClearlyEnglish(stream)) {
+            app.log.info(`play: skipping direct provider URL for ${label}, no confirmed English metadata`)
+            continue
+          }
+          app.log.info(`play: direct provider URL redirect for ${label} via providerOrder=${providerOrder}`)
+          clearFailedPlay(cacheKey)
+          return reply.redirect(stream.url, 302)
+        }
+
+        app.log.info(`play: trying providerOrder=${providerOrder} hash ${hash.slice(0, 8)}… for ${label}`)
         const resolved = await resolveStream(hash, fileHint)
         if (!isVideoFile(resolved.filename)) {
           app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
@@ -246,10 +268,10 @@ async function resolveAndRedirect(
         return reply.redirect(resolved.url, 302)
       } catch (err) {
         if (err instanceof NotCachedError) {
-          app.log.info(`play: hash ${hash.slice(0, 8)}… not cached, trying next`)
+          app.log.info(`play: hash ${hashLabel}… not cached, trying next`)
           continue
         }
-        app.log.warn(`play: RD error for providerOrder=${providerOrder} hash ${hash.slice(0, 8)}…: ${err}; skipping remaining provider candidates`)
+        app.log.warn(`play: RD error for providerOrder=${providerOrder} hash ${hashLabel}…: ${err}; skipping remaining provider candidates`)
         failedProviderOrders.add(providerOrder)
       }
     }
