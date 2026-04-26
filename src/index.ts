@@ -8,7 +8,7 @@ import { uiRoutes } from './ui/routes.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
 import { getMovieByTmdbId, getShowByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
@@ -147,19 +147,24 @@ function isLikelyBadResolvedFilename(filename: string): boolean {
   return false
 }
 
-function streamMetadataText(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): string {
+function streamMetadataText(stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> }): string {
   const filename = typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''
-  return `${stream.name ?? ''} ${stream.title ?? ''} ${filename}`.toLowerCase()
+  return `${stream.name ?? ''} ${stream.title ?? ''} ${stream.description ?? ''} ${filename}`.toLowerCase()
 }
 
-function streamClearlyEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
+function streamFilenameHint(stream: { behaviorHints?: Record<string, unknown> }): string | undefined {
+  const filename = stream.behaviorHints?.filename
+  return typeof filename === 'string' && filename.trim() ? filename : undefined
+}
+
+function streamClearlyEnglish(stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
   const hasEnglish = hasEnglishAudioMarker(text)
   const hasNonEnglish = hasNonEnglishAudioMarker(text)
   return hasEnglish && !hasNonEnglish
 }
 
-function streamClearlyNonEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
+function streamClearlyNonEnglish(stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
   const hasEnglish = hasEnglishAudioMarker(text)
   const hasNonEnglish = hasNonEnglishAudioMarker(text)
@@ -180,15 +185,8 @@ function isDirectPlaybackUrl(url?: string): url is string {
   }
 }
 
-function extractHashFromBingeGroup(stream: { behaviorHints?: Record<string, unknown> }): string | null {
-  const bingeGroup = stream.behaviorHints?.bingeGroup
-  if (typeof bingeGroup !== 'string') return null
-  const match = bingeGroup.match(/(?:^|\|)([0-9a-f]{40})(?:\||$)/i)
-  return match ? match[1].toLowerCase() : null
-}
-
 function shouldProbeEnglishAudio(
-  stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> },
+  stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> },
   filename: string,
 ): boolean {
   if (config.englishStreamMode === 'off') return false
@@ -225,7 +223,7 @@ async function resolveAndRedirect(
       const providerOrder = stream.providerOrder ?? 999
       if (failedProviderOrders.has(providerOrder)) continue
 
-      const hash = extractHashFromStreamUrl(stream.url) ?? extractHashFromBingeGroup(stream)
+      const hash = extractHashFromStream(stream)
       const hashLabel = hash ? hash.slice(0, 8) : 'direct-url'
       try {
         if (config.englishStreamMode === 'require' && streamClearlyNonEnglish(stream)) {
@@ -234,18 +232,12 @@ async function resolveAndRedirect(
         }
 
         if (!hash) {
-          if (!isDirectPlaybackUrl(stream.url)) continue
-          if (config.englishStreamMode === 'require' && !streamClearlyEnglish(stream)) {
-            app.log.info(`play: skipping direct provider URL for ${label}, no confirmed English metadata`)
-            continue
-          }
-          app.log.info(`play: direct provider URL redirect for ${label} via providerOrder=${providerOrder}`)
-          clearFailedPlay(cacheKey)
-          return reply.redirect(stream.url, 302)
+          app.log.info(`play: skipping providerOrder=${providerOrder} for ${label}, no torrent hash exposed`)
+          continue
         }
 
         app.log.info(`play: trying providerOrder=${providerOrder} hash ${hash.slice(0, 8)}… for ${label}`)
-        const resolved = await resolveStream(hash, fileHint)
+        const resolved = await resolveStream(hash, streamFilenameHint(stream) ?? fileHint)
         if (!isVideoFile(resolved.filename)) {
           app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
           continue

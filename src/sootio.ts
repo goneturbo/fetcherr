@@ -6,6 +6,9 @@ export interface Stream {
   title:         string
   description?:  string
   url?:          string
+  infoHash?:     string
+  fileIdx?:      number | string
+  sources?:      string[]
   behaviorHints?: Record<string, unknown>
   providerOrder?: number
 }
@@ -34,16 +37,16 @@ interface RankedStreamScore {
 }
 
 function streamText(s: Stream): string {
-  return `${s.name ?? ''} ${s.title ?? ''} ${s.url ?? ''}`.toLowerCase()
+  return `${s.name ?? ''} ${s.title ?? ''} ${s.description ?? ''} ${s.url ?? ''} ${(s.sources ?? []).join(' ')}`.toLowerCase()
 }
 
 function streamMetadataText(s: Stream): string {
   const filename = typeof s.behaviorHints?.filename === 'string' ? s.behaviorHints.filename : ''
-  return `${s.name ?? ''} ${s.title ?? ''} ${filename}`.toLowerCase()
+  return `${s.name ?? ''} ${s.title ?? ''} ${s.description ?? ''} ${filename}`.toLowerCase()
 }
 
 function hasUsableUrl(s: Stream): boolean {
-  return typeof s.url === 'string' && s.url.length > 0
+  return (typeof s.url === 'string' && s.url.length > 0) || extractHashFromStream(s) !== null
 }
 
 function cachedScore(s: Stream): number {
@@ -310,7 +313,8 @@ async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
 
   const deduped = new Map<string, Stream>()
   for (const stream of merged) {
-    const key = `${stream.url ?? ''}|${stream.name}|${stream.title}`
+    const filename = typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''
+    const key = `${extractHashFromStream(stream) ?? stream.url ?? ''}|${stream.fileIdx ?? ''}|${stream.name}|${stream.title}|${filename}`
     if (!deduped.has(key)) deduped.set(key, stream)
   }
 
@@ -368,6 +372,24 @@ export async function fetchRankedEpisodeStreams(
  */
 export function extractHashFromStreamUrl(url?: string): string | null {
   if (!url) return null
+  if (url.startsWith('magnet:')) return normalizeInfoHash(url)
   const m = url.match(/\/([0-9a-f]{40})(?:\/|$)/i)
   return m ? m[1].toLowerCase() : null
+}
+
+function normalizeInfoHash(value: unknown): string | null {
+  if (typeof value !== 'string') return null
+  const match = value.match(/(?:^|[^0-9a-f])([0-9a-f]{40})(?:[^0-9a-f]|$)/i)
+  return match ? match[1].toLowerCase() : null
+}
+
+export function extractHashFromStream(stream: Pick<Stream, 'url' | 'infoHash' | 'sources' | 'behaviorHints'>): string | null {
+  const bingeGroup = stream.behaviorHints?.bingeGroup
+  return extractHashFromStreamUrl(stream.url)
+    ?? normalizeInfoHash(stream.infoHash)
+    ?? (typeof bingeGroup === 'string' ? normalizeInfoHash(bingeGroup) : null)
+    ?? (stream.sources ?? []).reduce<string | null>(
+      (hash, source) => hash ?? normalizeInfoHash(source),
+      null,
+    )
 }
