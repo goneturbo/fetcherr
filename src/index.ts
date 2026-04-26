@@ -10,7 +10,7 @@ import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStreamUrl } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError } from './rd.js'
-import { getMovieByTmdbId, getShowByImdbId, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
+import { getMovieByTmdbId, getShowByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { verifySignedPlaybackPath } from './play-auth.js'
@@ -319,7 +319,17 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   app.log.info(`play: resolving episode stream for ${imdbId} S${s}E${e}`)
   try {
     const show = getShowByImdbId(imdbId)
-    const streams = await fetchRankedEpisodeStreams(imdbId, s, e, show?.year || undefined)
+    const episode = show
+      ? getEpisodesForSeason(show.tmdbId, s).find(ep => ep.episodeNumber === e)
+      : null
+    const episodeAirYear = episode?.airDate ? Number.parseInt(episode.airDate.slice(0, 4), 10) : undefined
+    const streams = await fetchRankedEpisodeStreams(
+      imdbId,
+      s,
+      e,
+      show?.year || undefined,
+      Number.isFinite(episodeAirYear) ? episodeAirYear : undefined,
+    )
     return resolveAndRedirect(streams, `${imdbId} S${s}E${e}`, playPath, reply as never, `s${pad2(s)}e${pad2(e)}`)
   } catch (err) {
     app.log.warn(`play: no stream for ${imdbId} S${s}E${e}: ${err}`)

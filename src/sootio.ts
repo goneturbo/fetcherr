@@ -11,6 +11,7 @@ export interface Stream {
 
 interface StreamRankContext {
   expectedYear?: number
+  alternateYear?: number
 }
 
 interface RankedStreamScore {
@@ -83,18 +84,24 @@ function explicitYearsInStream(s: Stream): number[] {
   return [...new Set(matches.map(m => Number.parseInt(m[1], 10)).filter(n => Number.isFinite(n)))]
 }
 
-function hasExplicitYearMismatch(s: Stream, expectedYear?: number): boolean {
-  if (!expectedYear) return false
-  const years = explicitYearsInStream(s)
-  if (!years.length) return false
-  return !years.includes(expectedYear)
+function validYears(ctx: StreamRankContext): number[] {
+  return [...new Set([ctx.expectedYear, ctx.alternateYear].filter((year): year is number => typeof year === 'number' && Number.isFinite(year)))]
 }
 
-function explicitYearScore(s: Stream, expectedYear?: number): number {
-  if (!expectedYear) return 0
+function hasExplicitYearMismatch(s: Stream, ctx: StreamRankContext): boolean {
+  const valid = validYears(ctx)
+  if (!valid.length) return false
+  const years = explicitYearsInStream(s)
+  if (!years.length) return false
+  return !years.some(year => valid.includes(year))
+}
+
+function explicitYearScore(s: Stream, ctx: StreamRankContext): number {
   const years = explicitYearsInStream(s)
   if (!years.length) return 0
-  return years.includes(expectedYear) ? 2 : 0
+  if (ctx.expectedYear && years.includes(ctx.expectedYear)) return 2
+  if (ctx.alternateYear && years.includes(ctx.alternateYear)) return 1
+  return 0
 }
 
 function junkPenalty(s: Stream): number {
@@ -131,7 +138,7 @@ function precomputeScore(s: Stream, ctx: StreamRankContext = {}): RankedStreamSc
     nonEnglishPenalty: nonEnglishPenalty(s),
     regionalPenalty: regionalAudioPenalty(s),
     junkPenalty: junkPenalty(s),
-    yearScore: explicitYearScore(s, ctx.expectedYear),
+    yearScore: explicitYearScore(s, ctx),
     years: explicitYearsInStream(s),
     episodeSpecificity: episodeSpecificityScore(s),
     resolution: resolutionScore(s),
@@ -229,8 +236,8 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
   const usable = streams.filter(hasUsableUrl)
   const preferred = usable.filter(s => !isLikelyBadStream(s))
   const basePool = preferred.length ? preferred : usable
-  const pool = ctx.expectedYear
-    ? basePool.filter(s => !hasExplicitYearMismatch(s, ctx.expectedYear))
+  const pool = validYears(ctx).length
+    ? basePool.filter(s => !hasExplicitYearMismatch(s, ctx))
     : basePool
 
   return pool
@@ -332,11 +339,12 @@ export async function fetchRankedEpisodeStreams(
   season: number,
   episode: number,
   expectedYear?: number,
+  alternateYear?: number,
 ): Promise<Stream[]> {
   const streams = await fetchStreamsFromProviders(`/stream/series/${imdbId}:${season}:${episode}.json`)
   if (!streams.length) throw new Error(`No streams found for ${imdbId} S${season}E${episode}`)
-  const ranked = rankStreams(streams, { expectedYear })
-  const summaries = ranked.map(stream => precomputeScore(stream, { expectedYear }))
+  const ranked = rankStreams(streams, { expectedYear, alternateYear })
+  const summaries = ranked.map(stream => precomputeScore(stream, { expectedYear, alternateYear }))
   if (!ranked.length) throw new Error(`No year-matched streams found for ${imdbId} S${season}E${episode}`)
   console.log(`streams: top candidates for ${imdbId} S${season}E${episode}`)
   for (const score of summaries.slice(0, 5)) {
