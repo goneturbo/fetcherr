@@ -631,12 +631,12 @@ export async function uiRoutes(app: FastifyInstance) {
       const show = await fetchShowByTmdbId(tmdbId)
       if (!show) return reply.code(404).send({ error: 'Show not found on TMDB' })
       if (!canUserAccessShow(user, show)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
-      await ensureShowSeasonsCached(show).catch(() => {})
       const activeSeasonNumber = mode === 'latest'
         ? (getLatestSeasonNumberForShow(tmdbId) ?? Math.max(show.numSeasons, 1))
         : 0
       upsertManualShowSubscription(tmdbId, mode, activeSeasonNumber)
       addSourceItem('manual:ui', 'show', tmdbId)
+      await ensureShowSeasonsCached(show).catch(() => {})
       return { ok: true, title: show.title, mode, activeSeasonNumber }
     }
 
@@ -656,11 +656,11 @@ export async function uiRoutes(app: FastifyInstance) {
     if (!hasAnySourceItem('show', tmdbId)) return reply.code(404).send({ error: 'Show not found in library' })
     if (!canUserAccessShow(user, show)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
 
-    await ensureShowSeasonsCached(show).catch(() => {})
     const activeSeasonNumber = mode === 'latest'
       ? (getLatestSeasonNumberForShow(tmdbId) ?? Math.max(show.numSeasons, 1))
       : 0
     upsertManualShowSubscription(tmdbId, mode, activeSeasonNumber)
+    await ensureShowSeasonsCached(show).catch(() => {})
     return { ok: true, title: show.title, mode, activeSeasonNumber }
   })
 
