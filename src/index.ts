@@ -180,6 +180,13 @@ function isDirectPlaybackUrl(url?: string): url is string {
   }
 }
 
+function extractHashFromBingeGroup(stream: { behaviorHints?: Record<string, unknown> }): string | null {
+  const bingeGroup = stream.behaviorHints?.bingeGroup
+  if (typeof bingeGroup !== 'string') return null
+  const match = bingeGroup.match(/(?:^|\|)([0-9a-f]{40})(?:\||$)/i)
+  return match ? match[1].toLowerCase() : null
+}
+
 function shouldProbeEnglishAudio(
   stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> },
   filename: string,
@@ -218,7 +225,7 @@ async function resolveAndRedirect(
       const providerOrder = stream.providerOrder ?? 999
       if (failedProviderOrders.has(providerOrder)) continue
 
-      const hash = extractHashFromStreamUrl(stream.url)
+      const hash = extractHashFromStreamUrl(stream.url) ?? extractHashFromBingeGroup(stream)
       const hashLabel = hash ? hash.slice(0, 8) : 'direct-url'
       try {
         if (config.englishStreamMode === 'require' && streamClearlyNonEnglish(stream)) {
