@@ -1,4 +1,5 @@
 import { config } from './config.js'
+import { hasEnglishAudioMarker, nonEnglishAudioPenalty } from './streamLanguage.js'
 
 export interface Stream {
   name:          string
@@ -19,6 +20,7 @@ interface RankedStreamScore {
   cached: number
   english: number
   nonEnglishPenalty: number
+  unprobeableAudioPenalty: number
   regionalPenalty: number
   junkPenalty: number
   yearScore: number
@@ -53,20 +55,23 @@ function cachedScore(s: Stream): number {
 
 function hasEnglishSignal(s: Stream): boolean {
   const text = streamMetadataText(s)
-  return /\boriginal\s*\(?eng(?:lish)?\)?\b|\boriginal audio\b.*\beng(?:lish)?\b|\benglish\b|\baudio[: ._-]*eng(?:lish)?\b/.test(text)
+  return hasEnglishAudioMarker(text)
 }
 
 function nonEnglishPenalty(s: Stream): number {
   const text = streamMetadataText(s)
-  let penalty = 0
-  if (/\bdubbing\s*pl\b|\bpolish\b|\bpolski\b|\blektor\b|🇵🇱/.test(text)) penalty += 4
-  if (/\btruefrench\b|\bfrench\b|🇫🇷/.test(text)) penalty += 4
-  if (/\brus\b|\brussian\b|🇷🇺/.test(text)) penalty += 2
-  if (/\bukr\b|\bukrainian\b|🇺🇦/.test(text)) penalty += 2
-  if (/\bita\b|\bitalian\b|🇮🇹/.test(text)) penalty += 2
-  if (/\besp\b|\bspanish\b|🇪🇸/.test(text)) penalty += 2
-  if (/\bhindi\b|\btamil\b|\btelugu\b|\bkannada\b|\bmalayalam\b|\bhin\b|🇮🇳/.test(text)) penalty += 2
-  return penalty
+  return nonEnglishAudioPenalty(text)
+}
+
+function isLikelyUnprobeableRemoteFile(s: Stream): boolean {
+  const text = `${streamMetadataText(s)} ${s.url ?? ''}`
+  return /\.(mp4|m4v)(?:\b|$)/.test(text)
+}
+
+function unprobeableAudioPenalty(s: Stream): number {
+  if (config.englishStreamMode === 'off') return 0
+  if (!isLikelyUnprobeableRemoteFile(s)) return 0
+  return hasEnglishSignal(s) ? 0 : 2
 }
 
 function regionalAudioPenalty(s: Stream): number {
@@ -136,6 +141,7 @@ function precomputeScore(s: Stream, ctx: StreamRankContext = {}): RankedStreamSc
     cached: cachedScore(s),
     english: hasEnglishSignal(s) ? 1 : 0,
     nonEnglishPenalty: nonEnglishPenalty(s),
+    unprobeableAudioPenalty: unprobeableAudioPenalty(s),
     regionalPenalty: regionalAudioPenalty(s),
     junkPenalty: junkPenalty(s),
     yearScore: explicitYearScore(s, ctx),
@@ -156,6 +162,7 @@ function scoreSummary(score: RankedStreamScore): string {
     `cached=${score.cached}`,
     `english=${score.english}`,
     `nonEnglishPenalty=${score.nonEnglishPenalty}`,
+    `unprobeableAudioPenalty=${score.unprobeableAudioPenalty}`,
     `regionalPenalty=${score.regionalPenalty}`,
     `junkPenalty=${score.junkPenalty}`,
     `yearScore=${score.yearScore}`,
@@ -245,6 +252,7 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
     .sort((a, b) =>
       b.cached - a.cached
       || a.nonEnglishPenalty - b.nonEnglishPenalty
+      || a.unprobeableAudioPenalty - b.unprobeableAudioPenalty
       || a.regionalPenalty - b.regionalPenalty
       || a.junkPenalty - b.junkPenalty
       || b.yearScore - a.yearScore

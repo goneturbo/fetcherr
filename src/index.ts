@@ -14,6 +14,7 @@ import { getMovieByTmdbId, getShowByImdbId, getEpisodesForSeason, getLatestSeaso
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
 import { verifySignedPlaybackPath } from './play-auth.js'
+import { hasEnglishAudioMarker, hasNonEnglishAudioMarker } from './streamLanguage.js'
 
 const app = Fastify({
   logger: { level: 'info' },
@@ -151,20 +152,16 @@ function streamMetadataText(stream: { name?: string; title?: string; behaviorHin
   return `${stream.name ?? ''} ${stream.title ?? ''} ${filename}`.toLowerCase()
 }
 
-function hasNonEnglishAudioMarker(text: string): boolean {
-  return /\bdubbing\s*pl\b|\bpolish\b|\bpolski\b|\blektor\b|🇵🇱|\btruefrench\b|\bfrench\b|🇫🇷|\brus\b|\brussian\b|🇷🇺|\bukr\b|\bukrainian\b|🇺🇦|\bita\b|\bitalian\b|🇮🇹|\besp\b|\bspanish\b|🇪🇸|\bhindi\b|\bhin\b|\btamil\b|\btelugu\b|\bkannada\b|\bmalayalam\b|🇮🇳/.test(text)
-}
-
 function streamClearlyEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
-  const hasEnglish = /\boriginal\s*\(?eng\)?\b|\benglish\b|\beng\b|🇬🇧/.test(text)
+  const hasEnglish = hasEnglishAudioMarker(text)
   const hasNonEnglish = hasNonEnglishAudioMarker(text)
   return hasEnglish && !hasNonEnglish
 }
 
 function streamClearlyNonEnglish(stream: { name?: string; title?: string; behaviorHints?: Record<string, unknown> }): boolean {
   const text = streamMetadataText(stream)
-  const hasEnglish = /\boriginal\s*\(?eng\)?\b|\benglish\b|\beng\b|🇬🇧/.test(text)
+  const hasEnglish = hasEnglishAudioMarker(text)
   const hasNonEnglish = hasNonEnglishAudioMarker(text)
   return hasNonEnglish && !hasEnglish
 }
@@ -250,6 +247,14 @@ async function resolveAndRedirect(
           app.log.info(`play: skipping suspicious file ${resolved.filename}, trying next`)
           continue
         }
+        if (
+          config.englishStreamMode === 'require'
+          && isRemoteAudioProbeUnreliable(resolved.filename)
+          && !streamClearlyEnglish(stream)
+        ) {
+          app.log.info(`play: skipping unprobeable ${resolved.filename}, no confirmed English metadata`)
+          continue
+        }
         if (shouldProbeEnglishAudio(stream, resolved.filename)) {
           try {
             const audioLanguages = await probeAudioLanguages(resolved.url)
@@ -279,7 +284,9 @@ async function resolveAndRedirect(
     cacheFailedPlay(cacheKey, 'No cached stream available')
     return reply.code(404).send({ error: 'No cached stream available', message: 'No Cached Streams Found' })
   }
-  const best = streams[0]
+  const best = config.englishStreamMode === 'require'
+    ? streams.find(stream => streamClearlyEnglish(stream))
+    : streams[0]
   if (!best?.url) {
     cacheFailedPlay(cacheKey, 'No streams found')
     return reply.code(404).send({ error: 'No usable stream available', message: 'No Streams Found' })
