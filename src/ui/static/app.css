@@ -184,15 +184,6 @@ select:disabled {
   line-height: 1.1;
 }
 
-.brand-tag {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 650;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
 .topbar-right {
   display: flex;
   align-items: center;
