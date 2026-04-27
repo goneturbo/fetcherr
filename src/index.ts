@@ -196,7 +196,7 @@ function shouldProbeEnglishAudio(
   stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> },
   filename: string,
 ): boolean {
-  if (config.englishStreamMode === 'off') return false
+  if (config.englishStreamMode !== 'require') return false
   if (streamClearlyEnglish(stream)) return false
   if (streamClearlyNonEnglish(stream)) return false
   if (isRemoteAudioProbeUnreliable(filename)) return false

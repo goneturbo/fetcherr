@@ -75,10 +75,10 @@
       <label for="englishStreamMode">English Audio</label>
       <select id="englishStreamMode">
         <option value="prefer">Prefer English when available</option>
-        <option value="require">Require English markers</option>
+        <option value="require">Require English audio</option>
         <option value="off">Do not rank by English markers</option>
       </select>
-      <div class="field-note">Use provider metadata to prefer or require likely-English results. Ambiguous matches can still be verified during playback.</div>
+      <div class="field-note">Prefer uses provider metadata as a quality tie-breaker. Require verifies neutral probeable files with ffprobe before playback.</div>
     </div>
   </section>
 

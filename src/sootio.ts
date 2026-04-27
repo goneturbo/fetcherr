@@ -260,10 +260,10 @@ function rankStreams(streams: Stream[], ctx: StreamRankContext = {}): Stream[] {
       || a.junkPenalty - b.junkPenalty
       || b.yearScore - a.yearScore
       || b.episodeSpecificity - a.episodeSpecificity
-      || (config.englishStreamMode === 'off' ? 0 : b.english - a.english)
       || b.resolution - a.resolution
       || b.source - a.source
       || b.size - a.size
+      || (config.englishStreamMode === 'off' ? 0 : b.english - a.english)
       || b.codec - a.codec
       || b.container - a.container
       || ((a.stream.providerOrder ?? 999) - (b.stream.providerOrder ?? 999))

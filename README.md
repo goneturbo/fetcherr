@@ -114,7 +114,7 @@ kubectl apply -f deploy/kubernetes/fetcherr.yaml
 > Stream addons must return stream URLs containing a usable torrent hash. Fetcherr extracts that hash and resolves playback through Real-Debrid. Proxy-only addon URLs that hide the hash are not compatible.
 
 > [!IMPORTANT]
-> `ENGLISH_STREAM_MODE=require` is the strictest option for English audio.
+> `ENGLISH_STREAM_MODE=require` is the strictest option for English audio. It allows explicit English metadata or ffprobe-confirmed English audio on probeable files.
 
 > [!NOTE]
 > Most runtime configuration now lives in the web UI and is stored in Fetcherr's database. `.env` is intentionally minimal and mainly used to define the external server URL.
@@ -139,6 +139,16 @@ Both.
 Your add-on settings still matter because they control which streams each provider returns. Fetcherr then ranks those returned streams using its own playback criteria, such as Real-Debrid cache availability, language preference, match quality, and format compatibility.
 
 If you configure multiple provider URLs, Fetcherr also respects their order. Earlier providers are tried first, and Fetcherr then picks the best candidate within that provider's results before moving on to the next one.
+
+### How does the English Audio setting work?
+
+Fetcherr has three English-audio modes:
+
+- `Off`: ignores English-language markers during ranking and does not run language checks.
+- `Prefer English when available`: uses English markers from provider metadata, filenames, or indexer flags as a late tie-breaker. Fetcherr does not run ffprobe in this mode, so higher-quality neutral releases can still win.
+- `Require English audio`: skips streams that clearly indicate non-English audio, accepts streams that clearly indicate English audio, and uses ffprobe to verify neutral probeable files such as MKV releases after Real-Debrid resolves them.
+
+Remote MP4/M4V files are treated more conservatively in `Require English audio` because they are less reliable to probe before playback. In those cases, Fetcherr still needs clear English metadata.
 
 ### How do I connect Infuse?
 
