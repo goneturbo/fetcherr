@@ -73,7 +73,7 @@
 
   <div class="controls">
     <div class="search-field">
-      <input type="text" id="searchInput" placeholder="Search…" oninput="onSearch()">
+      <input type="text" id="searchInput" placeholder="Filter library..." oninput="onSearch()">
       <button type="button" class="search-clear" id="searchClear" title="Clear search" aria-label="Clear search" onclick="clearLibrarySearch()" hidden>
         <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
           <path d="M18 6L6 18M6 6l12 12"/>
@@ -89,11 +89,11 @@
       <option value="year:DESC">Newest release</option>
       <option value="year:ASC">Oldest release</option>
     </select>
-    <button type="button" class="btn primary mobile-add-btn" onclick="openSearch()">
+    <button type="button" class="btn primary add-title-btn" onclick="openSearch()" title="Search catalog to add a title">
       <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
         <path d="M12 5v14M5 12h14"/>
       </svg>
-      Add to Library
+      Add Title
     </button>
   </div>
 
@@ -118,12 +118,6 @@
   </div>
 </div>
 
-<button class="fab" onclick="openSearch()" title="Add to Library">
-  <svg width="22" height="22" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M12 5v14M5 12h14"/>
-  </svg>
-</button>
-
 <!-- Add to Library modal -->
 <div class="modal-overlay" id="searchModal" onclick="closeOnOverlay(event)">
   <div class="modal">
@@ -138,7 +132,7 @@
       </div>
       <div class="modal-search-row">
         <div class="search-field">
-          <input id="searchQuery" type="text" placeholder="Search movies or TV shows…" oninput="onModalSearch()" autocomplete="off">
+          <input id="searchQuery" type="text" placeholder="Search catalog to add..." oninput="onModalSearch()" autocomplete="off">
           <button type="button" class="search-clear" id="modalSearchClear" title="Clear search" aria-label="Clear search" onclick="clearModalSearch()" hidden>
             <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round">
               <path d="M18 6L6 18M6 6l12 12"/>
@@ -149,7 +143,10 @@
     </div>
     <div class="modal-toast" id="modalToast"></div>
     <div class="modal-body" id="searchResults">
-      <div class="search-empty">Search for a title to add it to your library.</div>
+      <div class="search-empty">
+        <div class="empty-title">Search the catalog</div>
+        <div>Find a movie or TV show, then choose how Fetcherr should add it.</div>
+      </div>
     </div>
   </div>
 </div>
@@ -259,9 +256,13 @@
 
   function emptyLibraryHtml(tab, search) {
     if (search) {
+      const safeSearch = escapeHtml(search)
       return `<div class="empty">
         <div class="empty-title">No matches found</div>
-        <div>Try a different title, year, or sort order.</div>
+        <div>No library item matches "${safeSearch}".</div>
+        <div class="empty-action">
+          <button type="button" class="btn primary" onclick="openCatalogSearchFromLibrary()">Search catalog for "${safeSearch}"</button>
+        </div>
       </div>`
     }
     const label = tab === 'movies' ? 'movies' : tab === 'shows' ? 'shows' : 'titles'
@@ -269,7 +270,7 @@
       <div class="empty-title">No ${label} in the library yet</div>
       <div>Start a sync or add a title manually.</div>
       <div class="empty-action">
-        <button type="button" class="btn primary" onclick="openSearch()">Add to Library</button>
+        <button type="button" class="btn primary" onclick="openSearch()">Add Title</button>
       </div>
     </div>`
   }
@@ -835,11 +836,26 @@
     <div>Find a movie or TV show, then choose how Fetcherr should add it.</div>
   </div>`
 
-  function openSearch() {
-    document.getElementById('searchModal').classList.add('open')
+  function openSearch(prefill = '') {
+    const modal = document.getElementById('searchModal')
+    const input = document.getElementById('searchQuery')
+    const wasOpen = modal.classList.contains('open')
+    modal.classList.add('open')
+    if (prefill) {
+      input.value = prefill
+    } else if (!wasOpen) {
+      input.value = ''
+      document.getElementById('searchResults').innerHTML = modalSearchPromptHtml
+    }
     setSearchClearState('searchQuery', 'modalSearchClear')
-    document.getElementById('searchQuery').focus()
+    input.focus()
+    if (input.value.trim().length >= 2) runSearch()
+    document.removeEventListener('keydown', onModalKey)
     document.addEventListener('keydown', onModalKey)
+  }
+
+  function openCatalogSearchFromLibrary() {
+    openSearch(document.getElementById('searchInput').value.trim())
   }
 
   function closeSearch() {

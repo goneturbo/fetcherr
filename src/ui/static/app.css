@@ -643,6 +643,10 @@ label {
   flex: 0 0 auto;
 }
 
+.add-title-btn {
+  flex: 0 0 auto;
+}
+
 .search-clear {
   position: absolute;
   right: 6px;
@@ -661,8 +665,7 @@ label {
   background: rgba(255,255,255,.07);
 }
 
-.search-clear[hidden],
-.mobile-add-btn {
+.search-clear[hidden] {
   display: none;
 }
 
@@ -1198,27 +1201,6 @@ label {
 .tv-add-menu.open {
   display: grid;
   gap: 6px;
-}
-
-.fab {
-  position: fixed;
-  right: max(28px, calc(env(safe-area-inset-right) + 16px));
-  bottom: max(28px, calc(env(safe-area-inset-bottom) + 16px));
-  z-index: 100;
-  width: 54px;
-  height: 54px;
-  border: 0;
-  border-radius: 16px;
-  background: linear-gradient(180deg, #9fc3ff, #6b9eff);
-  color: #08111d;
-  box-shadow: 0 12px 36px rgba(86, 144, 235, .36);
-  cursor: pointer;
-  transition: transform .15s, box-shadow .15s;
-}
-
-.fab:hover {
-  transform: translateY(-2px);
-  box-shadow: 0 18px 42px rgba(86, 144, 235, .44);
 }
 
 .detail-hero {
@@ -1963,13 +1945,9 @@ body.auth-page::after {
 
   .controls select,
   .controls .search-field,
-  .mobile-add-btn {
+  .add-title-btn {
     display: inline-flex;
     width: 100%;
-  }
-
-  .fab {
-    display: none;
   }
 
   input,
