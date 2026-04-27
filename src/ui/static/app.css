@@ -526,13 +526,29 @@ label {
   transition: transform .15s, border-color .15s, background .15s;
 }
 
-.stat.filterable:hover,
 .stat.active {
   border-color: var(--accent-border);
   background:
     linear-gradient(180deg, rgba(143,184,255,.08), rgba(255,255,255,.018)),
     var(--surface-raised);
   transform: translateY(-1px);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .stat.filterable:hover {
+    border-color: var(--border-strong);
+    background:
+      linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.016)),
+      var(--surface-raised);
+    transform: translateY(-1px);
+  }
+
+  .stat.filterable.active:hover {
+    border-color: var(--accent-border);
+    background:
+      linear-gradient(180deg, rgba(143,184,255,.08), rgba(255,255,255,.018)),
+      var(--surface-raised);
+  }
 }
 
 .stat-value {
