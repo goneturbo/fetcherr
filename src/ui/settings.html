@@ -51,6 +51,7 @@
       <a href="#server">Server</a>
       <a href="#library-defaults">Library</a>
       <a href="#trakt">Trakt</a>
+      <a href="#mdblist">MDBList</a>
     </aside>
     <main class="settings-content">
 
@@ -230,6 +231,20 @@
     </div>
   </section>
 
+  <!-- MDBList -->
+  <section class="section" id="mdblist">
+    <div class="section-title">MDBList</div>
+    <div class="field-note trakt-list-note">Paste public MDBList URLs to mirror them during the normal library sync.</div>
+    <div class="btn-row trakt-list-actions">
+      <a class="btn btn-sm" href="https://mdblist.com/toplists/" target="_blank" rel="noreferrer">Browse Top Lists</a>
+    </div>
+    <div class="field">
+      <label for="mdblistLists">List URLs</label>
+      <textarea id="mdblistLists" placeholder="https://mdblist.com/lists/user/list-name"></textarea>
+      <div class="field-note">Add one URL per line. Use individual list URLs, not the Top Lists directory.</div>
+    </div>
+  </section>
+
   <!-- Save bar -->
   <div class="save-bar">
     <p>Save to apply changes immediately. No restart needed.</p>
@@ -386,6 +401,7 @@
     document.getElementById('traktWatchlistShows').checked = d.traktWatchlistShows !== false
     document.getElementById('traktWatchHistory').checked = d.traktWatchHistory === true
     document.getElementById('traktCollections').checked = d.traktCollections === true
+    document.getElementById('mdblistLists').value = d.mdblistLists || ''
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
     managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
     deletedUserIds = new Set()
@@ -398,6 +414,7 @@
       setPill('rdStatus', 'Not set', '')
       document.getElementById('rdMeta').textContent = 'No API key configured'
     }
+
   }
 
   function roleOptions(selected) {
@@ -730,6 +747,7 @@
       traktWatchHistory: document.getElementById('traktWatchHistory').checked,
       traktCollections: document.getElementById('traktCollections').checked,
       traktLists:        selectedTraktLists,
+      mdblistLists: document.getElementById('mdblistLists').value,
       ...(rdApiKey ? { rdApiKey } : {}),
       ...(tmdbApiKey ? { tmdbApiKey } : {}),
       ...(tvdbApiKey ? { tvdbApiKey } : {}),

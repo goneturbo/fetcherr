@@ -1346,6 +1346,16 @@ export function listSourceItems(sourceKey: string): Array<{ mediaType: MediaType
   return rows.map(row => ({ mediaType: row.media_type, tmdbId: row.tmdb_id }))
 }
 
+export function listSourceKeysForItem(mediaType: MediaType, tmdbId: number): string[] {
+  const rows = getDb().prepare(`
+    SELECT source_key
+    FROM source_items
+    WHERE media_type = ? AND tmdb_id = ?
+    ORDER BY source_key ASC
+  `).all(mediaType, tmdbId) as { source_key: string }[]
+  return rows.map(row => row.source_key)
+}
+
 export function removeSourceKey(sourceKey: string, mediaType: MediaType): number[] {
   const db = getDb()
   const tmdbIds = (db.prepare(`

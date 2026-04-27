@@ -1,14 +1,14 @@
 # Fetcherr
 
-Fetcherr gives Infuse and VidHub a Stremio-like streaming experience using your Trakt library and Real-Debrid, without needing a traditional media server or local mount.
+Fetcherr gives Infuse and VidHub a Stremio-like streaming experience using your Trakt or MDBList library sources and Real-Debrid, without needing a traditional media server or local mount.
 
-It acts as a lightweight bridge between Trakt, Real-Debrid, provider addons, and Jellyfin-compatible clients like Infuse and VidHub. Fetcherr builds a client-ready library from your optional Trakt watchlists and selected lists, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
+It acts as a lightweight bridge between list sources, Real-Debrid, provider addons, and Jellyfin-compatible clients like Infuse and VidHub. Fetcherr builds a client-ready library from your optional Trakt watchlists, selected Trakt lists, and MDBList list URLs, watches for new episodes and movies as they become available, and exposes them through a Jellyfin-compatible interface.
 
 The goal is simple: open Infuse, browse your library, and press play. Fetcherr handles stream discovery, prefers cached Real-Debrid results, and automatically picks the best match instead of making you choose from a stream list every time.
 
 ## What It Does
 
-- Syncs movies and shows from optional Trakt watchlists and selected Trakt lists
+- Syncs movies and shows from optional Trakt watchlists, selected Trakt lists, and MDBList list URLs
 - Exposes a Jellyfin-style library for Infuse and VidHub
 - Resolves playback through direct providers such as Torrentio and Debridio
 - Verifies ambiguous audio with `ffprobe` when needed
@@ -98,6 +98,7 @@ kubectl apply -f deploy/kubernetes/fetcherr.yaml
 | Variable | Required | Description |
 | --- | --- | --- |
 | `SERVER_URL` | Yes | External base URL used for playback redirects |
+| `MDBLIST_LISTS` | No | Optional comma- or newline-separated public MDBList URLs. Can also be configured in Settings. |
 
 ## Tips
 

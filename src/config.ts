@@ -13,6 +13,13 @@ export function parseTraktLists(value: string): string[] {
   return value.split(',').map(s => s.trim()).filter(Boolean)
 }
 
+export function parseMdblistLists(value: string): string[] {
+  return value
+    .split(/[\r\n,]+/)
+    .map(s => s.trim())
+    .filter(Boolean)
+}
+
 export function parseBooleanSetting(value: string | undefined, fallback = false): boolean {
   if (value == null || value === '') return fallback
   const normalized = value.trim().toLowerCase()
@@ -55,6 +62,7 @@ export const config = {
   traktWatchlistShows:  parseBooleanSetting(process.env.TRAKT_WATCHLIST_SHOWS, true),
   traktWatchHistory: parseBooleanSetting(process.env.TRAKT_WATCH_HISTORY, false),
   traktCollections: parseBooleanSetting(process.env.TRAKT_COLLECTIONS, false),
+  mdblistLists: parseMdblistLists(process.env.MDBLIST_LISTS ?? ''),
   showAddDefaultMode: parseShowAddDefaultMode(process.env.SHOW_ADD_DEFAULT_MODE),
   movieReleaseMode: parseMovieReleaseMode(process.env.MOVIE_RELEASE_MODE),
   streamProviderUrls: parseStreamProviderUrls(process.env.STREAM_PROVIDER_URLS ?? ''),

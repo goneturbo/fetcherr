@@ -7,7 +7,7 @@ import {
   addSourceItem, getEffectiveShowMode, getMovieByTmdbId, getShowByTmdbId, getSetting,
   getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate, getMovieReleaseModeForLibrary,
   getManualMovieAvailabilityOverride, materializeMovieReleaseModeForExistingLibrary,
-  hasAnySourceItem, hasSourceItem, pruneOrphanedMovies, pruneOrphanedShows,
+  hasAnySourceItem, hasSourceItem, listSourceKeysForItem, pruneOrphanedMovies, pruneOrphanedShows,
   removeSourceItem, setManualMovieAvailabilityOverride,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
   canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, updateUser,
@@ -19,9 +19,10 @@ import {
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
-import { normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
+import { normalizeSootioUrl, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseTraktLists } from '../config.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
+import { cleanupRemovedMdblistListSources, normalizeMdblistListUrls } from '../mdblist.js'
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
@@ -106,6 +107,25 @@ function tmdbToShowGuid(tmdbId: number) {
 
 function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
+}
+
+function titleFromSourcePath(path: string): string {
+  const parts = path.split('/').filter(Boolean)
+  return decodeURIComponent(parts[parts.length - 1] ?? path)
+    .replace(/[-_]+/g, ' ')
+    .replace(/\b\w/g, letter => letter.toUpperCase())
+}
+
+function sourceLabel(sourceKey: string): string {
+  if (sourceKey === 'manual:ui') return 'Manual'
+  if (sourceKey === 'trakt:watchlist:movies' || sourceKey === 'trakt:watchlist:shows') return 'Trakt Watchlist'
+  if (sourceKey.startsWith('trakt:list:')) return `Trakt: ${titleFromSourcePath(sourceKey.slice('trakt:list:'.length))}`
+  if (sourceKey.startsWith('mdblist:list:')) return `MDBList: ${titleFromSourcePath(sourceKey.slice('mdblist:list:'.length))}`
+  return sourceKey
+}
+
+function sourceLabelsForItem(mediaType: 'movie' | 'show', tmdbId: number): string[] {
+  return listSourceKeysForItem(mediaType, tmdbId).map(sourceLabel)
 }
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
@@ -417,6 +437,7 @@ export async function uiRoutes(app: FastifyInstance) {
         imdbId: movie.imdbId,
         inLibrary: hasAnySourceItem('movie', movie.tmdbId),
         manualAdded: hasSourceItem('manual:ui', 'movie', movie.tmdbId),
+        sourceLabels: sourceLabelsForItem('movie', movie.tmdbId),
         visibleToInfuse: isAvailable,
         libraryStatusLabel: isAvailable
           ? (releaseGateOverridden && !isMovieAvailable(movie) ? 'In Library via Override' : 'In Library')
@@ -455,6 +476,7 @@ export async function uiRoutes(app: FastifyInstance) {
       imdbId: show.imdbId,
       inLibrary: hasAnySourceItem('show', show.tmdbId),
       manualAdded: hasSourceItem('manual:ui', 'show', show.tmdbId),
+      sourceLabels: sourceLabelsForItem('show', show.tmdbId),
       visibleToInfuse,
       libraryStatusLabel: visibleToInfuse ? 'In Library' : 'Pending First Episode',
       nextEpisodeAirDate: nextEpisode?.airDate || null,
@@ -494,6 +516,7 @@ export async function uiRoutes(app: FastifyInstance) {
       traktWatchlistShows: config.traktWatchlistShows,
       traktWatchHistory: config.traktWatchHistory,
       traktCollections: config.traktCollections,
+      mdblistLists: config.mdblistLists.join('\n'),
       showAddDefaultMode: config.showAddDefaultMode,
       movieReleaseMode: config.movieReleaseMode,
       traktLists:        config.traktLists,
@@ -603,6 +626,25 @@ export async function uiRoutes(app: FastifyInstance) {
       setSetting('traktLists', lists.join(','))
       config.traktLists = lists
       cleanupRemovedTraktListSources(lists)
+    }
+    if (Array.isArray(body.mdblistLists)) {
+      try {
+        const lists = normalizeMdblistListUrls(body.mdblistLists.map(v => String(v)))
+        setSetting('mdblistLists', lists.join('\n'))
+        config.mdblistLists = lists
+        cleanupRemovedMdblistListSources(lists)
+      } catch (err) {
+        return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
+      }
+    } else if (typeof body.mdblistLists === 'string') {
+      try {
+        const lists = normalizeMdblistListUrls(parseMdblistLists(body.mdblistLists))
+        setSetting('mdblistLists', lists.join('\n'))
+        config.mdblistLists = lists
+        cleanupRemovedMdblistListSources(lists)
+      } catch (err) {
+        return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
+      }
     }
     return { ok: true }
   })

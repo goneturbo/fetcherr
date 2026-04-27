@@ -49,7 +49,7 @@
         <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
         </svg>
-        Sync Trakt
+        Sync Library
       </button>
     </div>
   </div>
@@ -436,7 +436,7 @@
       setTimeout(() => { msg.style.display = 'none' }, 5000)
     } finally {
       btn.disabled = false
-      btn.innerHTML = `<svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Sync Trakt`
+      btn.innerHTML = `<svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/></svg> Sync Library`
     }
   }
 
@@ -535,6 +535,13 @@
     const manualPill = item.manualAdded
       ? '<span class="pill blue">Manually Added</span>'
       : ''
+    const sourceLabels = Array.isArray(item.sourceLabels) ? item.sourceLabels : []
+    const sourceSummary = sourceLabels.length ? sourceLabels.map(escapeHtml).join(', ') : '—'
+    const sourcePills = [...new Set(sourceLabels
+      .map(label => label.startsWith('MDBList:') ? 'MDBList' : label.startsWith('Trakt') ? 'Trakt' : label)
+      .filter(label => label && label !== 'Manual'))]
+      .map(label => `<span class="pill">${escapeHtml(label)}</span>`)
+      .join('')
     const imdbLink = item.imdbId
       ? `<a class="btn" href="https://www.imdb.com/title/${item.imdbId}" target="_blank" rel="noreferrer">IMDb ↗</a>`
       : ''
@@ -594,15 +601,16 @@
           <div class="detail-label">Visible to Infuse</div>
           <div class="detail-value">${item.visibleToInfuse ? 'Yes' : 'No'}</div>
         </div>
+        ${item.inLibrary ? `
+          <div class="detail-row">
+            <div class="detail-label">Library sources</div>
+            <div class="detail-value">${sourceSummary}</div>
+          </div>
+        ` : ''}
         ${item.inLibrary && isShow ? `
           <div class="detail-row">
             <div class="detail-label">Series mode</div>
             <div class="detail-value">${escapeHtml(libraryModeValue)}</div>
-          </div>
-        ` : item.manualAdded ? `
-          <div class="detail-row">
-            <div class="detail-label">Library source</div>
-            <div class="detail-value">Manual Movie</div>
           </div>
         ` : ''}
         ${isShow ? `
@@ -706,6 +714,7 @@
           <div class="detail-meta">
             ${libraryPill}
             ${manualPill}
+            ${sourcePills}
           </div>
           <p class="detail-overview">${escapeHtml(item.overview || 'No description available yet.')}</p>
         </div>
