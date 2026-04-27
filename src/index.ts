@@ -107,6 +107,7 @@ function requestPlaybackUser(headers: Record<string, string | string[] | undefin
 function pad2(n: number) { return n.toString().padStart(2, '0') }
 
 const FAILED_PLAY_TTL_MS = 3 * 60 * 1000
+const MAX_RD_TRANSIENT_FAILURES = 3
 type FailedPlayCacheEntry = { expiresAt: number; reason: string }
 const failedPlayCache = new Map<string, FailedPlayCacheEntry>()
 
@@ -129,6 +130,10 @@ function cacheFailedPlay(cacheKey: string, reason: string) {
 
 function clearFailedPlay(cacheKey: string) {
   failedPlayCache.delete(cacheKey)
+}
+
+function isNonRetryableRdError(err: ProviderUnavailableError): boolean {
+  return err.status === 401 || err.status === 403 || err.status === 429
 }
 
 const VIDEO_EXTS = new Set(['mkv','mp4','avi','mov','m4v','ts','m2ts','wmv','flv','webm'])
@@ -217,11 +222,10 @@ async function resolveAndRedirect(
   fileHint?: string,
 ) {
   if (config.rdApiKey) {
-    const failedProviderOrders = new Set<number>()
+    let rdTransientFailures = 0
     app.log.info(`play: trying ${streams.length} ranked candidate${streams.length === 1 ? '' : 's'} for ${label}`)
     for (const stream of streams) {
       const providerOrder = stream.providerOrder ?? 999
-      if (failedProviderOrders.has(providerOrder)) continue
 
       const hash = extractHashFromStream(stream)
       const hashLabel = hash ? hash.slice(0, 8) : 'direct-url'
@@ -276,9 +280,20 @@ async function resolveAndRedirect(
           continue
         }
         if (err instanceof ProviderUnavailableError) {
-          app.log.warn(`play: RD provider error for providerOrder=${providerOrder} hash ${hashLabel}…: ${err}; skipping remaining provider candidates`)
-          failedProviderOrders.add(providerOrder)
-          continue
+          rdTransientFailures += 1
+          const retryable = !isNonRetryableRdError(err) && rdTransientFailures < MAX_RD_TRANSIENT_FAILURES
+          if (retryable) {
+            app.log.warn(
+              `play: RD error for providerOrder=${providerOrder} hash ${hashLabel}…: ${err}; ` +
+              `trying next candidate (${rdTransientFailures}/${MAX_RD_TRANSIENT_FAILURES})`
+            )
+            continue
+          }
+          app.log.warn(
+            `play: RD unavailable for ${label} after ${rdTransientFailures} failure${rdTransientFailures === 1 ? '' : 's'}: ${err}; ` +
+            'not caching playback miss'
+          )
+          return reply.code(503).send({ error: 'Real-Debrid unavailable', message: 'Real-Debrid Unavailable' })
         }
         app.log.warn(`play: hash ${hashLabel}… failed: ${err}; trying next`)
       }

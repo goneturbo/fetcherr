@@ -24,18 +24,31 @@ async function rdFetch(
       signal: AbortSignal.timeout(15_000),
     })
   } catch (err) {
-    throw new ProviderUnavailableError(`RD ${method} ${path} failed: ${String(err)}`)
+    throw new ProviderUnavailableError(`RD ${method} ${path} failed: ${formatFetchError(err)}`)
   }
   if (res.status === 204) return null
   const text = await res.text()
   if (!res.ok) {
     const message = `RD ${method} ${path} → ${res.status}: ${text}`
     if (res.status === 401 || res.status === 403 || res.status === 429 || res.status >= 500) {
-      throw new ProviderUnavailableError(message)
+      throw new ProviderUnavailableError(message, res.status)
     }
     throw new Error(message)
   }
   return text ? JSON.parse(text) : null
+}
+
+function formatFetchError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err)
+  const cause = err.cause
+  if (cause instanceof Error && cause.message) {
+    const causeWithCode = cause as Error & { code?: unknown }
+    const code = typeof causeWithCode.code === 'string'
+      ? ` ${causeWithCode.code}`
+      : ''
+    return `${err.name}: ${err.message}; cause${code}: ${cause.message}`
+  }
+  return `${err.name}: ${err.message}`
 }
 
 // ── Typed shapes ───────────────────────────────────────────────────────────────
@@ -139,7 +152,7 @@ export class NotCachedError extends Error {
 
 export class ProviderUnavailableError extends Error {
   readonly code = 'PROVIDER_UNAVAILABLE'
-  constructor(msg: string) { super(msg) }
+  constructor(msg: string, readonly status?: number) { super(msg) }
 }
 
 // ── High-level helpers ─────────────────────────────────────────────────────────
