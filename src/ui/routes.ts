@@ -25,6 +25,62 @@ import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js
 
 const __dir = dirname(fileURLToPath(import.meta.url))
 
+type AppBuildInfo = {
+  version: string
+  label: string
+  title: string
+  commit: string
+  imageTag: string
+  buildDate: string
+}
+
+function loadPackageVersion(): string {
+  try {
+    const pkg = JSON.parse(readFileSync(join(__dir, '..', '..', 'package.json'), 'utf8')) as { version?: unknown }
+    return typeof pkg.version === 'string' && pkg.version ? pkg.version : 'dev'
+  } catch {
+    return 'dev'
+  }
+}
+
+function cleanVersionPart(value: string | undefined): string {
+  return value?.trim() ?? ''
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;')
+}
+
+function loadAppBuildInfo(): AppBuildInfo {
+  const version = cleanVersionPart(process.env.FETCHERR_VERSION) || loadPackageVersion()
+  const commit = cleanVersionPart(process.env.FETCHERR_COMMIT)
+  const imageTag = cleanVersionPart(process.env.FETCHERR_IMAGE_TAG)
+  const buildDate = cleanVersionPart(process.env.FETCHERR_BUILD_DATE)
+  const shortCommit = commit ? commit.slice(0, 7) : ''
+  const label = `v${version}${shortCommit ? `+${shortCommit}` : ''}`
+  const details = [
+    `Fetcherr ${label}`,
+    imageTag ? `Image: ${imageTag}` : '',
+    commit ? `Commit: ${commit}` : '',
+    buildDate ? `Built: ${buildDate}` : '',
+  ].filter(Boolean)
+  return {
+    version,
+    label,
+    title: details.join('\n'),
+    commit,
+    imageTag,
+    buildDate,
+  }
+}
+
+const APP_BUILD = loadAppBuildInfo()
+
 const STATIC_MIME: Record<string, string> = {
   svg: 'image/svg+xml',
   png: 'image/png',
@@ -37,6 +93,8 @@ const STATIC_MIME: Record<string, string> = {
 
 function html(file: string) {
   return readFileSync(join(__dir, file), 'utf8')
+    .replaceAll('__APP_VERSION_LABEL__', escapeHtml(APP_BUILD.label))
+    .replaceAll('__APP_VERSION_TITLE__', escapeHtml(APP_BUILD.title))
 }
 
 function tmdbToMovieGuid(tmdbId: number) {
@@ -172,6 +230,8 @@ export async function uiRoutes(app: FastifyInstance) {
     reply.header('Set-Cookie', clearSessionCookie(req.headers as never))
     return { ok: true }
   })
+
+  app.get('/ui/version', async () => APP_BUILD)
 
   // Auth status — tells the client whether auth is enabled
   app.get('/ui/auth/check', async (req, reply) => {

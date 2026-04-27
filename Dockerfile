@@ -17,6 +17,16 @@ WORKDIR /app
 
 RUN apk add --no-cache ffmpeg
 
+ARG FETCHERR_VERSION=""
+ARG FETCHERR_COMMIT=""
+ARG FETCHERR_IMAGE_TAG=""
+ARG FETCHERR_BUILD_DATE=""
+
+ENV FETCHERR_VERSION=$FETCHERR_VERSION \
+    FETCHERR_COMMIT=$FETCHERR_COMMIT \
+    FETCHERR_IMAGE_TAG=$FETCHERR_IMAGE_TAG \
+    FETCHERR_BUILD_DATE=$FETCHERR_BUILD_DATE
+
 COPY package*.json ./
 COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
