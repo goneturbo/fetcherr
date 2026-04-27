@@ -6,6 +6,10 @@ It acts as a lightweight bridge between list sources, Real-Debrid, provider addo
 
 The goal is simple: open Infuse, browse your library, and press play. Fetcherr handles stream discovery, prefers cached Real-Debrid results, and automatically picks the best match instead of making you choose from a stream list every time.
 
+## Responsible Use
+
+The developer of Fetcherr does not condone, encourage, or support using Fetcherr with illegally acquired content. Fetcherr should only be used with media you own, have lawfully obtained, or are otherwise authorized to access.
+
 ## What It Does
 
 - Syncs movies and shows from optional Trakt watchlists, selected Trakt lists, and MDBList list URLs
@@ -99,6 +103,7 @@ kubectl apply -f deploy/kubernetes/fetcherr.yaml
 | --- | --- | --- |
 | `SERVER_URL` | Yes | External base URL used for playback redirects |
 | `MDBLIST_LISTS` | No | Optional comma- or newline-separated public MDBList URLs. Can also be configured in Settings. |
+| `MDBLIST_MAX_ITEMS` | No | Maximum public MDBList items to import per list. Defaults to `1000`. |
 
 ## Tips
 
@@ -134,3 +139,31 @@ Both.
 Your add-on settings still matter because they control which streams each provider returns. Fetcherr then ranks those returned streams using its own playback criteria, such as Real-Debrid cache availability, language preference, match quality, and format compatibility.
 
 If you configure multiple provider URLs, Fetcherr also respects their order. Earlier providers are tried first, and Fetcherr then picks the best candidate within that provider's results before moving on to the next one.
+
+### How do I connect Infuse?
+
+Add Fetcherr as a Jellyfin server in Infuse using your Fetcherr server URL and a Fetcherr user account. Use the same base URL you open in the browser, for example:
+
+```text
+http://YOUR_SERVER:9990
+```
+
+When connecting Infuse to Fetcherr, use:
+
+- `Library Mode`: on
+- `Auto Scan`: on
+- `Install InfuseSync Plugin`: on
+
+Those settings let Infuse treat Fetcherr like a library source and keep its local view updated as Fetcherr syncs lists and availability.
+
+### How do I connect VidHub?
+
+Add Fetcherr as a Jellyfin-compatible server in VidHub using your Fetcherr server URL and a Fetcherr user account.
+
+If VidHub asks for a server type, choose Jellyfin when available. If it expects an Emby-compatible endpoint, use the same server with the `/emby` prefix:
+
+```text
+http://YOUR_SERVER:9990/emby
+```
+
+After connecting, trigger a library scan in VidHub if the library does not appear immediately.

@@ -195,8 +195,17 @@ export async function syncMdblistList(listUrl: string): Promise<MdblistListSyncR
   }
 
   console.log(`mdblist: syncing ${normalizedUrl}`)
-  const entries = await fetchMdblistEntries(normalizedUrl)
-  console.log(`mdblist: ${normalizedUrl} has ${entries.length} public TMDB links`)
+  const allEntries = await fetchMdblistEntries(normalizedUrl)
+  const maxItems = Math.max(1, config.mdblistMaxItems)
+  const entries = allEntries.slice(0, maxItems)
+  if (allEntries.length > entries.length) {
+    console.warn(
+      `mdblist: ${normalizedUrl} has ${allEntries.length} public TMDB links; importing first ${entries.length}. ` +
+      'Set MDBLIST_MAX_ITEMS to adjust this cap.'
+    )
+  } else {
+    console.log(`mdblist: ${normalizedUrl} has ${entries.length} public TMDB links`)
+  }
 
   let movies = 0
   let shows = 0

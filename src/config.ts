@@ -44,6 +44,12 @@ export function parseMovieReleaseMode(value: string | undefined): MovieReleaseMo
   return value === 'theatrical' ? 'theatrical' : 'digital'
 }
 
+export function parsePositiveIntegerSetting(value: string | undefined, fallback: number): number {
+  if (value == null || value.trim() === '') return fallback
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
+}
+
 export const config = {
   port:       parseInt(process.env.PORT ?? '9990'),
   host:       process.env.HOST ?? '0.0.0.0',
@@ -63,6 +69,7 @@ export const config = {
   traktWatchHistory: parseBooleanSetting(process.env.TRAKT_WATCH_HISTORY, false),
   traktCollections: parseBooleanSetting(process.env.TRAKT_COLLECTIONS, false),
   mdblistLists: parseMdblistLists(process.env.MDBLIST_LISTS ?? ''),
+  mdblistMaxItems: parsePositiveIntegerSetting(process.env.MDBLIST_MAX_ITEMS, 1000),
   showAddDefaultMode: parseShowAddDefaultMode(process.env.SHOW_ADD_DEFAULT_MODE),
   movieReleaseMode: parseMovieReleaseMode(process.env.MOVIE_RELEASE_MODE),
   streamProviderUrls: parseStreamProviderUrls(process.env.STREAM_PROVIDER_URLS ?? ''),
