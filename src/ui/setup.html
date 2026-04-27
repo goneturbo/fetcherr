@@ -5,86 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Fetcherr · Setup</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
-  <style>
-    :root {
-      --bg: #0b0d12; --surface: #12151d; --surface-raised: #181c26;
-      --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.12);
-      --text: #eef2ff; --muted: #8892a4;
-      --accent: #9d6ef0; --accent-dim: rgba(157,110,240,.15); --accent-border: rgba(157,110,240,.35);
-      --green: #4ade80; --green-dim: rgba(74,222,128,.12); --green-border: rgba(74,222,128,.3);
-      --amber: #fbbf24; --amber-dim: rgba(251,191,36,.1);   --amber-border: rgba(251,191,36,.28);
-      --red: #f87171;   --red-dim: rgba(248,113,113,.1);    --red-border: rgba(248,113,113,.28);
-      --blue: #60a5fa;  --blue-dim: rgba(96,165,250,.1);    --blue-border: rgba(96,165,250,.28);
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; }
-    .shell {
-      width: min(1200px, calc(100vw - 40px));
-      max-width: 1200px;
-      margin: 0 auto;
-      padding: 20px 20px 60px;
-    }
-
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 28px; }
-    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); }
-    .brand-icon { width: 30px; height: 30px; border-radius: 8px; background: var(--accent-dim); border: 1px solid var(--accent-border); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .brand-icon svg { width: 16px; height: 16px; color: #c4b5fd; }
-    .brand-name { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
-    .brand-tag { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-    .topbar-right { display: flex; gap: 8px; }
-    .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; text-decoration: none; transition: color .15s, background .15s; }
-    .icon-btn:hover { color: var(--text); background: var(--surface-raised); }
-
-    .page-header { margin-bottom: 24px; }
-    .page-header h1 { margin: 0 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
-    .page-header p { margin: 0; color: var(--muted); font-size: 14px; }
-
-    .section { background: var(--surface); border: 1px solid var(--border); border-radius: 16px; padding: 20px; margin-bottom: 16px; }
-    .section-title { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
-
-    .field { margin-bottom: 14px; }
-    .field:last-child { margin-bottom: 0; }
-    label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; }
-
-    .status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,.02); margin-top: 10px; }
-    .status-meta { font-size: 13px; color: var(--muted); min-width: 0; }
-    .status-meta strong { display: block; color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
-
-    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; border: 1px solid var(--border); color: var(--muted); background: transparent; }
-    .pill.ok     { border-color: var(--green-border); background: var(--green-dim); color: #bbf7d0; }
-    .pill.pending{ border-color: var(--amber-border); background: var(--amber-dim); color: #fef3c7; }
-    .pill.err    { border-color: var(--red-border);   background: var(--red-dim);   color: #fecaca; }
-    .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .8; flex-shrink: 0; }
-
-    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text); font-size: 14px; font-family: inherit; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
-    .btn:hover { background: rgba(255,255,255,.06); }
-    .btn:disabled { opacity: .45; cursor: not-allowed; }
-    .btn.primary { background: var(--accent-dim); border-color: var(--accent-border); color: #d8c6ff; }
-    .btn.primary:hover { background: rgba(157,110,240,.22); }
-
-    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
-
-    .callout { margin-top: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,.03); color: var(--muted); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
-    .callout a { color: #c4b5fd; }
-    .callout.success { color: #bbf7d0; border-color: var(--green-border); background: var(--green-dim); }
-    .callout.error   { color: #fecaca; border-color: var(--red-border);   background: var(--red-dim); }
-    .callout.info    { color: #bfdbfe; border-color: var(--blue-border);  background: var(--blue-dim); }
-
-    .config-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
-    .config-row:last-child { border-bottom: none; padding-bottom: 0; }
-    .config-key { color: var(--muted); }
-    .config-val { color: var(--text); font-weight: 500; font-family: ui-monospace, monospace; font-size: 12px; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: right; }
-    .config-val.masked { opacity: .6; }
-  </style>
+  <link rel="stylesheet" href="/ui/static/app.css">
 </head>
-<body>
+<body class="app-shell-page setup-page">
 <div class="shell">
   <nav class="topbar">
     <a href="/ui/dashboard" class="brand">
       <div class="brand-icon">
-        <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:24px;height:24px;">
+        <img src="/ui/static/fetcherr.svg" alt="Fetcherr">
       </div>
-      <div class="brand-name">Fetcherr</div>
+      <div>
+        <div class="brand-name">Fetcherr</div>
+        <div class="brand-tag">Media Ops</div>
+      </div>
     </a>
     <div class="topbar-right">
       <a class="icon-btn" id="adminLogsBtn" href="/ui/logs" title="Logs" style="display:none">
@@ -114,7 +47,7 @@
   <!-- Trakt -->
   <div class="section">
     <div class="section-title">
-      <img src="/ui/static/trakt.png" alt="Trakt" style="width:18px;height:18px;border-radius:4px;vertical-align:middle;">
+      <img src="/ui/static/trakt.png" alt="Trakt" class="section-icon">
       Trakt
     </div>
     <div class="status-row">
@@ -135,14 +68,14 @@
   <div class="section">
     <div class="section-title">Synced Sources</div>
     <div id="traktListsRows">
-      <div style="font-size:13px; color:var(--muted)">Loading…</div>
+      <div class="field-note">Loading…</div>
     </div>
   </div>
 
   <!-- Active config (read-only, from env) -->
   <div class="section">
     <div class="section-title">Configuration</div>
-    <div class="field-note" style="font-size:12px; color:var(--muted); margin-bottom:12px;">These values are read-only here and come from environment variables.</div>
+    <div class="field-note config-note">These values are read-only here and come from environment variables.</div>
     <div id="configRows"></div>
   </div>
 </div>

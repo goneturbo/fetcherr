@@ -5,361 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr · Settings</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
-  <style>
-    :root {
-      --bg: #0b0d12; --surface: #12151d; --surface-raised: #181c26;
-      --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.12);
-      --text: #eef2ff; --muted: #8892a4;
-      --accent: #9d6ef0; --accent-dim: rgba(157,110,240,.15); --accent-border: rgba(157,110,240,.35);
-      --green: #4ade80; --green-dim: rgba(74,222,128,.12); --green-border: rgba(74,222,128,.3);
-      --amber: #fbbf24; --amber-dim: rgba(251,191,36,.1); --amber-border: rgba(251,191,36,.28);
-      --red: #f87171; --red-dim: rgba(248,113,113,.1); --red-border: rgba(248,113,113,.28);
-      --blue: #60a5fa; --blue-dim: rgba(96,165,250,.1); --blue-border: rgba(96,165,250,.28);
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body { margin: 0; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); min-height: 100dvh; }
-    .shell {
-      width: min(1200px, calc(100vw - 40px));
-      max-width: 1200px;
-      margin: 0 auto;
-      padding:
-        max(20px, calc(env(safe-area-inset-top) + 12px))
-        20px
-        calc(96px + env(safe-area-inset-bottom));
-    }
-
-    /* Topbar */
-    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 14px; border-radius: 16px; border: 1px solid var(--border); background: var(--surface); margin-bottom: 28px; }
-    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); }
-    .brand-icon { width: 30px; height: 30px; border-radius: 8px; background: var(--accent-dim); border: 1px solid var(--accent-border); display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-    .brand-icon svg { width: 16px; height: 16px; color: #c4b5fd; }
-    .brand-name { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
-    .brand-tag { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-    .topbar-right { display: flex; gap: 8px; align-items: center; }
-    .icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border); background: transparent; color: var(--muted); cursor: pointer; text-decoration: none; transition: color .15s, background .15s; }
-    .icon-btn:hover { color: var(--text); background: var(--surface-raised); }
-
-    /* Page header */
-    .page-header { margin-bottom: 24px; }
-    .page-header h1 { margin: 0 0 4px; font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
-    .page-header p { margin: 0; color: var(--muted); font-size: 14px; }
-
-    /* Section */
-    .section {
-      position: relative;
-      overflow: hidden;
-      background:
-        linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)),
-        var(--surface);
-      border: 1px solid var(--border-strong);
-      border-radius: 18px;
-      padding: 22px;
-      margin-bottom: 18px;
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.03),
-        0 10px 30px rgba(0,0,0,.14);
-    }
-    .section::before {
-      content: "";
-      position: absolute;
-      left: 0; right: 0; top: 0;
-      height: 3px;
-      border-radius: 18px 18px 0 0;
-      background: linear-gradient(90deg, rgba(157,110,240,.75), rgba(96,165,250,.45));
-      opacity: .65;
-    }
-    .section-title { font-size: 13px; font-weight: 600; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin: 0 0 16px; display: flex; align-items: center; gap: 8px; }
-    .optional-tag { font-size: 10px; font-weight: 500; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 6px; }
-
-    /* Fields */
-    .field { margin-bottom: 14px; }
-    .field:last-child { margin-bottom: 0; }
-    .field-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    @media (max-width: 520px) { .field-grid { grid-template-columns: 1fr; } }
-    label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 500; color: var(--muted); letter-spacing: .03em; text-transform: uppercase; }
-    input, select, textarea { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text); font-size: 14px; font-family: inherit; outline: none; transition: border-color .15s; text-overflow: ellipsis; }
-    input:focus, select:focus, textarea:focus { border-color: var(--accent-border); }
-    input:-webkit-autofill, input:-webkit-autofill:hover, input:-webkit-autofill:focus { -webkit-box-shadow: 0 0 0 1000px var(--surface-raised) inset; -webkit-text-fill-color: var(--text); caret-color: var(--text); transition: background-color 5000s ease-in-out 0s; }
-    textarea { resize: vertical; min-height: 116px; max-width: 100%; line-height: 1.45; }
-    .field-note { margin-top: 6px; font-size: 12px; color: var(--muted); }
-    .input-row { display: flex; gap: 8px; }
-    .input-row input { flex: 1; }
-    .provider-list { display: flex; flex-direction: column; gap: 8px; }
-    .provider-row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
-    .provider-row .btn { padding: 10px 12px; }
-    .provider-actions { margin-top: 10px; }
-
-    /* Buttons */
-    .btn { display: inline-flex; align-items: center; gap: 6px; padding: 10px 16px; border-radius: 10px; border: 1px solid var(--border); background: var(--surface-raised); color: var(--text); font-size: 14px; font-family: inherit; font-weight: 500; cursor: pointer; white-space: nowrap; transition: background .15s, border-color .15s; }
-    .btn:hover { background: rgba(255,255,255,.06); }
-    .btn:disabled { opacity: .45; cursor: not-allowed; }
-    .btn-sm { padding: 7px 12px; font-size: 13px; }
-    .btn-primary { background: var(--accent-dim); border-color: var(--accent-border); color: #d8c6ff; }
-    .btn-primary:hover { background: rgba(157,110,240,.22); }
-    .btn-primary.saved { background: var(--green-dim); border-color: var(--green-border); color: #bbf7d0; }
-
-    /* Status row */
-    .status-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,.02); margin-top: 10px; }
-    .status-meta { font-size: 13px; color: var(--muted); min-width: 0; }
-    .status-meta strong { display: block; color: var(--text); font-size: 14px; font-weight: 600; margin-bottom: 2px; }
-    .status-meta .detail { font-size: 12px; color: var(--muted); }
-
-    /* Pill */
-    .pill { display: inline-flex; align-items: center; gap: 5px; padding: 5px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; white-space: nowrap; border: 1px solid var(--border); color: var(--muted); background: transparent; }
-    .pill.ok { border-color: var(--green-border); background: var(--green-dim); color: #bbf7d0; }
-    .pill.pending { border-color: var(--amber-border); background: var(--amber-dim); color: #fef3c7; }
-    .pill.err { border-color: var(--red-border); background: var(--red-dim); color: #fecaca; }
-    .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .8; flex-shrink: 0; }
-
-    /* Callout */
-    .callout { margin-top: 14px; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border); background: rgba(255,255,255,.03); color: var(--muted); font-size: 13px; line-height: 1.6; white-space: pre-wrap; }
-    .callout a { color: #c4b5fd; }
-    .callout.success { color: #bbf7d0; border-color: var(--green-border); background: var(--green-dim); }
-    .callout.error { color: #fecaca; border-color: var(--red-border); background: var(--red-dim); }
-    .callout.info { color: #bfdbfe; border-color: var(--blue-border); background: var(--blue-dim); }
-    .checklist { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
-    .checklist.scrollable {
-      max-height: 420px;
-      overflow: auto;
-      padding-right: 2px;
-    }
-    .check-item {
-      display: flex; align-items: center; gap: 10px; padding: 10px 12px;
-      border: 1px solid var(--border); border-radius: 10px; background: rgba(255,255,255,.02);
-      margin-bottom: 0; color: inherit; letter-spacing: 0; text-transform: none;
-    }
-    .user-table-wrap {
-      margin-top: 14px;
-      border: 1px solid var(--border-strong);
-      border-radius: 14px;
-      overflow: hidden;
-      background:
-        linear-gradient(180deg, rgba(157,110,240,.05), rgba(255,255,255,.015)),
-        rgba(255,255,255,.02);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.03);
-    }
-    .user-table-scroll {
-      max-height: 420px;
-      overflow: auto;
-    }
-    .user-table {
-      width: 100%;
-      min-width: 820px;
-      border-collapse: collapse;
-    }
-    .user-table thead th {
-      position: sticky;
-      top: 0;
-      z-index: 1;
-      text-align: left;
-      padding: 12px 14px;
-      font-size: 11px;
-      font-weight: 600;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      color: var(--muted);
-      background: rgba(18,21,29,.97);
-      border-bottom: 1px solid var(--border-strong);
-      white-space: nowrap;
-    }
-    .user-table tbody td {
-      padding: 12px 14px;
-      border-bottom: 1px solid var(--border);
-      vertical-align: middle;
-    }
-    .user-table tbody tr:last-child td { border-bottom: none; }
-    .user-table tbody tr.deleted {
-      opacity: .45;
-      background: rgba(248,113,113,.06);
-    }
-    .user-table input,
-    .user-table select {
-      min-width: 0;
-      margin: 0;
-    }
-    .user-table .username-cell {
-      font-size: 14px;
-      font-weight: 600;
-      color: var(--text);
-    }
-    .user-table .user-id-cell {
-      font-size: 11px;
-      color: var(--muted);
-      margin-top: 3px;
-    }
-    .user-actions {
-      display: flex;
-      gap: 8px;
-      align-items: center;
-      white-space: nowrap;
-    }
-    .btn-danger {
-      color: #fecaca;
-      border-color: var(--red-border);
-      background: var(--red-dim);
-    }
-    .btn-danger:hover { background: rgba(248,113,113,.16); }
-    .password-state {
-      font-size: 12px;
-      color: var(--muted);
-    }
-    .password-state.pending { color: #bfdbfe; }
-    .btn-icon {
-      width: 38px;
-      height: 38px;
-      padding: 0;
-      justify-content: center;
-      font-size: 20px;
-      line-height: 1;
-    }
-    .empty-table {
-      padding: 18px 16px;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .check-item input[type="checkbox"] { width: 16px; height: 16px; margin: 0; flex: 0 0 auto; }
-    .check-meta { min-width: 0; }
-    .check-title { font-size: 14px; line-height: 1.3; color: var(--text); }
-    .check-slug { font-size: 12px; line-height: 1.45; color: var(--muted); margin-top: 2px; }
-
-    /* Button row */
-    .btn-row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-top: 14px; }
-
-    /* Save bar */
-    .save-bar { position: sticky; bottom: max(20px, calc(env(safe-area-inset-bottom) + 12px)); margin-top: 20px; padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border); background: rgba(18,21,29,.92); backdrop-filter: blur(12px); display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .save-bar p { margin: 0; font-size: 13px; color: var(--muted); }
-    .modal-backdrop {
-      position: fixed;
-      inset: 0;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      padding: 20px;
-      background: rgba(7, 9, 14, .72);
-      backdrop-filter: blur(6px);
-      z-index: 1000;
-    }
-    .modal-backdrop.open { display: flex; }
-    .modal {
-      width: min(520px, 100%);
-      border-radius: 18px;
-      border: 1px solid var(--border-strong);
-      background:
-        linear-gradient(180deg, rgba(255,255,255,.025), rgba(255,255,255,.01)),
-        var(--surface);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.03),
-        0 20px 50px rgba(0,0,0,.35);
-      padding: 20px;
-    }
-    .modal-head {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 12px;
-      margin-bottom: 16px;
-    }
-    .modal-title {
-      margin: 0 0 4px;
-      font-size: 18px;
-      font-weight: 700;
-      letter-spacing: -.02em;
-    }
-    .modal-sub {
-      margin: 0;
-      font-size: 13px;
-      color: var(--muted);
-    }
-    .modal-actions {
-      display: flex;
-      justify-content: flex-end;
-      gap: 10px;
-      margin-top: 18px;
-    }
-
-    @media (max-width: 640px) {
-      .shell {
-        width: 100%;
-        padding:
-          max(14px, calc(env(safe-area-inset-top) + 10px))
-          12px
-          calc(96px + env(safe-area-inset-bottom));
-      }
-      .topbar { border-radius: 14px; margin-bottom: 20px; }
-      .page-header { margin-bottom: 18px; }
-      .page-header h1 { font-size: 22px; }
-      .page-header p { font-size: 13px; line-height: 1.45; }
-      .section {
-        padding: 16px;
-        margin-bottom: 14px;
-        border-radius: 14px;
-      }
-      .section::before { border-radius: 14px 14px 0 0; }
-      .section-title { font-size: 12px; margin-bottom: 14px; }
-      label { font-size: 11px; }
-      input, select, textarea { font-size: 16px; }
-      textarea { min-height: 104px; }
-      .input-row { flex-direction: column; }
-      .input-row .btn,
-      .provider-row .btn,
-      .btn-row .btn { justify-content: center; min-height: 42px; }
-      .provider-row { grid-template-columns: 1fr; }
-      .status-row {
-        align-items: flex-start;
-        flex-wrap: wrap;
-        padding: 12px;
-      }
-      .pill { max-width: 100%; }
-      .checklist { gap: 8px; }
-      .check-item {
-        align-items: flex-start;
-        padding: 10px;
-      }
-      .check-item input[type="checkbox"] {
-        width: 20px;
-        height: 20px;
-        flex-basis: 20px;
-        margin-top: 1px;
-      }
-      .save-bar {
-        position: static;
-        margin-top: 16px;
-        padding: 12px;
-        border-radius: 14px;
-        flex-direction: column;
-        align-items: stretch;
-      }
-      .save-bar p { font-size: 13px; line-height: 1.45; }
-      .save-bar .btn { width: 100%; justify-content: center; }
-      .modal-backdrop {
-        align-items: flex-start;
-        padding:
-          max(14px, calc(env(safe-area-inset-top) + 10px))
-          12px
-          max(14px, calc(env(safe-area-inset-bottom) + 10px));
-      }
-      .modal {
-        max-height: calc(100dvh - 28px - env(safe-area-inset-top) - env(safe-area-inset-bottom));
-        overflow: auto;
-        padding: 16px;
-        border-radius: 16px;
-      }
-      .modal-actions { flex-direction: column-reverse; }
-      .modal-actions .btn { justify-content: center; }
-    }
-  </style>
+  <link rel="stylesheet" href="/ui/static/app.css">
 </head>
-<body>
+<body class="app-shell-page settings-page">
 <div class="shell">
 
   <!-- Topbar -->
   <nav class="topbar">
     <a href="/ui/dashboard" class="brand">
       <div class="brand-icon">
-        <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:24px;height:24px;">
+        <img src="/ui/static/fetcherr.svg" alt="Fetcherr">
       </div>
       <div>
         <div class="brand-name">Fetcherr</div>
+        <div class="brand-tag">Media Ops</div>
       </div>
     </a>
     <div class="topbar-right">
@@ -383,8 +42,20 @@
     <p>Configure credentials and library behavior. Changes apply immediately.</p>
   </div>
 
+  <div class="settings-layout">
+    <aside class="settings-nav" aria-label="Settings sections">
+      <a href="#streams">Streams</a>
+      <a href="#debrid">Debrid</a>
+      <a href="#metadata">Metadata</a>
+      <a href="#users">Users</a>
+      <a href="#server">Server</a>
+      <a href="#library-defaults">Library</a>
+      <a href="#trakt">Trakt</a>
+    </aside>
+    <main class="settings-content">
+
   <!-- AIOStreams -->
-  <div class="section">
+  <section class="section" id="streams">
     <div class="section-title">AIOStreams</div>
     <div class="field">
       <label for="sootioUrl">URL</label>
@@ -408,10 +79,10 @@
       </select>
       <div class="field-note">Use provider metadata to prefer or require likely-English results. Ambiguous matches can still be verified during playback.</div>
     </div>
-  </div>
+  </section>
 
   <!-- Real-Debrid -->
-  <div class="section">
+  <section class="section" id="debrid">
     <div class="section-title">Real-Debrid</div>
     <div class="field">
       <label for="rdApiKey">API Key</label>
@@ -427,29 +98,29 @@
       </div>
       <div id="rdStatus" class="pill">Not validated</div>
     </div>
-  </div>
+  </section>
 
   <!-- TMDB -->
-  <div class="section">
+  <section class="section" id="metadata">
     <div class="section-title">TMDB <span class="optional-tag">Required for Search</span></div>
     <div class="field">
       <label for="tmdbApiKey">API Key</label>
       <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key">
       <div class="field-note">Used for metadata, artwork, and Add to Library search.</div>
     </div>
-  </div>
+  </section>
 
   <!-- TVDB -->
-  <div class="section">
+  <section class="section">
     <div class="section-title">TVDB <span class="optional-tag">Optional</span></div>
     <div class="field">
       <label for="tvdbApiKey">API Key</label>
       <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key">
       <div class="field-note">Optional fallback for missing TV episode thumbnails when TMDB has no still image.</div>
     </div>
-  </div>
+  </section>
 
-  <div class="section">
+  <section class="section" id="users">
     <div class="section-title">Users</div>
     <div class="field-note">Admins can manage accounts and roles. Admin and user accounts are unrestricted. Kids accounts are limited to kid-safe ratings automatically. User edits save together when you click Save Settings.</div>
     <div class="user-table-wrap">
@@ -460,19 +131,19 @@
     <div class="btn-row">
       <button type="button" class="btn btn-icon" onclick="openNewUserModal()" title="Add User" aria-label="Add User">+</button>
     </div>
-  </div>
+  </section>
 
   <!-- Server -->
-  <div class="section">
+  <section class="section" id="server">
     <div class="section-title">Server</div>
     <div class="field">
       <label for="serverUrl">Server URL</label>
       <input id="serverUrl" type="url" placeholder="http://your-server:9990">
       <div class="field-note">The external URL clients should use for playback redirects.</div>
     </div>
-  </div>
+  </section>
 
-  <div class="section">
+  <section class="section" id="library-defaults">
     <div class="section-title">Library Defaults</div>
     <div class="field-grid field">
       <div>
@@ -492,10 +163,10 @@
         <div class="field-note">Controls when movies become visible to clients by default. Per-movie overrides can still add titles earlier.</div>
       </div>
     </div>
-  </div>
+  </section>
 
   <!-- Trakt -->
-  <div class="section">
+  <section class="section" id="trakt">
     <div class="section-title">Trakt</div>
     <div class="field-grid field">
       <div>
@@ -518,7 +189,7 @@
       <button class="btn" onclick="connectTrakt()">Connect Trakt</button>
     </div>
     <div id="traktCallout" class="callout info" style="display:none"></div>
-    <div class="checklist" style="margin-top:14px">
+    <div class="checklist trakt-options">
       <label class="check-item">
         <input id="traktWatchlistMovies" type="checkbox">
         <div class="check-meta">
@@ -548,16 +219,16 @@
         </div>
       </label>
     </div>
-    <div class="field-note" style="margin-top:14px">Choose which Trakt lists to sync in addition to any enabled watchlists.</div>
-    <div class="field-note" style="margin-top:8px">Trakt Smart Lists are not shown here yet because Trakt's public lists API does not currently expose them.</div>
-    <div class="btn-row" style="margin-top:12px">
+    <div class="field-note trakt-list-note">Choose which Trakt lists to sync in addition to any enabled watchlists.</div>
+    <div class="field-note trakt-list-note compact">Trakt Smart Lists are not shown here yet because Trakt's public lists API does not currently expose them.</div>
+    <div class="btn-row trakt-list-actions">
       <button type="button" class="btn btn-sm" onclick="selectAllTraktLists()">Select All</button>
       <button type="button" class="btn btn-sm" onclick="clearAllTraktLists()">Clear All</button>
     </div>
     <div id="traktLists" class="checklist scrollable">
       <div class="field-note">Connect Trakt to load your lists.</div>
     </div>
-  </div>
+  </section>
 
   <!-- Save bar -->
   <div class="save-bar">
@@ -565,7 +236,9 @@
     <button class="btn btn-primary" id="saveBtn" onclick="saveSettings()">Save Settings</button>
   </div>
 
-  <div id="out" class="callout" style="display:none;margin-top:14px"></div>
+  <div id="out" class="callout settings-output" style="display:none"></div>
+    </main>
+  </div>
 </div>
 
 <div class="modal-backdrop" id="userModalBackdrop" onclick="closeUserModal(event)">
@@ -738,7 +411,10 @@
   function renderUsers() {
     const el = document.getElementById('userList')
     if (!managedUsers.length) {
-      el.innerHTML = '<div class="empty-table">No users configured.</div>'
+      el.innerHTML = `<div class="empty-table">
+        <div class="empty-title">No users configured</div>
+        <div>Create an account to control access to the Fetcherr UI and client library.</div>
+      </div>`
       return
     }
     el.innerHTML = `
@@ -754,22 +430,22 @@
         <tbody>
           ${managedUsers.map(user => `
             <tr class="${user.deleted ? 'deleted' : ''}">
-              <td>
+              <td data-label="Username">
                 <div class="username-cell">${escapeHtml(user.username)}</div>
                 <div class="user-id-cell">${user.isNew ? 'New user' : escapeHtml(user.id)}</div>
               </td>
-              <td>
+              <td data-label="Role">
                 <select ${user.deleted ? 'disabled' : ''} onchange="updateUserRole('${user.id}', this.value)">
                   ${roleOptions(user.role)}
                 </select>
               </td>
-              <td>
+              <td data-label="Password">
                 <div class="user-actions">
                   <button type="button" class="btn btn-sm" ${user.deleted ? 'disabled' : ''} onclick="setUserPassword('${user.id}')">${user.pendingPassword ? 'Change Again' : 'Change Password'}</button>
                   <span class="password-state ${user.pendingPassword ? 'pending' : ''}">${user.pendingPassword ? 'Will update on save' : 'Unchanged'}</span>
                 </div>
               </td>
-              <td>
+              <td data-label="Actions">
                 <div class="user-actions">
                   <button type="button" class="btn btn-sm ${user.deleted ? '' : 'btn-danger'}" onclick="toggleDeleteUser('${user.id}')">${user.deleted ? 'Undo Delete' : 'Delete User'}</button>
                 </div>
@@ -830,6 +506,7 @@
     document.getElementById('modalRole').disabled = true
     document.getElementById('userModalConfirmBtn').textContent = 'Set Password'
     document.getElementById('userModalBackdrop').classList.add('open')
+    document.addEventListener('keydown', onUserModalKey)
     document.getElementById('modalPassword').focus()
   }
 
@@ -852,12 +529,18 @@
     document.getElementById('modalRole').disabled = false
     document.getElementById('userModalConfirmBtn').textContent = 'Add User'
     document.getElementById('userModalBackdrop').classList.add('open')
+    document.addEventListener('keydown', onUserModalKey)
     document.getElementById('modalUsername').focus()
   }
 
   function closeUserModal(event) {
     if (event && event.target !== event.currentTarget) return
     document.getElementById('userModalBackdrop').classList.remove('open')
+    document.removeEventListener('keydown', onUserModalKey)
+  }
+
+  function onUserModalKey(event) {
+    if (event.key === 'Escape') closeUserModal()
   }
 
   function confirmUserModal() {
@@ -1114,10 +797,26 @@
     }, 2500)
   }
 
+  function updateSettingsNav() {
+    const links = [...document.querySelectorAll('.settings-nav a')]
+    if (!links.length) return
+    let activeId = links[0].getAttribute('href')?.slice(1)
+    for (const link of links) {
+      const id = link.getAttribute('href')?.slice(1)
+      const section = id ? document.getElementById(id) : null
+      if (section && section.getBoundingClientRect().top <= 150) activeId = id
+    }
+    links.forEach(link => {
+      link.classList.toggle('active', link.getAttribute('href') === `#${activeId}`)
+    })
+  }
+
   renderProviderRows([''])
   loadSettings()
   loadTraktStatus()
   loadTraktLists()
+  updateSettingsNav()
+  window.addEventListener('scroll', updateSettingsNav, { passive: true })
 </script>
 </body>
 </html>

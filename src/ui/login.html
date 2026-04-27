@@ -5,130 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr · Sign in</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
-  <style>
-    :root {
-      --bg: #0b0d12; --surface: #12151d; --surface-raised: #181c26;
-      --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.12);
-      --text: #eef2ff; --muted: #8892a4;
-      --accent: #9d6ef0; --accent-dim: rgba(157,110,240,.15); --accent-border: rgba(157,110,240,.35);
-      --red: #f87171; --red-dim: rgba(248,113,113,.1); --red-border: rgba(248,113,113,.28);
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: var(--bg); color: var(--text);
-      min-height: 100vh; display: flex; align-items: center; justify-content: center;
-      padding: 20px; position: relative; overflow: hidden;
-    }
-
-    /* Background layers */
-    .bg-layer {
-      position: fixed; inset: 0; pointer-events: none; z-index: 0;
-      background:
-        radial-gradient(circle at 18% 12%, rgba(122,162,255,.10) 0%, transparent 38%),
-        radial-gradient(circle at 82% 10%, rgba(157,110,240,.10) 0%, transparent 34%),
-        linear-gradient(180deg, rgba(255,255,255,.025) 0%, transparent 100%);
-    }
-    .bg-grid {
-      position: fixed; inset: 0; pointer-events: none; z-index: 0;
-      background-image:
-        linear-gradient(rgba(157,110,240,.55) 1px, transparent 1px),
-        linear-gradient(90deg, rgba(96,165,250,.42) 1px, transparent 1px);
-      background-size: 32px 32px;
-      opacity: .1;
-      mask-image: radial-gradient(circle at center, rgba(0,0,0,.95) 0%, rgba(0,0,0,.6) 28%, rgba(0,0,0,.16) 58%, transparent 82%);
-      -webkit-mask-image: radial-gradient(circle at center, rgba(0,0,0,.95) 0%, rgba(0,0,0,.6) 28%, rgba(0,0,0,.16) 58%, transparent 82%);
-    }
-    .bg-blob-tl {
-      position: fixed; top: -6rem; left: -6rem; width: 18rem; height: 18rem;
-      border-radius: 50%; background: rgba(148,163,184,.05); filter: blur(48px);
-      pointer-events: none; z-index: 0;
-    }
-    .bg-blob-br {
-      position: fixed; bottom: -7rem; right: -5rem; width: 20rem; height: 20rem;
-      border-radius: 50%; background: rgba(96,165,250,.05); filter: blur(56px);
-      pointer-events: none; z-index: 0;
-    }
-    .bg-orb {
-      position: fixed; left: 50%; top: 50%;
-      width: 26rem; height: 26rem; margin-left: -13rem; margin-top: -13rem;
-      border-radius: 50%;
-      background:
-        radial-gradient(circle at 35% 35%, rgba(216,198,255,.28) 0%, rgba(157,110,240,.18) 26%, rgba(157,110,240,.08) 46%, transparent 68%);
-      filter: blur(54px);
-      pointer-events: none;
-      z-index: 0;
-      animation: orb-drift 18s ease-in-out infinite alternate;
-    }
-
-    @keyframes orb-drift {
-      0%   { transform: translate(-3.5rem, -2rem) scale(1); }
-      50%  { transform: translate(2.25rem, -3rem) scale(1.05); }
-      100% { transform: translate(3.5rem, 2.5rem) scale(.97); }
-    }
-
-    /* Card */
-    .card {
-      width: 100%; max-width: 384px; position: relative; z-index: 1;
-      background: rgba(255,255,255,.055);
-      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
-      border: 1px solid rgba(255,255,255,.10);
-      border-radius: 28px; padding: 36px 32px;
-      box-shadow: 0 24px 80px rgba(0,0,0,.45);
-    }
-
-    .logo-wrap { display: flex; justify-content: center; margin-bottom: 22px; }
-    .logo-circle {
-      width: 64px; height: 64px; border-radius: 50%;
-      background: rgba(255,255,255,.06); border: 1px solid rgba(255,255,255,.10);
-      display: flex; align-items: center; justify-content: center;
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
-    }
-    .logo-circle svg { width: 28px; height: 28px; color: #c4b5fd; }
-
-    h1 { margin: 0 0 6px; font-size: 21px; font-weight: 700; letter-spacing: -.02em; text-align: center; }
-    .sub { margin: 0 0 28px; font-size: 13px; color: var(--muted); text-align: center; }
-
-    .field { margin-bottom: 14px; }
-    label {
-      display: block; margin-bottom: 6px;
-      font-size: 12px; font-weight: 500; color: var(--muted);
-      letter-spacing: .03em; text-transform: uppercase;
-    }
-    input {
-      width: 100%; padding: 10px 12px; border-radius: 10px;
-      border: 1px solid rgba(255,255,255,.10); background: rgba(255,255,255,.04);
-      color: var(--text); font-size: 14px; font-family: inherit; outline: none;
-      transition: border-color .15s;
-    }
-    input:focus { border-color: var(--accent-border); }
-    input:-webkit-autofill,
-    input:-webkit-autofill:hover,
-    input:-webkit-autofill:focus {
-      -webkit-box-shadow: 0 0 0 1000px #1a1d28 inset;
-      -webkit-text-fill-color: var(--text);
-      caret-color: var(--text);
-      transition: background-color 5000s ease-in-out 0s;
-    }
-
-    .btn {
-      width: 100%; margin-top: 20px; padding: 11px 16px; border-radius: 10px;
-      border: 1px solid var(--accent-border); background: var(--accent-dim);
-      color: #d8c6ff; font-size: 14px; font-family: inherit; font-weight: 600;
-      cursor: pointer; transition: background .15s;
-    }
-    .btn:hover { background: rgba(157,110,240,.22); }
-    .btn:disabled { opacity: .5; cursor: not-allowed; }
-
-    .error {
-      margin-top: 14px; padding: 10px 12px; border-radius: 10px;
-      border: 1px solid var(--red-border); background: var(--red-dim);
-      color: #fecaca; font-size: 13px; display: none;
-    }
-  </style>
+  <link rel="stylesheet" href="/ui/static/app.css">
 </head>
-<body>
+<body class="auth-page login-page">
 <div class="bg-layer"></div>
 <div class="bg-grid"></div>
 <div class="bg-blob-tl"></div>
@@ -138,7 +17,7 @@
 <form class="card" onsubmit="doLogin(event)">
   <div class="logo-wrap">
     <div class="logo-circle">
-      <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:28px;height:28px;">
+      <img src="/ui/static/fetcherr.svg" alt="Fetcherr">
     </div>
   </div>
 

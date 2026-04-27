@@ -5,135 +5,20 @@
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>Fetcherr · Logs</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
-  <style>
-    :root {
-      --bg: #0b0d12; --surface: #12151d; --surface-raised: #181c26;
-      --border: rgba(255,255,255,.07); --border-strong: rgba(255,255,255,.12);
-      --text: #eef2ff; --muted: #8892a4;
-      --accent: #9d6ef0; --accent-dim: rgba(157,110,240,.15); --accent-border: rgba(157,110,240,.35);
-      --green: #4ade80; --green-dim: rgba(74,222,128,.12); --green-border: rgba(74,222,128,.3);
-      --amber: #fbbf24; --amber-dim: rgba(251,191,36,.1);   --amber-border: rgba(251,191,36,.28);
-      --red: #f87171;   --red-dim: rgba(248,113,113,.1);    --red-border: rgba(248,113,113,.28);
-      --blue: #60a5fa;  --blue-dim: rgba(96,165,250,.1);    --blue-border: rgba(96,165,250,.28);
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: var(--bg); color: var(--text); min-height: 100vh;
-    }
-    .shell { max-width: 1200px; margin: 0 auto; padding: 20px 20px 60px; }
-
-    /* ── Topbar ─────────────────────────────────────────── */
-    .topbar {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 12px; padding: 10px 14px; border-radius: 16px;
-      border: 1px solid var(--border); background: var(--surface); margin-bottom: 28px;
-    }
-    .brand {
-      display: flex; align-items: center; gap: 10px;
-      text-decoration: none; color: var(--text);
-    }
-    .brand img { width: 30px; height: 30px; border-radius: 7px; }
-    .brand-name { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
-    .brand-tag  { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-    .topbar-right { display: flex; gap: 8px; align-items: center; }
-    .icon-btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border);
-      background: transparent; color: var(--muted); cursor: pointer;
-      text-decoration: none; transition: color .15s, background .15s;
-    }
-    .icon-btn:hover { color: var(--text); background: var(--surface-raised); }
-
-    /* ── Page header ─────────────────────────────────────── */
-    .page-header {
-      display: flex; align-items: flex-end; justify-content: space-between;
-      gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
-    }
-    .page-title { font-size: 26px; font-weight: 700; margin: 0 0 4px; letter-spacing: -.02em; }
-    .page-sub   { font-size: 13px; color: var(--muted); margin: 0; }
-
-    /* ── Toolbar ─────────────────────────────────────────── */
-    .toolbar {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 10px; margin-bottom: 14px; flex-wrap: wrap;
-    }
-
-    /* ── Tabs ────────────────────────────────────────────── */
-    .tabs {
-      display: inline-flex; gap: 2px; padding: 3px;
-      border-radius: 12px; border: 1px solid var(--border); background: var(--surface);
-    }
-    .tab {
-      padding: 7px 14px; border-radius: 9px; border: none; background: transparent;
-      color: var(--muted); font-size: 13px; font-weight: 500; cursor: pointer;
-      transition: background .15s, color .15s; font-family: inherit;
-    }
-    .tab.active           { background: var(--surface-raised); color: var(--text); }
-    .tab.info.active      { color: var(--blue); }
-    .tab.warn.active      { color: var(--amber); }
-    .tab.error.active     { color: var(--red); }
-
-    /* ── Auto-refresh indicator ──────────────────────────── */
-    .refresh-status {
-      font-size: 12px; color: var(--muted);
-      display: flex; align-items: center; gap: 6px;
-    }
-    .refresh-dot {
-      width: 6px; height: 6px; border-radius: 50%;
-      background: var(--green); opacity: 0; transition: opacity .3s;
-    }
-    .refresh-dot.flash { opacity: 1; }
-
-    /* ── Log list ─────────────────────────────────────────── */
-    .log-list { display: grid; gap: 2px; }
-    .log-entry {
-      display: grid;
-      grid-template-columns: 160px 52px 1fr;
-      gap: 10px; align-items: baseline;
-      padding: 7px 12px; border-radius: 8px;
-      font-size: 13px; font-family: ui-monospace, "Cascadia Code", "Fira Code", monospace;
-      border: 1px solid transparent; transition: background .1s;
-    }
-    .log-entry:hover  { background: var(--surface); border-color: var(--border); }
-    .log-entry.error  { background: var(--red-dim);   border-color: var(--red-border); }
-    .log-entry.error:hover  { background: rgba(248,113,113,.15); }
-    .log-entry.warn   { background: var(--amber-dim); border-color: var(--amber-border); }
-    .log-entry.warn:hover   { background: rgba(251,191,36,.15); }
-    .log-time  { color: var(--muted); font-size: 11px; white-space: nowrap; }
-    .log-badge {
-      display: inline-flex; align-items: center; justify-content: center;
-      padding: 2px 6px; border-radius: 5px;
-      font-size: 10px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase;
-      white-space: nowrap;
-    }
-    .log-badge.info  { background: var(--blue-dim);   color: var(--blue);  border: 1px solid var(--blue-border); }
-    .log-badge.warn  { background: var(--amber-dim);  color: var(--amber); border: 1px solid var(--amber-border); }
-    .log-badge.error { background: var(--red-dim);    color: var(--red);   border: 1px solid var(--red-border); }
-    .log-msg   { color: var(--text); word-break: break-word; line-height: 1.5; }
-    .log-entry.error .log-msg { color: #fca5a5; }
-    .log-entry.warn  .log-msg { color: #fde68a; }
-
-    /* ── Empty state ─────────────────────────────────────── */
-    .empty {
-      padding: 40px 20px; text-align: center; color: var(--muted);
-      font-size: 14px; border: 1px dashed var(--border); border-radius: 16px;
-    }
-
-    @media (max-width: 600px) {
-      .log-entry { grid-template-columns: 1fr; gap: 4px; }
-      .log-time  { display: none; }
-    }
-  </style>
+  <link rel="stylesheet" href="/ui/static/app.css">
 </head>
-<body>
+<body class="app-shell-page logs-page">
 <div class="shell">
 
   <nav class="topbar">
     <a href="/ui/dashboard" class="brand">
-      <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:30px;height:30px;">
-      <div class="brand-name">Fetcherr</div>
+      <div class="brand-icon">
+        <img src="/ui/static/fetcherr.svg" alt="Fetcherr">
+      </div>
+      <div>
+        <div class="brand-name">Fetcherr</div>
+        <div class="brand-tag">Media Ops</div>
+      </div>
     </a>
     <div class="topbar-right">
       <a class="icon-btn" href="/ui/settings" title="Settings">

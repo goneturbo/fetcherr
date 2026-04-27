@@ -5,515 +5,19 @@
   <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
   <title>Fetcherr</title>
   <link rel="icon" type="image/svg+xml" href="/ui/static/fetcherr.svg">
-  <style>
-    :root {
-      --bg: #0b0d12;
-      --surface: #12151d;
-      --surface-raised: #181c26;
-      --border: rgba(255,255,255,.07);
-      --border-strong: rgba(255,255,255,.12);
-      --text: #eef2ff;
-      --muted: #8892a4;
-      --accent: #9d6ef0;
-      --accent-dim: rgba(157,110,240,.15);
-      --accent-border: rgba(157,110,240,.35);
-      --green: #4ade80;
-      --green-dim: rgba(74,222,128,.12);
-      --green-border: rgba(74,222,128,.3);
-      --amber: #fbbf24;
-      --amber-dim: rgba(251,191,36,.1);
-      --amber-border: rgba(251,191,36,.28);
-      --red: #f87171;
-      --red-dim: rgba(248,113,113,.1);
-      --red-border: rgba(248,113,113,.28);
-      --blue: #60a5fa;
-      --blue-dim: rgba(96,165,250,.1);
-      --blue-border: rgba(96,165,250,.28);
-      --slate-dim: rgba(148,163,184,.08);
-      --slate-border: rgba(148,163,184,.2);
-    }
-    *, *::before, *::after { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      min-height: 100dvh;
-    }
-    .shell {
-      max-width: 1200px;
-      margin: 0 auto;
-      padding:
-        max(20px, calc(env(safe-area-inset-top) + 12px))
-        20px
-        calc(96px + env(safe-area-inset-bottom));
-    }
-
-    /* Topbar */
-    .topbar {
-      display: flex; align-items: center; justify-content: space-between;
-      gap: 12px; padding: 10px 14px; border-radius: 16px;
-      border: 1px solid var(--border); background: var(--surface); margin-bottom: 20px;
-    }
-    .brand { display: flex; align-items: center; gap: 10px; text-decoration: none; color: var(--text); }
-    .brand-icon {
-      width: 30px; height: 30px; border-radius: 8px;
-      background: var(--accent-dim); border: 1px solid var(--accent-border);
-      display: flex; align-items: center; justify-content: center; flex-shrink: 0;
-    }
-    .brand-icon svg { width: 16px; height: 16px; color: #c4b5fd; }
-    .brand-name { font-size: 16px; font-weight: 650; letter-spacing: -.01em; }
-    .brand-tag { font-size: 11px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; }
-    .topbar-right { display: flex; gap: 8px; align-items: center; }
-    .icon-btn {
-      display: inline-flex; align-items: center; justify-content: center;
-      width: 38px; height: 38px; border-radius: 10px; border: 1px solid var(--border);
-      background: transparent; color: var(--muted); cursor: pointer;
-      text-decoration: none; transition: color .15s, background .15s;
-    }
-    .icon-btn:hover { color: var(--text); background: var(--surface-raised); }
-
-    /* Page header */
-    .page-header {
-      display: flex; align-items: flex-end; justify-content: space-between;
-      gap: 16px; margin-bottom: 20px; flex-wrap: wrap;
-    }
-    .page-title { font-size: 26px; font-weight: 700; margin: 0 0 4px; letter-spacing: -.02em; }
-    .page-sub { font-size: 13px; color: var(--muted); margin: 0; }
-    .header-actions { display: flex; gap: 8px; flex-shrink: 0; }
-
-    /* Buttons */
-    .btn {
-      display: inline-flex; align-items: center; gap: 6px; padding: 9px 16px;
-      border-radius: 10px; border: 1px solid var(--border); background: var(--surface-raised);
-      color: var(--text); font-size: 13px; font-weight: 500; cursor: pointer;
-      text-decoration: none; transition: background .15s, border-color .15s; white-space: nowrap;
-      font-family: inherit;
-    }
-    .btn:hover { background: rgba(255,255,255,.06); }
-    .btn:disabled { opacity: .45; cursor: not-allowed; }
-    .btn.primary { background: var(--accent-dim); border-color: var(--accent-border); color: #d6b8ff; }
-    .btn.primary:hover { background: rgba(157,110,240,.22); }
-    .mobile-add-btn { display: none; }
-
-    /* Stats */
-    .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px,1fr)); gap: 10px; margin-bottom: 16px; }
-    .stat {
-      padding: 14px 16px; border-radius: 14px; border: 1px solid var(--border);
-      background: var(--surface); cursor: default;
-    }
-    .stat.filterable { cursor: pointer; transition: background .15s, border-color .15s, transform .15s; }
-    .stat.filterable:hover { background: var(--surface-raised); border-color: var(--border-strong); transform: translateY(-1px); }
-    .stat.active { background: var(--surface-raised); border-color: var(--border-strong); box-shadow: inset 0 0 0 1px rgba(255,255,255,.04); }
-    .stat-value { font-size: 26px; font-weight: 700; letter-spacing: -.02em; line-height: 1; margin-bottom: 5px; }
-    .stat-label { font-size: 12px; color: var(--muted); }
-    .stat.movies   .stat-value { color: var(--green); }
-    .stat.shows    .stat-value { color: var(--accent); }
-
-    /* Sync bar */
-    .sync-bar {
-      display: flex; gap: 20px; flex-wrap: wrap; font-size: 12px; color: var(--muted);
-      margin-bottom: 18px; padding: 10px 14px; border-radius: 10px;
-      border: 1px solid var(--border); background: var(--surface);
-    }
-    .sync-bar span { white-space: nowrap; }
-    .sync-bar strong { color: var(--text); font-weight: 500; }
-
-    /* Controls */
-    .controls { display: flex; gap: 8px; margin-bottom: 14px; flex-wrap: wrap; }
-    .search-field {
-      position: relative;
-      display: flex;
-      align-items: center;
-      flex: 1;
-      min-width: 160px;
-    }
-    .controls input, .controls select {
-      padding: 9px 12px; border-radius: 10px; border: 1px solid var(--border);
-      background: var(--surface); color: var(--text); font-size: 13px;
-      font-family: inherit; outline: none; transition: border-color .15s, box-shadow .15s, background .15s;
-    }
-    .controls input { flex: 1; min-width: 160px; }
-    .search-field input {
-      width: 100%;
-      min-width: 0;
-      padding-right: 38px;
-    }
-    .controls select { flex-shrink: 0; cursor: pointer; }
-    .controls input {
-      border-color: rgba(157,110,240,.2);
-      background:
-        linear-gradient(180deg, rgba(157,110,240,.07), rgba(157,110,240,.03)),
-        var(--surface);
-    }
-    .controls input:focus, .controls select:focus {
-      border-color: var(--accent-border);
-      box-shadow: 0 0 0 3px rgba(157,110,240,.12);
-    }
-    .controls select option { background: #1e2230; }
-    .search-clear {
-      position: absolute;
-      right: 6px;
-      width: 26px;
-      height: 26px;
-      border: none;
-      border-radius: 7px;
-      background: transparent;
-      color: var(--muted);
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      padding: 0;
-      transition: color .15s, background .15s;
-    }
-    .search-clear:hover { color: var(--text); background: rgba(255,255,255,.07); }
-    .search-clear:focus-visible { outline: none; box-shadow: 0 0 0 2px rgba(157,110,240,.28); }
-    .search-clear[hidden] { display: none; }
-    .search-clear svg { width: 14px; height: 14px; pointer-events: none; }
-
-    /* Items */
-    .items { display: flex; flex-direction: column; gap: 6px; }
-    .item {
-      display: flex; align-items: center; gap: 12px; padding: 10px 14px;
-      border-radius: 12px; border: 1px solid var(--border); background: var(--surface);
-      transition: border-color .15s, background .15s; cursor: pointer;
-    }
-    .item:hover { background: var(--surface-raised); border-color: var(--border-strong); }
-    .item-poster {
-      width: 36px; height: 54px; border-radius: 6px; object-fit: cover;
-      background: var(--surface-raised); flex-shrink: 0; border: 1px solid var(--border);
-    }
-    .item-poster-placeholder {
-      width: 36px; height: 54px; border-radius: 6px; background: var(--surface-raised);
-      border: 1px solid var(--border); flex-shrink: 0; display: flex;
-      align-items: center; justify-content: center; font-size: 18px;
-    }
-    .item-body { flex: 1; min-width: 0; }
-    .item-title {
-      font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden;
-      text-overflow: ellipsis; margin-bottom: 3px;
-    }
-    .item-meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
-    .item-year { font-size: 12px; color: var(--muted); }
-    .pill {
-      display: inline-flex; align-items: center; gap: 4px; padding: 2px 7px;
-      border-radius: 5px; font-size: 11px; font-weight: 500; border: 1px solid var(--border);
-      color: var(--muted); background: transparent; white-space: nowrap;
-    }
-    .pill.green  { border-color: var(--green-border);  background: var(--green-dim);  color: #bbf7d0; }
-    .pill.accent { border-color: var(--accent-border); background: var(--accent-dim); color: #d6b8ff; }
-    .pill.blue   { border-color: var(--blue-border);   background: var(--blue-dim);   color: #bfdbfe; }
-    .pill.amber  { border-color: var(--amber-border);  background: var(--amber-dim);  color: #fef3c7; }
-    .item-link { font-size: 11px; color: var(--muted); text-decoration: none; }
-    .item-link:hover { color: var(--text); }
-    .item-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
-    .item-mode-toggle { display: inline-flex; gap: 4px; }
-    .item-mode-btn {
-      padding: 5px 8px; border-radius: 8px; border: 1px solid var(--border);
-      background: var(--surface-raised); color: var(--muted); font-size: 11px; font-weight: 600;
-      cursor: pointer; white-space: nowrap; transition: border-color .15s, background .15s, color .15s;
-    }
-    .item-mode-btn:hover { color: var(--text); background: rgba(255,255,255,.06); }
-    .item-mode-btn.active {
-      color: #d6b8ff; background: var(--accent-dim); border-color: var(--accent-border);
-    }
-    .item-mode-btn:disabled { opacity: .55; cursor: not-allowed; }
-
-    /* Empty state */
-    .empty { text-align: center; padding: 60px 20px; color: var(--muted); font-size: 14px; }
-
-    /* Sync feedback */
-    .sync-msg {
-      margin-bottom: 14px; padding: 10px 14px; border-radius: 10px; font-size: 13px;
-      border: 1px solid var(--green-border); background: var(--green-dim); color: #bbf7d0;
-      display: none;
-    }
-
-    @media (max-width: 600px) {
-      .shell {
-        padding:
-          max(14px, calc(env(safe-area-inset-top) + 10px))
-          12px
-          calc(120px + env(safe-area-inset-bottom));
-      }
-      .topbar { border-radius: 14px; }
-      .page-header { flex-direction: column; align-items: flex-start; }
-      .header-actions, .header-actions .btn { width: 100%; }
-      .header-actions .btn { justify-content: center; }
-      .stats { grid-template-columns: repeat(2,1fr); }
-      .sync-bar { flex-direction: column; gap: 6px; }
-      .sync-bar span { white-space: normal; }
-      .controls { flex-direction: column; }
-      .controls .search-field { width: 100%; }
-      .controls input, .controls select { width: 100%; }
-      .mobile-add-btn { display: inline-flex; justify-content: center; width: 100%; }
-      .fab { display: none; }
-      .items { gap: 8px; }
-      .item {
-        display: grid;
-        grid-template-columns: 42px minmax(0, 1fr) auto;
-        align-items: center;
-        gap: 8px 10px;
-        padding: 10px;
-        flex-wrap: nowrap;
-      }
-      .item-poster,
-      .item-poster-placeholder {
-        width: 42px;
-        height: 63px;
-        grid-column: 1;
-        grid-row: 1;
-        align-self: start;
-      }
-      .item-body { grid-column: 2; grid-row: 1; min-width: 0; }
-      .item-title {
-        white-space: normal;
-        display: -webkit-box;
-        -webkit-line-clamp: 2;
-        -webkit-box-orient: vertical;
-        line-height: 1.25;
-        margin-bottom: 4px;
-      }
-      .item-meta { gap: 5px; }
-      .item-actions {
-        grid-column: 3;
-        grid-row: 1;
-        width: auto;
-        margin-left: 0;
-        padding-left: 0;
-        justify-content: flex-end;
-        align-items: center;
-        flex-wrap: nowrap;
-      }
-      .item.has-mode-toggle .item-poster,
-      .item.has-mode-toggle .item-poster-placeholder {
-        grid-row: 1 / span 2;
-      }
-      .item.has-mode-toggle .item-body {
-        grid-column: 2 / 4;
-      }
-      .item.has-mode-toggle .item-actions {
-        grid-column: 2 / 4;
-        grid-row: 2;
-        width: 100%;
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) 38px;
-        align-items: stretch;
-        gap: 8px;
-      }
-      .item.has-mode-toggle .item-mode-toggle {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        width: 100%;
-        gap: 6px;
-      }
-      .item-mode-btn { flex: 1; text-align: center; }
-      .btn-remove {
-        width: 38px;
-        height: 38px;
-        flex-shrink: 0;
-        margin-left: auto;
-      }
-      .item.has-mode-toggle .btn-remove {
-        height: auto;
-        min-height: 38px;
-      }
-    }
-
-    /* Search modal */
-    .modal-overlay {
-      position: fixed; inset: 0; z-index: 200;
-      background: rgba(0,0,0,.72); backdrop-filter: blur(4px);
-      display: none; align-items: flex-start; justify-content: center;
-      padding: 60px 20px 20px;
-    }
-    .modal-overlay.open { display: flex; }
-    .modal {
-      width: 100%; max-width: 560px; max-height: calc(100dvh - 100px);
-      display: flex; flex-direction: column;
-      background: var(--surface); border: 1px solid var(--border-strong);
-      border-radius: 20px; overflow: hidden;
-      box-shadow: 0 24px 80px rgba(0,0,0,.5);
-    }
-    .modal-head {
-      padding: 18px 20px 14px; border-bottom: 1px solid var(--border);
-      display: flex; flex-direction: column; gap: 12px; flex-shrink: 0;
-    }
-    .modal-head-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-    .modal-title { font-size: 16px; font-weight: 700; margin: 0; letter-spacing: -.01em; }
-    .modal-close { background: none; border: none; color: var(--muted); cursor: pointer; padding: 4px; display: flex; border-radius: 6px; transition: color .15s, background .15s; }
-    .modal-close:hover { color: var(--text); background: var(--surface-raised); }
-    .modal-search-row { display: flex; gap: 8px; }
-    .modal-search-row .search-field { flex: 1; min-width: 0; }
-    .modal-search-row input {
-      flex: 1; padding: 9px 12px; border-radius: 10px;
-      border: 1px solid rgba(157,110,240,.24);
-      background:
-        linear-gradient(180deg, rgba(157,110,240,.08), rgba(157,110,240,.03)),
-        var(--surface-raised);
-      color: var(--text); font-size: 14px; font-family: inherit; outline: none;
-      transition: border-color .15s, box-shadow .15s, background .15s;
-    }
-    .modal-search-row .search-field input { width: 100%; min-width: 0; padding-right: 38px; }
-    .modal-search-row input:focus {
-      border-color: var(--accent-border);
-      box-shadow: 0 0 0 3px rgba(157,110,240,.12);
-      background:
-        linear-gradient(180deg, rgba(157,110,240,.12), rgba(157,110,240,.05)),
-        var(--surface-raised);
-    }
-    @media (max-width: 600px) {
-      .controls input,
-      .controls select,
-      .modal-search-row input {
-        font-size: 16px;
-      }
-    }
-    .fab { position: fixed; bottom: max(28px, calc(env(safe-area-inset-bottom) + 16px)); right: max(28px, calc(env(safe-area-inset-right) + 16px)); width: 52px; height: 52px; border-radius: 50%; background: var(--accent); border: none; color: #fff; cursor: pointer; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 20px rgba(157,110,240,.45); transition: transform .15s, box-shadow .15s; z-index: 100; }
-    .fab:hover { transform: scale(1.08); box-shadow: 0 6px 28px rgba(157,110,240,.6); }
-    .modal-body { overflow-y: auto; padding: 12px; flex: 1; }
-    .search-empty { text-align: center; padding: 40px 20px; color: var(--muted); font-size: 14px; }
-    .search-result {
-      display: flex; align-items: center; gap: 12px; padding: 10px 10px;
-      border-radius: 12px; border: 1px solid transparent;
-      transition: background .12s, border-color .12s;
-    }
-    .search-result:hover { background: var(--surface-raised); border-color: var(--border); }
-    .result-poster { width: 36px; height: 54px; border-radius: 6px; object-fit: cover; background: var(--surface-raised); border: 1px solid var(--border); flex-shrink: 0; }
-    .result-poster-ph { width: 36px; height: 54px; border-radius: 6px; background: var(--surface-raised); border: 1px solid var(--border); flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 16px; }
-    .result-body { flex: 1; min-width: 0; }
-    .result-title { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 3px; }
-    .result-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-    .result-actions { flex-shrink: 0; position: relative; }
-    .result-action-stack { display: flex; align-items: center; justify-content: flex-end; }
-    .btn-add { padding: 6px 14px; border-radius: 8px; border: 1px solid var(--accent-border); background: var(--accent-dim); color: #d6b8ff; font-size: 13px; font-family: inherit; font-weight: 500; cursor: pointer; transition: background .15s; white-space: nowrap; }
-    .btn-add:hover { background: rgba(157,110,240,.22); }
-    .btn-add:disabled { opacity: .5; cursor: not-allowed; }
-    .btn-add.secondary { border-color: var(--border); background: var(--surface-raised); color: var(--text); }
-    .btn-add.secondary:hover { background: rgba(255,255,255,.06); }
-    .btn-add.icon {
-      width: 34px; height: 34px; padding: 0; border-radius: 10px;
-      display: inline-flex; align-items: center; justify-content: center;
-    }
-    .tv-add-menu {
-      position: absolute; right: 0; top: calc(100% + 8px); z-index: 10;
-      min-width: 152px; padding: 6px; border-radius: 12px;
-      border: 1px solid var(--border-strong); background: var(--surface);
-      box-shadow: 0 16px 40px rgba(0,0,0,.35);
-      display: none; flex-direction: column; gap: 6px;
-    }
-    .tv-add-menu.open { display: flex; }
-    .btn-remove { width: 44px; height: 44px; padding: 0; border-radius: 10px; border: 1px solid var(--red-border); background: transparent; color: #fecaca; display: inline-flex; align-items: center; justify-content: center; font-size: 0; font-family: inherit; cursor: pointer; transition: background .15s, transform .15s; }
-    .btn-remove svg { width: 18px; height: 18px; }
-    .btn-remove:hover { background: rgba(248,113,113,.18); transform: translateY(-1px); }
-    .btn-remove:disabled { opacity: .5; cursor: not-allowed; }
-    @media (max-width: 600px) {
-      .fab { display: none; }
-      .btn-remove {
-        width: 38px;
-        height: 38px;
-        flex-shrink: 0;
-        margin-left: auto;
-      }
-      .item.has-mode-toggle .btn-remove {
-        height: auto;
-        min-height: 38px;
-      }
-    }
-    .badge-in-lib { padding: 6px 10px; border-radius: 8px; border: 1px solid var(--green-border); background: var(--green-dim); color: #bbf7d0; font-size: 12px; font-weight: 500; white-space: nowrap; }
-    .modal-toast { margin: 0 12px 12px; padding: 10px 14px; border-radius: 10px; font-size: 13px; display: none; }
-    .modal-toast.success { border: 1px solid var(--green-border); background: var(--green-dim); color: #bbf7d0; }
-    .modal-toast.error { border: 1px solid var(--red-border); background: var(--red-dim); color: #fecaca; }
-    .detail-modal {
-      width: 100%; max-width: 680px; max-height: calc(100dvh - 100px);
-      display: flex; flex-direction: column;
-      background: var(--surface); border: 1px solid var(--border-strong);
-      border-radius: 20px; overflow: hidden;
-      box-shadow: 0 24px 80px rgba(0,0,0,.5);
-    }
-    .detail-body { overflow-y: auto; padding: 18px 20px 20px; }
-    .detail-loading { color: var(--muted); font-size: 14px; padding: 18px 20px 20px; }
-    .detail-hero { display: flex; gap: 16px; align-items: flex-start; margin-bottom: 18px; }
-    .detail-poster {
-      width: 110px; height: 165px; border-radius: 12px; object-fit: cover; flex-shrink: 0;
-      background: var(--surface-raised); border: 1px solid var(--border);
-    }
-    .detail-poster-ph {
-      width: 110px; height: 165px; border-radius: 12px; flex-shrink: 0;
-      display: flex; align-items: center; justify-content: center; font-size: 36px;
-      background: var(--surface-raised); border: 1px solid var(--border);
-    }
-    .detail-copy { min-width: 0; flex: 1; }
-    .detail-title { margin: 0 0 8px; font-size: 24px; font-weight: 700; letter-spacing: -.02em; }
-    .detail-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 10px; }
-    .detail-overview { margin: 0; font-size: 14px; line-height: 1.6; color: #d7deef; }
-    .detail-grid {
-      display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
-      gap: 12px; margin-top: 18px;
-    }
-    .detail-tabs { display: flex; gap: 8px; margin: 18px 0 14px; }
-    .detail-tab {
-      padding: 8px 12px; border-radius: 999px; border: 1px solid var(--border);
-      background: transparent; color: var(--muted); font-size: 12px; font-weight: 600;
-      cursor: pointer; transition: border-color .15s, background .15s, color .15s;
-    }
-    .detail-tab.active {
-      color: #d6b8ff; background: var(--accent-dim); border-color: var(--accent-border);
-    }
-    .detail-card {
-      padding: 14px; border-radius: 14px; border: 1px solid var(--border);
-      background: var(--surface-raised);
-    }
-    .detail-card h3 {
-      margin: 0 0 10px; font-size: 13px; letter-spacing: .03em; text-transform: uppercase; color: var(--muted);
-    }
-    .detail-row { display: flex; flex-direction: column; gap: 4px; }
-    .detail-row + .detail-row { margin-top: 10px; }
-    .detail-label { font-size: 12px; color: var(--muted); }
-    .detail-value { font-size: 14px; color: var(--text); }
-    .detail-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
-    .toggle-card {
-      display: flex; align-items: center; justify-content: space-between; gap: 14px;
-      padding: 12px 14px; border-radius: 12px; border: 1px solid var(--amber-border);
-      background: var(--amber-dim); margin-top: 12px;
-    }
-    .collection-list { display: flex; flex-direction: column; gap: 10px; margin-top: 18px; }
-    .collection-item {
-      display: flex; align-items: center; gap: 12px; padding: 10px 12px;
-      border-radius: 12px; border: 1px solid var(--border); background: var(--surface-raised);
-    }
-    .collection-item-poster {
-      width: 40px; height: 60px; border-radius: 8px; object-fit: cover; flex-shrink: 0;
-      background: var(--surface); border: 1px solid var(--border);
-    }
-    .collection-item-ph {
-      width: 40px; height: 60px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
-      font-size: 18px; flex-shrink: 0; background: var(--surface); border: 1px solid var(--border);
-    }
-    .collection-item-body { min-width: 0; flex: 1; }
-    .collection-item-title { font-size: 14px; font-weight: 600; margin: 0 0 4px; }
-    .collection-item-meta { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; color: var(--muted); }
-    .toggle-copy { min-width: 0; }
-    .toggle-title { margin: 0 0 4px; font-size: 13px; font-weight: 600; color: #fef3c7; }
-    .toggle-sub { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
-    @media (max-width: 560px) {
-      .detail-hero { flex-direction: column; align-items: center; }
-      .detail-copy { text-align: center; }
-      .detail-meta { justify-content: center; }
-      .detail-actions { justify-content: center; flex-wrap: wrap; }
-      .toggle-card { flex-direction: column; align-items: flex-start; }
-    }
-  </style>
+  <link rel="stylesheet" href="/ui/static/app.css">
 </head>
-<body>
+<body class="app-shell-page dashboard-page">
 <div class="shell">
   <nav class="topbar">
     <a href="/ui/dashboard" class="brand">
       <div class="brand-icon">
-        <img src="/ui/static/fetcherr.svg" alt="Fetcherr" style="width:24px;height:24px;">
+        <img src="/ui/static/fetcherr.svg" alt="Fetcherr">
       </div>
-      <div class="brand-name">Fetcherr</div>
+      <div>
+        <div class="brand-name">Fetcherr</div>
+        <div class="brand-tag">Media Ops</div>
+      </div>
     </a>
     <div class="topbar-right">
       <a class="icon-btn" id="adminLogsBtn" href="/ui/logs" title="Logs" style="display:none">
@@ -737,6 +241,40 @@
     button.hidden = input.value.length === 0
   }
 
+  function renderItemsLoading() {
+    document.getElementById('itemsList').innerHTML = `
+      <div class="loading-list" aria-label="Loading library">
+        ${Array.from({ length: 6 }).map(() => `
+          <div class="skeleton-row">
+            <div class="skeleton-poster"></div>
+            <div class="skeleton-lines">
+              <div class="skeleton-line"></div>
+              <div class="skeleton-line short"></div>
+            </div>
+            <div class="skeleton-chip"></div>
+          </div>
+        `).join('')}
+      </div>
+    `
+  }
+
+  function emptyLibraryHtml(tab, search) {
+    if (search) {
+      return `<div class="empty">
+        <div class="empty-title">No matches found</div>
+        <div>Try a different title, year, or sort order.</div>
+      </div>`
+    }
+    const label = tab === 'movies' ? 'movies' : tab === 'shows' ? 'shows' : 'titles'
+    return `<div class="empty">
+      <div class="empty-title">No ${label} in the library yet</div>
+      <div>Start a sync or add a title manually.</div>
+      <div class="empty-action">
+        <button type="button" class="btn primary" onclick="openSearch()">Add to Library</button>
+      </div>
+    </div>`
+  }
+
   function clearLibrarySearch() {
     const input = document.getElementById('searchInput')
     if (!input) return
@@ -752,49 +290,57 @@
     const search = document.getElementById('searchInput').value.trim()
     const { sortBy, sortOrder } = getSort()
     const qs = `search=${encodeURIComponent(search)}&sortBy=${sortBy}&sortOrder=${sortOrder}&limit=200`
+    renderItemsLoading()
 
-    if (requestedTab === 'all') {
-      const [rm, rs] = await Promise.all([
-        fetch(`/ui/movies?${qs}`).then(r => r.ok ? r.json() : { items: [] }),
-        fetch(`/ui/shows?${qs}`).then(r => r.ok ? r.json() : { items: [] }),
-      ])
+    try {
+      if (requestedTab === 'all') {
+        const [rm, rs] = await Promise.all([
+          fetch(`/ui/movies?${qs}`).then(r => r.ok ? r.json() : { items: [] }),
+          fetch(`/ui/shows?${qs}`).then(r => r.ok ? r.json() : { items: [] }),
+        ])
+        if (document.getElementById('searchInput').value.trim() !== search || currentTab !== requestedTab) return
+        const movies = rm.items.map(m => ({ ...m, _type: 'movies' }))
+        const shows  = rs.items.map(s => ({ ...s, _type: 'shows' }))
+        const merged = [...movies, ...shows].sort((a, b) => {
+          if (sortBy === 'title') return sortOrder === 'ASC'
+            ? a.title.localeCompare(b.title)
+            : b.title.localeCompare(a.title)
+          if (sortBy === 'year') {
+            const aTime = a.releaseSortDate ? new Date(a.releaseSortDate).getTime() : (a.year || 0)
+            const bTime = b.releaseSortDate ? new Date(b.releaseSortDate).getTime() : (b.year || 0)
+            return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
+          }
+          if (sortBy === 'dateAdded') {
+            const aTime = a.syncedAt ? new Date(a.syncedAt).getTime() : 0
+            const bTime = b.syncedAt ? new Date(b.syncedAt).getTime() : 0
+            return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
+          }
+          return sortOrder === 'ASC' ? a.popularity - b.popularity : b.popularity - a.popularity
+        })
+        renderItems(merged, 'all', search)
+        return
+      }
+
+      const url = requestedTab === 'movies'
+        ? `/ui/movies?${qs}`
+        : `/ui/shows?${qs}`
+      const res = await fetch(url)
+      if (!res.ok) throw new Error('Library request failed')
+      const d = await res.json()
       if (document.getElementById('searchInput').value.trim() !== search || currentTab !== requestedTab) return
-      const movies = rm.items.map(m => ({ ...m, _type: 'movies' }))
-      const shows  = rs.items.map(s => ({ ...s, _type: 'shows' }))
-      const merged = [...movies, ...shows].sort((a, b) => {
-        if (sortBy === 'title') return sortOrder === 'ASC'
-          ? a.title.localeCompare(b.title)
-          : b.title.localeCompare(a.title)
-        if (sortBy === 'year') {
-          const aTime = a.releaseSortDate ? new Date(a.releaseSortDate).getTime() : (a.year || 0)
-          const bTime = b.releaseSortDate ? new Date(b.releaseSortDate).getTime() : (b.year || 0)
-          return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
-        }
-        if (sortBy === 'dateAdded') {
-          const aTime = a.syncedAt ? new Date(a.syncedAt).getTime() : 0
-          const bTime = b.syncedAt ? new Date(b.syncedAt).getTime() : 0
-          return sortOrder === 'ASC' ? aTime - bTime : bTime - aTime
-        }
-        return sortOrder === 'ASC' ? a.popularity - b.popularity : b.popularity - a.popularity
-      })
-      renderItems(merged, 'all')
-      return
+      renderItems(d.items, requestedTab, search)
+    } catch {
+      document.getElementById('itemsList').innerHTML = `<div class="empty">
+        <div class="empty-title">Unable to load library</div>
+        <div>Refresh the page or check the logs if this keeps happening.</div>
+      </div>`
     }
-
-    const url = requestedTab === 'movies'
-      ? `/ui/movies?${qs}`
-      : `/ui/shows?${qs}`
-    const res = await fetch(url)
-    if (!res.ok) return
-    const d = await res.json()
-    if (document.getElementById('searchInput').value.trim() !== search || currentTab !== requestedTab) return
-    renderItems(d.items, requestedTab)
   }
 
-  function renderItems(items, tab) {
+  function renderItems(items, tab, search = '') {
     const el = document.getElementById('itemsList')
     if (!items.length) {
-      el.innerHTML = '<div class="empty">No items found.</div>'
+      el.innerHTML = emptyLibraryHtml(tab, search)
       return
     }
     el.innerHTML = items.map(item => {
@@ -1110,7 +656,7 @@
       : ''
 
     const removeAction = item.manualAdded
-      ? `<button class="btn" style="border-color: var(--red-border); background: var(--red-dim); color: #fecaca;" onclick="removeItem(${item.tmdbId}, '${item.type}', this)">Remove from Library</button>`
+      ? `<button class="btn btn-danger" onclick="removeItem(${item.tmdbId}, '${item.type}', this)">Remove from Library</button>`
       : ''
 
     const tabs = hasCollection
@@ -1155,7 +701,7 @@
       <div class="detail-hero">
         ${poster}
         <div class="detail-copy">
-          <h2 class="detail-title">${escapeHtml(item.title)}${item.year ? ` <span style="color:var(--muted);font-weight:500">(${escapeHtml(item.year)})</span>` : ''}</h2>
+          <h2 class="detail-title">${escapeHtml(item.title)}${item.year ? ` <span class="detail-year">(${escapeHtml(item.year)})</span>` : ''}</h2>
           <div class="detail-meta">
             ${libraryPill}
             ${manualPill}
@@ -1285,7 +831,10 @@
   // ── Search modal ────────────────────────────────────────────────────────────
   let searchTimer2 = null
   const inLibrarySet = new Set()
-  const modalSearchPromptHtml = '<div class="search-empty">Search for a title to add it to your library.</div>'
+  const modalSearchPromptHtml = `<div class="search-empty">
+    <div class="empty-title">Search the catalog</div>
+    <div>Find a movie or TV show, then choose how Fetcherr should add it.</div>
+  </div>`
 
   function openSearch() {
     document.getElementById('searchModal').classList.add('open')
@@ -1330,7 +879,10 @@
       el.innerHTML = modalSearchPromptHtml
       return
     }
-    el.innerHTML = '<div class="search-empty">Searching…</div>'
+    el.innerHTML = `<div class="search-empty">
+      <div class="empty-title">Searching catalog</div>
+      <div>Checking TMDB for matching titles.</div>
+    </div>`
     const qs = encodeURIComponent(q)
     const [rm, rt] = await Promise.all([
       fetch(`/ui/search?q=${qs}&type=movie`).then(r => r.ok ? r.json() : { results: [] }).catch(() => ({ results: [] })),
@@ -1345,7 +897,10 @@
       if (i < tv.length) results.push(tv[i])
     }
     if (!results.length) {
-      el.innerHTML = '<div class="search-empty">No results found.</div>'
+      el.innerHTML = `<div class="search-empty">
+        <div class="empty-title">No results found</div>
+        <div>Try a shorter title or remove the year.</div>
+      </div>`
       return
     }
     el.innerHTML = results.map(r => {
