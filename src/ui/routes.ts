@@ -7,10 +7,12 @@ import {
   addSourceItem, getEffectiveShowMode, getMovieByTmdbId, getShowByTmdbId, getSetting,
   getLatestSeasonNumberForShow, getEpisodesForShow, getMovieEligibleDate, getMovieReleaseModeForLibrary,
   getManualMovieAvailabilityOverride, materializeMovieReleaseModeForExistingLibrary,
-  hasAnySourceItem, hasSourceItem, listSourceKeysForItem, pruneOrphanedMovies, pruneOrphanedShows,
-  removeSourceItem, setManualMovieAvailabilityOverride,
+  countHiddenLibraryItems, hasAnySourceItem, hasSourceItem, hideLibraryItem, isLibraryItemHidden,
+  listHiddenLibraryItems, listSourceKeysForItem,
+  pruneOrphanedMovies, pruneOrphanedShows, removeSourceItem, setManualMovieAvailabilityOverride,
+  setMovieReleaseModePreference,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
-  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, updateUser,
+  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, unhideLibraryItem, updateUser,
 } from '../db.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
@@ -93,6 +95,7 @@ const STATIC_MIME: Record<string, string> = {
 }
 
 type ApiKeyService = 'rd' | 'tmdb' | 'tvdb'
+type LibraryStatusFilter = 'all' | 'available' | 'pending' | 'hidden' | 'manual' | 'list'
 
 interface TvdbValidationResponse {
   data?: {
@@ -178,6 +181,15 @@ function todayIsoDate(): string {
   return new Date().toISOString().slice(0, 10)
 }
 
+function parseLibraryStatusFilter(value: string | undefined): LibraryStatusFilter {
+  if (value === 'available' || value === 'pending' || value === 'hidden' || value === 'manual' || value === 'list') return value
+  return 'all'
+}
+
+function isShowVisibleToLibrary(tmdbId: number, today = todayIsoDate()): boolean {
+  return getEpisodesForShow(tmdbId).some(episode => !!episode.airDate && episode.airDate <= today)
+}
+
 function titleFromSourcePath(path: string): string {
   const parts = path.split('/').filter(Boolean)
   return decodeURIComponent(parts[parts.length - 1] ?? path)
@@ -193,8 +205,16 @@ function sourceLabel(sourceKey: string): string {
   return sourceKey
 }
 
-function sourceLabelsForItem(mediaType: 'movie' | 'show', tmdbId: number): string[] {
-  return listSourceKeysForItem(mediaType, tmdbId).map(sourceLabel)
+function isListSourceKey(sourceKey: string): boolean {
+  return sourceKey !== 'manual:ui'
+}
+
+function sourceSummaryForItem(mediaType: 'movie' | 'show', tmdbId: number) {
+  const sourceKeys = listSourceKeysForItem(mediaType, tmdbId)
+  return {
+    sourceLabels: sourceKeys.map(sourceLabel),
+    listBacked: sourceKeys.some(isListSourceKey),
+  }
 }
 
 const LOGIN_WINDOW_MS = 15 * 60 * 1000
@@ -393,6 +413,7 @@ export async function uiRoutes(app: FastifyInstance) {
       movies,
       shows,
       episodes,
+      hidden: user.role === 'admin' ? countHiddenLibraryItems() : 0,
       lastSyncAt,
       nextSyncAt,
       currentUser: { username: user.username, role: user.role, maxRating: user.maxRating },
@@ -407,15 +428,29 @@ export async function uiRoutes(app: FastifyInstance) {
     const search = q.search || undefined
     const sortBy = q.sortBy || 'popularity'
     const sortOrder = q.sortOrder || 'DESC'
+    const statusFilter = parseLibraryStatusFilter(q.filter)
     const limit  = Math.min(parseInt(q.limit ?? '100'), 500)
     const offset = parseInt(q.offset ?? '0')
 
-    const allItems = listMovies({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id }).filter(m => canUserAccessMovie(user, m))
+    const allItems = listMovies({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id })
+      .filter(m => canUserAccessMovie(user, m))
+      .filter(m => {
+        if (statusFilter === 'hidden') return false
+        if (statusFilter === 'available') return isMovieVisibleToLibrary(m)
+        if (statusFilter === 'pending') return !isMovieVisibleToLibrary(m)
+        if (statusFilter === 'manual') return hasSourceItem('manual:ui', 'movie', m.tmdbId)
+        if (statusFilter === 'list') return sourceSummaryForItem('movie', m.tmdbId).listBacked
+        return true
+      })
     const items = allItems.slice(offset, offset + limit)
     const total = allItems.length
 
     return {
-      items: items.map(m => ({
+      items: items.map(m => {
+        const sources = sourceSummaryForItem('movie', m.tmdbId)
+        const movieReleaseMode = getMovieReleaseModeForLibrary(m.tmdbId)
+        const isAvailable = isMovieVisibleToLibrary(m)
+        return {
         id:           m.id,
         tmdbId:       m.tmdbId,
         imdbId:       m.imdbId,
@@ -428,11 +463,16 @@ export async function uiRoutes(app: FastifyInstance) {
         runtimeMins:  m.runtimeMins,
         popularity:   m.popularity,
         manualAdded:  hasSourceItem('manual:ui', 'movie', m.tmdbId),
-        isAvailable:  isMovieVisibleToLibrary(m),
-        pendingLabel: isMovieVisibleToLibrary(m) ? null : `Pending ${getMovieReleaseModeForLibrary(m.tmdbId) === 'theatrical' ? 'Theatrical Release' : 'Digital Release'}`,
+        listBacked:   sources.listBacked,
+        sourceLabels: sources.sourceLabels,
+        movieReleaseMode,
+        releaseWindowLabel: movieReleaseMode === 'theatrical' ? 'Theatrical Release' : 'Digital Release',
+        isAvailable,
+        pendingLabel: isAvailable ? null : `Pending ${movieReleaseMode === 'theatrical' ? 'Theatrical Release' : 'Digital Release'}`,
         posterUrl:    m.posterPath ? `https://image.tmdb.org/t/p/w185${m.posterPath}` : null,
         imageId:      tmdbToMovieGuid(m.tmdbId),
-      })),
+        }
+      }),
       total,
     }
   })
@@ -445,15 +485,28 @@ export async function uiRoutes(app: FastifyInstance) {
     const search = q.search || undefined
     const sortBy = q.sortBy || 'popularity'
     const sortOrder = q.sortOrder || 'DESC'
+    const statusFilter = parseLibraryStatusFilter(q.filter)
     const limit  = Math.min(parseInt(q.limit ?? '100'), 500)
     const offset = parseInt(q.offset ?? '0')
 
-    const allItems = listShows({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id }).filter(s => canUserAccessShow(user, s))
+    const allItems = listShows({ search, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id })
+      .filter(s => canUserAccessShow(user, s))
+      .filter(s => {
+        if (statusFilter === 'hidden') return false
+        if (statusFilter === 'available') return isShowVisibleToLibrary(s.tmdbId)
+        if (statusFilter === 'pending') return !isShowVisibleToLibrary(s.tmdbId)
+        if (statusFilter === 'manual') return hasSourceItem('manual:ui', 'show', s.tmdbId)
+        if (statusFilter === 'list') return sourceSummaryForItem('show', s.tmdbId).listBacked
+        return true
+      })
     const items = allItems.slice(offset, offset + limit)
     const total = allItems.length
 
     return {
-      items: items.map(s => ({
+      items: items.map(s => {
+        const sources = sourceSummaryForItem('show', s.tmdbId)
+        const visibleToInfuse = isShowVisibleToLibrary(s.tmdbId)
+        return {
         id:         s.id,
         tmdbId:     s.tmdbId,
         imdbId:     s.imdbId,
@@ -467,10 +520,14 @@ export async function uiRoutes(app: FastifyInstance) {
         numSeasons: s.numSeasons,
         popularity: s.popularity,
         manualAdded: hasSourceItem('manual:ui', 'show', s.tmdbId),
+        listBacked: sources.listBacked,
+        sourceLabels: sources.sourceLabels,
+        visibleToInfuse,
         libraryMode: getEffectiveShowMode(s.tmdbId).mode,
         posterUrl:  s.posterPath ? `https://image.tmdb.org/t/p/w185${s.posterPath}` : null,
         imageId:    tmdbToShowGuid(s.tmdbId),
-      })),
+        }
+      }),
       total,
     }
   })
@@ -495,6 +552,7 @@ export async function uiRoutes(app: FastifyInstance) {
       const releaseGateOverridden = getManualMovieAvailabilityOverride(movie.tmdbId)
       const isAvailable = isMovieVisibleToLibrary(movie)
       const releaseWindowLabel = movieReleaseMode === 'theatrical' ? 'Theatrical Release' : 'Digital Release'
+      const sources = sourceSummaryForItem('movie', movie.tmdbId)
 
       return {
         type,
@@ -504,14 +562,17 @@ export async function uiRoutes(app: FastifyInstance) {
         overview: movie.overview,
         posterUrl: movie.posterPath ? `https://image.tmdb.org/t/p/w342${movie.posterPath}` : null,
         imdbId: movie.imdbId,
-        inLibrary: hasAnySourceItem('movie', movie.tmdbId),
+        hidden: isLibraryItemHidden('movie', movie.tmdbId),
+        inLibrary: hasAnySourceItem('movie', movie.tmdbId) && !isLibraryItemHidden('movie', movie.tmdbId),
         manualAdded: hasSourceItem('manual:ui', 'movie', movie.tmdbId),
-        sourceLabels: sourceLabelsForItem('movie', movie.tmdbId),
+        listBacked: sources.listBacked,
+        sourceLabels: sources.sourceLabels,
         visibleToInfuse: isAvailable,
         libraryStatusLabel: isAvailable
           ? (releaseGateOverridden && !isMovieAvailable(movie) ? 'In Library via Override' : 'In Library')
           : `Pending ${releaseWindowLabel}`,
         releaseGateOverridden,
+        movieReleaseMode,
         releaseWindowLabel,
         eligibleDate,
         releaseDate: movie.releaseDate || null,
@@ -520,7 +581,7 @@ export async function uiRoutes(app: FastifyInstance) {
           .filter(item => item.tmdbId !== movie.tmdbId)
           .map(item => ({
           ...item,
-          inLibrary: hasAnySourceItem('movie', item.tmdbId),
+          inLibrary: hasAnySourceItem('movie', item.tmdbId) && !isLibraryItemHidden('movie', item.tmdbId),
         })),
       }
     }
@@ -532,8 +593,10 @@ export async function uiRoutes(app: FastifyInstance) {
     await ensureShowSeasonsCached(show).catch(() => {})
     const today = todayIsoDate()
     const episodes = getEpisodesForShow(show.tmdbId)
-    const visibleToInfuse = episodes.some(e => !!e.airDate && e.airDate <= today)
+    const hidden = isLibraryItemHidden('show', show.tmdbId)
+    const visibleToInfuse = !hidden && episodes.some(e => !!e.airDate && e.airDate <= today)
     const nextEpisode = episodes.find(e => !!e.airDate && e.airDate > today) ?? null
+    const sources = sourceSummaryForItem('show', show.tmdbId)
 
     return {
       type,
@@ -543,9 +606,11 @@ export async function uiRoutes(app: FastifyInstance) {
       overview: show.overview,
       posterUrl: show.posterPath ? `https://image.tmdb.org/t/p/w342${show.posterPath}` : null,
       imdbId: show.imdbId,
-      inLibrary: hasAnySourceItem('show', show.tmdbId),
+      hidden,
+      inLibrary: hasAnySourceItem('show', show.tmdbId) && !hidden,
       manualAdded: hasSourceItem('manual:ui', 'show', show.tmdbId),
-      sourceLabels: sourceLabelsForItem('show', show.tmdbId),
+      listBacked: sources.listBacked,
+      sourceLabels: sources.sourceLabels,
       visibleToInfuse,
       libraryStatusLabel: visibleToInfuse ? 'In Library' : 'Pending First Episode',
       nextEpisodeAirDate: nextEpisode?.airDate || null,
@@ -800,7 +865,8 @@ export async function uiRoutes(app: FastifyInstance) {
       const title     = (type === 'tv' ? r.name : r.title) as string
       const year      = ((type === 'tv' ? r.first_air_date : r.release_date) as string ?? '').slice(0, 4)
       const poster    = r.poster_path ? `https://image.tmdb.org/t/p/w185${r.poster_path}` : null
-      const inLibrary = hasAnySourceItem(type === 'movie' ? 'movie' : 'show', tmdbId)
+      const mediaType = type === 'movie' ? 'movie' : 'show'
+      const inLibrary = hasAnySourceItem(mediaType, tmdbId) && !isLibraryItemHidden(mediaType, tmdbId)
       return { tmdbId, title, year, poster, inLibrary, type }
     })
 
@@ -821,6 +887,7 @@ export async function uiRoutes(app: FastifyInstance) {
       const movie = await fetchMovieByTmdbId(tmdbId)
       if (!movie) return reply.code(404).send({ error: 'Movie not found on TMDB' })
       if (!canUserAccessMovie(user, movie)) return reply.code(403).send({ error: 'Rating policy blocks this title' })
+      unhideLibraryItem('movie', tmdbId)
       addSourceItem('manual:ui', 'movie', tmdbId)
       return { ok: true, title: movie.title }
     }
@@ -833,6 +900,7 @@ export async function uiRoutes(app: FastifyInstance) {
         ? (getLatestSeasonNumberForShow(tmdbId) ?? Math.max(show.numSeasons, 1))
         : 0
       upsertManualShowSubscription(tmdbId, mode, activeSeasonNumber)
+      unhideLibraryItem('show', tmdbId)
       addSourceItem('manual:ui', 'show', tmdbId)
       await ensureShowSeasonsCached(show).catch(() => {})
       return { ok: true, title: show.title, mode, activeSeasonNumber }
@@ -841,9 +909,86 @@ export async function uiRoutes(app: FastifyInstance) {
     return reply.code(400).send({ error: 'type must be movie or tv' })
   })
 
+  app.get('/ui/library/hidden', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    const q = (req as never as { query: Record<string, string> }).query
+    const search = (q.search ?? '').trim().toLowerCase()
+    const mediaTypeFilter = q.type === 'movie' ? 'movie' : q.type === 'tv' || q.type === 'show' ? 'show' : ''
+    const limit = Math.min(parseInt(q.limit ?? '200'), 500)
+    const offset = parseInt(q.offset ?? '0')
+    const hiddenRows = listHiddenLibraryItems(10_000, offset)
+    const items: Array<Record<string, unknown>> = []
+
+    for (const row of hiddenRows) {
+      if (mediaTypeFilter && row.mediaType !== mediaTypeFilter) continue
+      if (row.mediaType === 'movie') {
+        const movie = getMovieByTmdbId(row.tmdbId)
+        if (!movie || !hasAnySourceItem('movie', row.tmdbId)) continue
+        if (search && !movie.title.toLowerCase().includes(search)) continue
+        const sources = sourceSummaryForItem('movie', row.tmdbId)
+        const movieReleaseMode = getMovieReleaseModeForLibrary(row.tmdbId)
+        items.push({
+          _type: 'movies',
+          type: 'movie',
+          hidden: true,
+          hiddenAt: row.hiddenAt,
+          tmdbId: movie.tmdbId,
+          imdbId: movie.imdbId,
+          title: movie.title,
+          year: movie.year,
+          overview: movie.overview,
+          syncedAt: movie.syncedAt,
+          genres: JSON.parse(movie.genres || '[]') as string[],
+          runtimeMins: movie.runtimeMins,
+          popularity: movie.popularity,
+          manualAdded: hasSourceItem('manual:ui', 'movie', row.tmdbId),
+          listBacked: sources.listBacked,
+          sourceLabels: sources.sourceLabels,
+          movieReleaseMode,
+          releaseWindowLabel: movieReleaseMode === 'theatrical' ? 'Theatrical Release' : 'Digital Release',
+          posterUrl: movie.posterPath ? `https://image.tmdb.org/t/p/w185${movie.posterPath}` : null,
+          imageId: tmdbToMovieGuid(movie.tmdbId),
+        })
+        continue
+      }
+
+      const show = getShowByTmdbId(row.tmdbId)
+      if (!show || !hasAnySourceItem('show', row.tmdbId)) continue
+      if (search && !show.title.toLowerCase().includes(search)) continue
+      const sources = sourceSummaryForItem('show', row.tmdbId)
+      items.push({
+        _type: 'shows',
+        type: 'tv',
+        hidden: true,
+        hiddenAt: row.hiddenAt,
+        tmdbId: show.tmdbId,
+        imdbId: show.imdbId,
+        title: show.title,
+        year: show.year,
+        overview: show.overview,
+        syncedAt: show.syncedAt,
+        genres: JSON.parse(show.genres || '[]') as string[],
+        status: show.status,
+        numSeasons: show.numSeasons,
+        popularity: show.popularity,
+        manualAdded: hasSourceItem('manual:ui', 'show', row.tmdbId),
+        listBacked: sources.listBacked,
+        sourceLabels: sources.sourceLabels,
+        libraryMode: getEffectiveShowMode(row.tmdbId).mode,
+        posterUrl: show.posterPath ? `https://image.tmdb.org/t/p/w185${show.posterPath}` : null,
+        imageId: tmdbToShowGuid(show.tmdbId),
+      })
+    }
+
+    return {
+      items: items.slice(0, limit),
+      total: countHiddenLibraryItems(),
+    }
+  })
+
   app.post('/ui/library/show-mode', async (req, reply) => {
     const user = currentUiUser(req as never)
-    if (!user) return reply.code(401).send({ error: 'Unauthorized' })
+    if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
     const body = (req.body ?? {}) as { tmdbId?: number; mode?: string }
     const tmdbId = body.tmdbId
     const mode = body.mode === 'latest' ? 'latest' : body.mode === 'all' ? 'all' : ''
@@ -860,6 +1005,28 @@ export async function uiRoutes(app: FastifyInstance) {
     upsertManualShowSubscription(tmdbId, mode, activeSeasonNumber)
     await ensureShowSeasonsCached(show).catch(() => {})
     return { ok: true, title: show.title, mode, activeSeasonNumber }
+  })
+
+  app.post('/ui/library/movie-release-mode', async (req, reply) => {
+    const user = currentUiUser(req as never)
+    if (!user || user.role !== 'admin') return reply.code(403).send({ error: 'Admin access required' })
+    const body = (req.body ?? {}) as { tmdbId?: number; mode?: string }
+    const tmdbId = body.tmdbId
+    const mode = body.mode === 'theatrical' ? 'theatrical' : body.mode === 'digital' ? 'digital' : ''
+    if (!tmdbId || !mode) return reply.code(400).send({ error: 'tmdbId and mode are required' })
+
+    const movie = getMovieByTmdbId(tmdbId)
+    if (!movie || !hasAnySourceItem('movie', tmdbId)) {
+      return reply.code(404).send({ error: 'Movie not found in library' })
+    }
+
+    setMovieReleaseModePreference(tmdbId, mode)
+    return {
+      ok: true,
+      title: movie.title,
+      mode,
+      releaseWindowLabel: mode === 'theatrical' ? 'Theatrical Release' : 'Digital Release',
+    }
   })
 
   app.post('/ui/library/movie-availability', async (req, reply) => {
@@ -890,27 +1057,56 @@ export async function uiRoutes(app: FastifyInstance) {
 
     if (type === 'movie') {
       setManualMovieAvailabilityOverride(tmdbId, false)
+      const sourceKeys = listSourceKeysForItem('movie', tmdbId)
+      const listBacked = sourceKeys.some(isListSourceKey)
       const removed = removeSourceItem('manual:ui', 'movie', tmdbId)
-      const pruned = pruneOrphanedMovies([tmdbId])
+      if (listBacked) hideLibraryItem('movie', tmdbId)
+      const pruned = listBacked ? 0 : pruneOrphanedMovies([tmdbId])
       const stillPresent = !!getMovieByTmdbId(tmdbId)
       return {
         ok: true,
         removedManual: removed > 0,
-        removedFromLibrary: pruned > 0,
+        hidden: listBacked,
+        removedFromLibrary: listBacked || pruned > 0,
         stillPresent,
       }
     }
 
     if (type === 'tv') {
+      const sourceKeys = listSourceKeysForItem('show', tmdbId)
+      const listBacked = sourceKeys.some(isListSourceKey)
       const removed = removeSourceItem('manual:ui', 'show', tmdbId)
-      const pruned = pruneOrphanedShows([tmdbId])
+      if (listBacked) hideLibraryItem('show', tmdbId)
+      const pruned = listBacked ? 0 : pruneOrphanedShows([tmdbId])
       const stillPresent = !!getShowByTmdbId(tmdbId)
       return {
         ok: true,
         removedManual: removed > 0,
-        removedFromLibrary: pruned > 0,
+        hidden: listBacked,
+        removedFromLibrary: listBacked || pruned > 0,
         stillPresent,
       }
+    }
+
+    return reply.code(400).send({ error: 'type must be movie or tv' })
+  })
+
+  app.post('/ui/library/unhide', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    const body = (req.body ?? {}) as { tmdbId?: number; type?: string }
+    const { tmdbId, type } = body
+    if (!tmdbId || !type) return reply.code(400).send({ error: 'tmdbId and type required' })
+
+    if (type === 'movie') {
+      const removed = unhideLibraryItem('movie', tmdbId)
+      const movie = getMovieByTmdbId(tmdbId)
+      return { ok: true, unhidden: removed > 0, title: movie?.title ?? '' }
+    }
+
+    if (type === 'tv') {
+      const removed = unhideLibraryItem('show', tmdbId)
+      const show = getShowByTmdbId(tmdbId)
+      return { ok: true, unhidden: removed > 0, title: show?.title ?? '' }
     }
 
     return reply.code(400).send({ error: 'type must be movie or tv' })

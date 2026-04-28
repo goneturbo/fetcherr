@@ -63,6 +63,10 @@
       <div class="stat-value" id="statShows">—</div>
       <div class="stat-label">TV Shows</div>
     </div>
+    <div class="stat hidden filterable" id="statCardHidden" onclick="setStatusFilter('hidden')" style="display:none">
+      <div class="stat-value" id="statHidden">—</div>
+      <div class="stat-label">Hidden</div>
+    </div>
   </div>
 
   <div class="sync-bar">
@@ -81,6 +85,14 @@
         </svg>
       </button>
     </div>
+    <select id="statusFilter" onchange="onStatusFilterChange()">
+      <option value="all">All status</option>
+      <option value="available">Available in Library</option>
+      <option value="pending">Release Pending</option>
+      <option value="hidden" id="statusFilterHiddenOption">Hidden from Library</option>
+      <option value="manual">Manually Added</option>
+      <option value="list">Imported from Lists</option>
+    </select>
     <select id="sortSelect" onchange="onSortChange()">
       <option value="popularity:DESC">Most popular</option>
       <option value="dateAdded:DESC">Recently added</option>
@@ -156,10 +168,12 @@
   let currentTab = 'all'
   let searchTimer = null
   let openTvMenuTmdbId = null
+  let openLibraryActionMenuKey = null
   let activeDetailItem = null
   let activeDetailTab = 'overview'
   let activeDetailData = null
   let defaultShowAddMode = 'all'
+  let currentUserIsAdmin = false
   const librarySortStorageKey = 'fetcherr.librarySort'
 
   function escapeHtml(value) {
@@ -201,6 +215,9 @@
     const d = await res.json()
     document.getElementById('statMovies').textContent = d.movies
     document.getElementById('statShows').textContent  = d.shows
+    document.getElementById('statHidden').textContent = d.hidden ?? 0
+    document.getElementById('statCardHidden').style.display = currentUserIsAdmin ? '' : 'none'
+    document.getElementById('statCardHidden').classList.toggle('active', getStatusFilter() === 'hidden')
     document.getElementById('lastSync').textContent   = d.lastSyncAt ? fmtDate(d.lastSyncAt) : '—'
     document.getElementById('nextSync').textContent   = d.nextSyncAt ? fmtRelTime(d.nextSyncAt) : '—'
   }
@@ -208,6 +225,17 @@
   function getSort() {
     const [sortBy, sortOrder] = document.getElementById('sortSelect').value.split(':')
     return { sortBy, sortOrder }
+  }
+
+  function getStatusFilter() {
+    return document.getElementById('statusFilter')?.value || 'all'
+  }
+
+  function setStatusFilter(value) {
+    const filter = document.getElementById('statusFilter')
+    if (!filter) return
+    filter.value = value
+    onStatusFilterChange()
   }
 
   function restoreLibrarySort() {
@@ -228,6 +256,14 @@
     try {
       localStorage.setItem(librarySortStorageKey, document.getElementById('sortSelect').value)
     } catch {}
+    loadItems()
+  }
+
+  function onStatusFilterChange() {
+    if (!currentUserIsAdmin && getStatusFilter() === 'hidden') {
+      document.getElementById('statusFilter').value = 'all'
+    }
+    document.getElementById('statCardHidden').classList.toggle('active', getStatusFilter() === 'hidden')
     loadItems()
   }
 
@@ -255,7 +291,7 @@
     `
   }
 
-  function emptyLibraryHtml(tab, search) {
+  function emptyLibraryHtml(tab, search, statusFilter = getStatusFilter()) {
     if (search) {
       const safeSearch = escapeHtml(search)
       return `<div class="empty">
@@ -266,6 +302,30 @@
         </div>
       </div>`
     }
+    if (statusFilter === 'hidden') {
+      return `<div class="empty">
+        <div class="empty-title">No hidden titles</div>
+        <div>Hidden imported titles will appear here with an Unhide action.</div>
+      </div>`
+    }
+    if (statusFilter === 'available') {
+      return `<div class="empty">
+        <div class="empty-title">No available titles</div>
+        <div>No titles match the current library availability filter.</div>
+      </div>`
+    }
+    if (statusFilter === 'pending') {
+      return `<div class="empty">
+        <div class="empty-title">No pending titles</div>
+        <div>No movies or shows are waiting on a release or first aired episode.</div>
+      </div>`
+    }
+    if (statusFilter === 'manual' || statusFilter === 'list') {
+      return `<div class="empty">
+        <div class="empty-title">No ${statusFilter === 'manual' ? 'manual' : 'imported'} titles</div>
+        <div>No titles match the selected source filter.</div>
+      </div>`
+    }
     const label = tab === 'movies' ? 'movies' : tab === 'shows' ? 'shows' : 'titles'
     return `<div class="empty">
       <div class="empty-title">No ${label} in the library yet</div>
@@ -274,6 +334,83 @@
         <button type="button" class="btn primary" onclick="openSearch()">Add Title</button>
       </div>
     </div>`
+  }
+
+  function menuKeyFor(type, tmdbId, scope = 'item') {
+    return `${scope}-${type}-${tmdbId}`
+  }
+
+  function closeLibraryActionMenu() {
+    if (openLibraryActionMenuKey == null) return
+    const menu = document.getElementById(`libraryActionMenu-${openLibraryActionMenuKey}`)
+    if (menu) menu.classList.remove('open')
+    openLibraryActionMenuKey = null
+  }
+
+  function toggleLibraryActionMenu(key, event) {
+    event.stopPropagation()
+    const previous = openLibraryActionMenuKey
+    if (previous != null && previous !== key) {
+      const previousMenu = document.getElementById(`libraryActionMenu-${previous}`)
+      if (previousMenu) previousMenu.classList.remove('open')
+    }
+
+    openLibraryActionMenuKey = previous === key ? null : key
+    const menu = document.getElementById(`libraryActionMenu-${key}`)
+    if (menu) menu.classList.toggle('open', openLibraryActionMenuKey === key)
+  }
+
+  function renderLibraryActionMenu(item, type, scope = 'item') {
+    if (!currentUserIsAdmin) return ''
+    if (item.hidden) return ''
+    const key = menuKeyFor(type, item.tmdbId, scope)
+    const isShow = type === 'tv'
+    const menuItems = isShow
+      ? `
+        <button type="button" class="${item.libraryMode === 'all' ? 'active' : ''}" onclick="setShowLibraryMode(${item.tmdbId}, 'all', this, ${scope === 'detail' ? 'true' : 'false'})">Entire Series</button>
+        <button type="button" class="${item.libraryMode === 'latest' ? 'active' : ''}" onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this, ${scope === 'detail' ? 'true' : 'false'})">Latest Season</button>
+      `
+      : `
+        <button type="button" class="${item.movieReleaseMode === 'digital' ? 'active' : ''}" onclick="setMovieReleaseMode(${item.tmdbId}, 'digital', this, ${scope === 'detail' ? 'true' : 'false'})">Digital Release</button>
+        <button type="button" class="${item.movieReleaseMode === 'theatrical' ? 'active' : ''}" onclick="setMovieReleaseMode(${item.tmdbId}, 'theatrical', this, ${scope === 'detail' ? 'true' : 'false'})">Theatrical Release</button>
+      `
+    return `
+      <div class="library-action-wrap" onclick="event.stopPropagation()">
+        <button type="button" class="item-menu-trigger" title="Title options" aria-label="Title options" onclick="toggleLibraryActionMenu('${key}', event)">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>
+          </svg>
+        </button>
+        <div class="library-action-menu" id="libraryActionMenu-${key}">
+          <div class="library-action-title">${isShow ? 'Series Mode' : 'Release Window'}</div>
+          ${menuItems}
+        </div>
+      </div>
+    `
+  }
+
+  function renderRemoveButton(item, type) {
+    if (!currentUserIsAdmin) return ''
+    if (item.hidden) {
+      return `
+        <button type="button" class="btn-remove btn-unhide" title="Unhide title" aria-label="Unhide title" onclick="event.stopPropagation(); unhideItem(${item.tmdbId}, '${type}', this)">
+          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M3 12a9 9 0 0115.4-6.36L21 8"/>
+            <path d="M21 3v5h-5"/>
+            <path d="M21 12a9 9 0 01-15.4 6.36L3 16"/>
+            <path d="M3 21v-5h5"/>
+          </svg>
+        </button>
+      `
+    }
+    const label = item.listBacked ? 'Hide from library' : 'Remove from library'
+    return `
+      <button type="button" class="btn-remove" title="${label}" aria-label="${label}" onclick="event.stopPropagation(); removeItem(${item.tmdbId}, '${type}', this)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    `
   }
 
   function clearLibrarySearch() {
@@ -290,10 +427,21 @@
     const requestedTab = currentTab
     const search = document.getElementById('searchInput').value.trim()
     const { sortBy, sortOrder } = getSort()
-    const qs = `search=${encodeURIComponent(search)}&sortBy=${sortBy}&sortOrder=${sortOrder}&limit=200`
+    const statusFilter = getStatusFilter()
+    const qs = `search=${encodeURIComponent(search)}&sortBy=${sortBy}&sortOrder=${sortOrder}&filter=${encodeURIComponent(statusFilter)}&limit=200`
     renderItemsLoading()
 
     try {
+      if (statusFilter === 'hidden') {
+        const type = requestedTab === 'movies' ? 'movie' : requestedTab === 'shows' ? 'tv' : ''
+        const res = await fetch(`/ui/library/hidden?${qs}${type ? `&type=${type}` : ''}`)
+        if (!res.ok) throw new Error('Hidden library request failed')
+        const d = await res.json()
+        if (document.getElementById('searchInput').value.trim() !== search || currentTab !== requestedTab) return
+        renderItems(d.items, requestedTab, search)
+        return
+      }
+
       if (requestedTab === 'all') {
         const [rm, rs] = await Promise.all([
           fetch(`/ui/movies?${qs}`).then(r => r.ok ? r.json() : { items: [] }),
@@ -356,21 +504,9 @@
       const imdbLink = item.imdbId
         ? `<a class="item-link" href="https://www.imdb.com/title/${item.imdbId}" target="_blank" onclick="event.stopPropagation()">IMDb ↗</a>`
         : ''
-      const removeBtn = item.manualAdded
-        ? `<button class="btn-remove" title="Remove manual item" aria-label="Remove manual item" onclick="event.stopPropagation(); removeItem(${item.tmdbId}, '${isShow ? 'tv' : 'movie'}', this)"><svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M18 6L6 18M6 6l12 12"/></svg></button>`
-        : ''
-      const showModeToggle = isShow
-        ? `<div class="item-mode-toggle" onclick="event.stopPropagation()">
-             <button
-               class="item-mode-btn ${item.libraryMode === 'all' ? 'active' : ''}"
-               onclick="event.stopPropagation(); setShowLibraryMode(${item.tmdbId}, 'all', this)"
-             >Entire Series</button>
-             <button
-               class="item-mode-btn ${item.libraryMode === 'latest' ? 'active' : ''}"
-               onclick="event.stopPropagation(); setShowLibraryMode(${item.tmdbId}, 'latest', this)"
-             >Latest Season</button>
-           </div>`
-        : ''
+      const type = isShow ? 'tv' : 'movie'
+      const actionMenu = renderLibraryActionMenu(item, type)
+      const removeBtn = renderRemoveButton(item, type)
 
       let metaRight = ''
       if (tab === 'all') {
@@ -396,8 +532,17 @@
           ? `<span class="pill blue">${item.numSeasons} season${item.numSeasons !== 1 ? 's' : ''}</span>` : ''
         metaRight = statusPill + seasons
       }
+      if (item.hidden) {
+        const typePill = `<span class="pill ${isShow ? 'accent' : 'blue'}">${isShow ? 'TV Show' : 'Movie'}</span>`
+        const sourcePills = (item.sourceLabels || [])
+          .filter(label => label !== 'Manual')
+          .slice(0, 2)
+          .map(label => `<span class="pill">${escapeHtml(label)}</span>`)
+          .join('')
+        metaRight = `${typePill}<span class="pill amber">Hidden</span>${sourcePills}`
+      }
 
-      return `<div class="item ${showModeToggle ? 'has-mode-toggle' : ''}" onclick="activeDetailTab='overview'; openItemDetail('${isShow ? 'tv' : 'movie'}', ${item.tmdbId})">
+      return `<div class="item" onclick="activeDetailTab='overview'; openItemDetail('${type}', ${item.tmdbId})">
         ${poster}
         <div class="item-body">
           <div class="item-title">${escapeHtml(item.title)}</div>
@@ -407,7 +552,7 @@
             ${imdbLink}
           </div>
         </div>
-        <div class="item-actions">${showModeToggle}${removeBtn}</div>
+        <div class="item-actions">${actionMenu}${removeBtn}</div>
       </div>`
     }).join('')
   }
@@ -416,6 +561,7 @@
     currentTab = currentTab === tab ? 'all' : tab
     document.getElementById('statCardMovies').classList.toggle('active', currentTab === 'movies')
     document.getElementById('statCardShows').classList.toggle('active', currentTab === 'shows')
+    document.getElementById('statCardHidden').classList.toggle('active', getStatusFilter() === 'hidden')
     loadItems()
   }
 
@@ -448,6 +594,7 @@
   }
 
   async function removeItem(tmdbId, type, btn) {
+    closeLibraryActionMenu()
     btn.disabled = true
     const icon = btn.innerHTML
     btn.innerHTML = '…'
@@ -464,7 +611,9 @@
       return
     }
 
-    if (d.removedFromLibrary) {
+    if (d.hidden) {
+      showSyncMsg('Hidden from library. It will stay hidden while it remains on synced lists.')
+    } else if (d.removedFromLibrary) {
       showSyncMsg('Removed from library.')
     } else if (d.removedManual && d.stillPresent) {
       showSyncMsg('Removed manual library entry. Item remains via another source.')
@@ -474,6 +623,30 @@
       showSyncMsg('Updated library sources.')
     }
 
+    if (activeDetailItem && activeDetailItem.tmdbId === tmdbId && activeDetailItem.type === type) {
+      closeDetail()
+    }
+    await Promise.all([loadStats(), loadItems()])
+  }
+
+  async function unhideItem(tmdbId, type, btn) {
+    closeLibraryActionMenu()
+    btn.disabled = true
+    const icon = btn.innerHTML
+    btn.innerHTML = '…'
+    const res = await fetch('/ui/library/unhide', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdbId, type }),
+    })
+    const d = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      btn.disabled = false
+      btn.innerHTML = icon
+      showSyncMsg(d.error || 'Failed to unhide item.')
+      return
+    }
+    showSyncMsg(d.title ? `"${d.title}" restored to library.` : 'Restored to library.')
     if (activeDetailItem && activeDetailItem.tmdbId === tmdbId && activeDetailItem.type === type) {
       closeDetail()
     }
@@ -643,29 +816,11 @@
       `
       : ''
 
-    const showModeCard = (isShow && item.inLibrary)
-      ? `
-        <div class="toggle-card">
-          <div class="toggle-copy">
-            <p class="toggle-title">Series Mode</p>
-            <p class="toggle-sub">Choose whether Fetcherr keeps the whole series visible in clients or limits this show to its latest season.</p>
-          </div>
-          <div class="item-actions">
-            <button
-              class="btn ${item.libraryMode === 'all' ? 'btn-primary' : ''}"
-              onclick="setShowLibraryMode(${item.tmdbId}, 'all', this, true)"
-            >Entire Series</button>
-            <button
-              class="btn ${item.libraryMode === 'latest' ? 'btn-primary' : ''}"
-              onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this, true)"
-            >Latest Season</button>
-          </div>
-        </div>
-      `
-      : ''
-
-    const removeAction = item.manualAdded
-      ? `<button class="btn btn-danger" onclick="removeItem(${item.tmdbId}, '${item.type}', this)">Remove from Library</button>`
+    const detailActionMenu = item.inLibrary ? renderLibraryActionMenu(item, item.type, 'detail') : ''
+    const removeAction = item.hidden && currentUserIsAdmin
+      ? `<button class="btn" onclick="unhideItem(${item.tmdbId}, '${item.type}', this)">Unhide from Library</button>`
+      : item.inLibrary && currentUserIsAdmin
+      ? `<button class="btn btn-danger" onclick="removeItem(${item.tmdbId}, '${item.type}', this)">${item.listBacked ? 'Hide from Library' : 'Remove from Library'}</button>`
       : ''
 
     const tabs = hasCollection
@@ -723,10 +878,10 @@
         ${statusCard}
         ${timingCard}
       </div>
-      ${showModeCard}
       ${movieOverrideCard}
       <div class="detail-actions">
         ${imdbLink}
+        ${detailActionMenu}
         ${removeAction}
       </div>
     `
@@ -761,8 +916,30 @@
     ])
   }
 
+  async function setMovieReleaseMode(tmdbId, mode, btn, refreshDetail = false) {
+    const menu = btn.closest('.library-action-menu')
+    const buttons = menu ? [...menu.querySelectorAll('button')] : [btn]
+    buttons.forEach(el => { el.disabled = true })
+    const res = await fetch('/ui/library/movie-release-mode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tmdbId, mode }),
+    })
+    const data = await res.json().catch(() => ({}))
+    if (!res.ok) {
+      buttons.forEach(el => { el.disabled = false })
+      showSyncMsg(data.error || 'Failed to update release window.')
+      return
+    }
+    closeLibraryActionMenu()
+    showSyncMsg(`"${data.title}" set to ${data.releaseWindowLabel || (mode === 'theatrical' ? 'Theatrical Release' : 'Digital Release')}.`)
+    const updates = [loadItems(), loadStats()]
+    if (refreshDetail) updates.push(openItemDetail('movie', tmdbId))
+    await Promise.all(updates)
+  }
+
   async function setShowLibraryMode(tmdbId, mode, btn, refreshDetail = false) {
-    const container = btn.closest('.item-actions') || btn.parentElement
+    const container = btn.closest('.library-action-menu') || btn.closest('.item-actions') || btn.parentElement
     const buttons = container ? [...container.querySelectorAll('button')] : [btn]
     buttons.forEach(el => { el.disabled = true })
     const res = await fetch('/ui/library/show-mode', {
@@ -776,6 +953,7 @@
       showSyncMsg(data.error || 'Failed to update series mode.')
       return
     }
+    closeLibraryActionMenu()
     showSyncMsg(`"${data.title}" set to ${mode === 'latest' ? 'latest season' : 'entire series'}.`)
     const updates = [loadItems(), loadStats()]
     if (refreshDetail) updates.push(openItemDetail('tv', tmdbId))
@@ -818,8 +996,19 @@
       const d = await res.json()
       if (d.authEnabled) document.getElementById('logoutBtn').style.display = ''
       if (d.role === 'admin') {
+        currentUserIsAdmin = true
         document.getElementById('adminLogsBtn').style.display = ''
         document.getElementById('adminSettingsBtn').style.display = ''
+      } else {
+        currentUserIsAdmin = false
+      }
+      const hiddenOption = document.getElementById('statusFilterHiddenOption')
+      if (hiddenOption) {
+        hiddenOption.hidden = !currentUserIsAdmin
+        hiddenOption.disabled = !currentUserIsAdmin
+      }
+      if (!currentUserIsAdmin && getStatusFilter() === 'hidden') {
+        document.getElementById('statusFilter').value = 'all'
       }
     }
   }
@@ -832,10 +1021,11 @@
   }
 
   restoreLibrarySort()
-  loadStats()
-  loadClientConfig()
-  loadItems()
-  checkAuth()
+  checkAuth().finally(() => {
+    loadStats()
+    loadClientConfig()
+    loadItems()
+  })
   setInterval(loadStats, 60000)
 
   // ── Search modal ────────────────────────────────────────────────────────────
@@ -983,10 +1173,12 @@
   }
 
   document.addEventListener('click', () => {
-    if (openTvMenuTmdbId == null) return
-    const menu = document.getElementById(`tvAddMenu-${openTvMenuTmdbId}`)
-    if (menu) menu.classList.remove('open')
-    openTvMenuTmdbId = null
+    if (openTvMenuTmdbId != null) {
+      const menu = document.getElementById(`tvAddMenu-${openTvMenuTmdbId}`)
+      if (menu) menu.classList.remove('open')
+      openTvMenuTmdbId = null
+    }
+    closeLibraryActionMenu()
   })
 
   async function addItem(tmdbId, type, mode, btn) {

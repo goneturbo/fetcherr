@@ -6,7 +6,7 @@ import {
   getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, listSourceItems, type AppUser,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, type AppUser,
 } from '../db.js'
 import {
   searchTmdb, fetchMovieByTmdbId, posterUrl,
@@ -304,6 +304,7 @@ function traktCollectionSourceKey(slug: string): string {
 function collectionMembersForUser(user: AppUser, slug: string): CollectionMember[] {
   return listSourceItems(traktCollectionSourceKey(slug))
     .filter(item => {
+      if (isLibraryItemHidden(item.mediaType, item.tmdbId)) return false
       if (item.mediaType === 'movie') {
         const movie = getMovieByTmdbId(item.tmdbId)
         return !!movie && canUserAccessMovie(user, movie)
@@ -1338,6 +1339,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     // ── Series ID: list seasons ────────────────────────────────────────────────
     const seriesRef = ParentId ? idToShowTmdb(ParentId) : null
     if (seriesRef) {
+      if (isLibraryItemHidden('show', seriesRef)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       const show = getShowByTmdbId(seriesRef) ?? await fetchShowByTmdbId(seriesRef)
       if (!show) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       if (!canUserAccessShow(user, show)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
@@ -1349,6 +1351,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     // ── Season ID: list episodes ───────────────────────────────────────────────
     const seasonRef = ParentId ? idToSeason(ParentId) : null
     if (seasonRef) {
+      if (isLibraryItemHidden('show', seasonRef.showTmdbId)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       const show = getShowByTmdbId(seasonRef.showTmdbId) ?? await fetchShowByTmdbId(seasonRef.showTmdbId)
       if (!show) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
       if (!canUserAccessShow(user, show)) return { Items: [], TotalRecordCount: 0, StartIndex: offset }
@@ -1574,6 +1577,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     // Episode
     const epRef = idToEpisode(id)
     if (epRef) {
+      if (isLibraryItemHidden('show', epRef.showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1590,6 +1594,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     // Season
     const seasonRef = idToSeason(id)
     if (seasonRef) {
+      if (isLibraryItemHidden('show', seasonRef.showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(seasonRef.showTmdbId) ?? await fetchShowByTmdbId(seasonRef.showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1613,6 +1618,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
     const showTmdbId = idToShowTmdb(id)
     if (showTmdbId) {
+      if (isLibraryItemHidden('show', showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessShow(currentUser, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1630,6 +1636,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
     const tmdbId = idToTmdb(id)
     if (!tmdbId) return reply.code(404).send({ error: 'Not found' })
+    if (isLibraryItemHidden('movie', tmdbId)) return reply.code(404).send({ error: 'Not found' })
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
     if (!movie) return reply.code(404).send({ error: 'Not found' })
     if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
@@ -1657,6 +1664,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     return withReadCache(`show-seasons:${user.id}:${seriesId}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
+      if (isLibraryItemHidden('show', showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1678,6 +1686,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     return withReadCache(`show-episodes:${user.id}:${seriesId}:${SeasonId ?? 'all'}`, async () => {
       const showTmdbId = idToShowTmdb(seriesId)
       if (!showTmdbId) return reply.code(404).send({ error: 'Not found' })
+      if (isLibraryItemHidden('show', showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(showTmdbId) ?? await fetchShowByTmdbId(showTmdbId)
       if (!show) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1898,6 +1907,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
     // Episode playback
     const epRef = idToEpisode(id)
     if (epRef) {
+      if (isLibraryItemHidden('show', epRef.showTmdbId)) return reply.code(404).send({ error: 'Not found' })
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show?.imdbId) return reply.code(404).send({ error: 'No IMDb ID for this show' })
       if (!canUserAccessShow(user, show)) return reply.code(404).send({ error: 'Not found' })
@@ -1982,6 +1992,7 @@ export async function jellyfinRoutes(app: FastifyInstance) {
 
     const epRef = idToEpisode(id)
     if (epRef) {
+      if (isLibraryItemHidden('show', epRef.showTmdbId)) return reply.code(404).send()
       const show = getShowByTmdbId(epRef.showTmdbId) ?? await fetchShowByTmdbId(epRef.showTmdbId)
       if (!show?.imdbId) return reply.code(404).send()
       return reply.redirect(createSignedPlaybackUrl(origin, `/play/${show.imdbId}/${epRef.seasonNum}/${epRef.episodeNum}`), 302)

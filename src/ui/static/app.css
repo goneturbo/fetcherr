@@ -574,6 +574,14 @@ label {
   color: var(--violet);
 }
 
+.stat.hidden::before {
+  background: var(--amber);
+}
+
+.stat.hidden .stat-value {
+  color: var(--amber);
+}
+
 .stat-label {
   color: var(--muted);
   font-size: 12px;
@@ -856,6 +864,95 @@ label {
 .btn-remove svg {
   width: 18px;
   height: 18px;
+}
+
+.btn-unhide {
+  color: #d9ffe2;
+  border-color: var(--green-border);
+}
+
+.btn-unhide:hover {
+  background: rgba(86, 212, 122, .16);
+}
+
+.library-action-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.item-menu-trigger {
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted-strong);
+  cursor: pointer;
+  transition: border-color .15s, background .15s, color .15s, transform .15s;
+}
+
+.item-menu-trigger:hover {
+  color: var(--text);
+  border-color: var(--border-strong);
+  background: rgba(255,255,255,.06);
+  transform: translateY(-1px);
+}
+
+.item-menu-trigger svg {
+  width: 18px;
+  height: 18px;
+}
+
+.library-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  display: none;
+  min-width: 178px;
+  padding: 6px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  background: rgba(20, 24, 33, .98);
+  box-shadow: var(--shadow-soft);
+}
+
+.library-action-menu.open {
+  display: grid;
+  gap: 3px;
+}
+
+.library-action-title {
+  padding: 6px 8px 5px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  text-transform: uppercase;
+}
+
+.library-action-menu button {
+  width: 100%;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--muted-strong);
+  font-size: 12px;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.library-action-menu button:hover {
+  color: var(--text);
+  background: rgba(255,255,255,.055);
+}
+
+.library-action-menu button.active {
+  color: #eef3ff;
+  border-color: var(--accent-border);
+  background: var(--accent-dim);
 }
 
 .empty,

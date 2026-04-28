@@ -99,6 +99,12 @@ export interface ManualMovieAvailabilityOverride {
   updatedAt: string
 }
 
+export interface HiddenLibraryItem {
+  mediaType: MediaType
+  tmdbId: number
+  hiddenAt: string
+}
+
 export interface UiSession {
   token: string
   userId: string
@@ -237,6 +243,14 @@ CREATE TABLE IF NOT EXISTS source_items (
   PRIMARY KEY (source_key, media_type, tmdb_id)
 );
 CREATE INDEX IF NOT EXISTS source_items_media ON source_items(media_type, tmdb_id);
+
+CREATE TABLE IF NOT EXISTS hidden_library_items (
+  media_type TEXT    NOT NULL CHECK (media_type IN ('movie', 'show')),
+  tmdb_id    INTEGER NOT NULL,
+  hidden_at  TEXT    NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (media_type, tmdb_id)
+);
+CREATE INDEX IF NOT EXISTS hidden_library_items_media ON hidden_library_items(media_type, tmdb_id);
 
 CREATE TABLE IF NOT EXISTS manual_show_subscriptions (
   show_tmdb_id           INTEGER PRIMARY KEY,
@@ -556,6 +570,7 @@ export function isMovieVisibleToLibrary(
   movie: Pick<Movie, 'tmdbId' | 'releaseDate' | 'digitalReleaseDate'>,
   today = todayIsoDate(),
 ): boolean {
+  if (isLibraryItemHidden('movie', movie.tmdbId)) return false
   return getManualMovieAvailabilityOverride(movie.tmdbId) || isMovieAvailable(movie, today)
 }
 
@@ -655,48 +670,47 @@ function movieAvailabilityWhere(availableOnly: boolean): string {
       WHERE source_items.media_type = 'movie'
         AND source_items.tmdb_id = movies.tmdb_id
     )`,
+    `NOT EXISTS (
+      SELECT 1
+      FROM hidden_library_items
+      WHERE hidden_library_items.media_type = 'movie'
+        AND hidden_library_items.tmdb_id = movies.tmdb_id
+    )`,
   ]
   if (availableOnly) {
-    // This SQL path intentionally uses the current global movieReleaseMode.
-    // Per-movie pinned release modes live in movie_release_preferences and are
-    // honored by isMovieAvailable()/isMovieVisibleToLibrary(), but we do not
-    // join that table here because this query is used as a broad library-listing
-    // filter and we want to keep it simple/cheap. The practical mismatch only
-    // affects movies that were pinned to an older mode before a later global
-    // setting change.
-    clauses.push(config.movieReleaseMode === 'theatrical'
-      ? `(
+    const effectiveReleaseMode = `COALESCE((
+      SELECT mode
+      FROM movie_release_preferences
+      WHERE movie_release_preferences.movie_tmdb_id = movies.tmdb_id
+    ), ${sqlStringLiteral(config.movieReleaseMode)})`
+    const theatricalAvailability = `(
+      (release_date != '' AND release_date <= date('now'))
+      OR (
+        release_date = ''
+        AND digital_release_date != ''
+        AND digital_release_date <= date('now')
+      )
+    )`
+    const digitalAvailability = `(
+      (digital_release_date != '' AND digital_release_date <= date('now'))
+      OR (
+        digital_release_date = ''
+        AND release_date != ''
+        AND date(release_date, '+45 day') <= date('now')
+      )
+    )`
+    clauses.push(`(
         EXISTS (
           SELECT 1
           FROM manual_movie_availability_overrides
           WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
             AND manual_movie_availability_overrides.ignore_release_gate = 1
         )
-        OR
-        (
-          (release_date != '' AND release_date <= date('now'))
-          OR (
-            release_date = ''
-            AND digital_release_date != ''
-            AND digital_release_date <= date('now')
-          )
-        )
-      )`
-      : `(
-        EXISTS (
-          SELECT 1
-          FROM manual_movie_availability_overrides
-          WHERE manual_movie_availability_overrides.movie_tmdb_id = movies.tmdb_id
-            AND manual_movie_availability_overrides.ignore_release_gate = 1
-        )
-        OR
-        (
-          (digital_release_date != '' AND digital_release_date <= date('now'))
-          OR (
-            digital_release_date = ''
-            AND release_date != ''
-            AND date(release_date, '+45 day') <= date('now')
-          )
+        OR (
+          CASE ${effectiveReleaseMode}
+            WHEN 'theatrical' THEN ${theatricalAvailability}
+            ELSE ${digitalAvailability}
+          END
         )
       )`)
   }
@@ -710,6 +724,12 @@ function showAvailabilityWhere(availableOnly: boolean): string {
       FROM source_items
       WHERE source_items.media_type = 'show'
         AND source_items.tmdb_id = shows.tmdb_id
+    )`,
+    `NOT EXISTS (
+      SELECT 1
+      FROM hidden_library_items
+      WHERE hidden_library_items.media_type = 'show'
+        AND hidden_library_items.tmdb_id = shows.tmdb_id
     )`,
   ]
   if (availableOnly) {
@@ -1320,6 +1340,54 @@ export function hasAnySourceItem(mediaType: MediaType, tmdbId: number): boolean 
   return !!row
 }
 
+export function isLibraryItemHidden(mediaType: MediaType, tmdbId: number): boolean {
+  const row = getDb().prepare(`
+    SELECT 1
+    FROM hidden_library_items
+    WHERE media_type = ? AND tmdb_id = ?
+    LIMIT 1
+  `).get(mediaType, tmdbId)
+  return !!row
+}
+
+export function hideLibraryItem(mediaType: MediaType, tmdbId: number): void {
+  getDb().prepare(`
+    INSERT INTO hidden_library_items (media_type, tmdb_id, hidden_at)
+    VALUES (?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+    ON CONFLICT(media_type, tmdb_id) DO UPDATE SET
+      hidden_at = excluded.hidden_at
+  `).run(mediaType, tmdbId)
+}
+
+export function unhideLibraryItem(mediaType: MediaType, tmdbId: number): number {
+  const info = getDb().prepare(`
+    DELETE FROM hidden_library_items
+    WHERE media_type = ? AND tmdb_id = ?
+  `).run(mediaType, tmdbId)
+  return info.changes
+}
+
+export function listHiddenLibraryItems(limit = 200, offset = 0): HiddenLibraryItem[] {
+  const rows = getDb().prepare(`
+    SELECT media_type, tmdb_id, hidden_at
+    FROM hidden_library_items
+    ORDER BY hidden_at DESC
+    LIMIT ? OFFSET ?
+  `).all(limit, offset) as { media_type: MediaType; tmdb_id: number; hidden_at: string }[]
+  return rows.map(row => ({
+    mediaType: row.media_type,
+    tmdbId: row.tmdb_id,
+    hiddenAt: row.hidden_at,
+  }))
+}
+
+export function countHiddenLibraryItems(): number {
+  return (getDb().prepare(`
+    SELECT COUNT(*) AS n
+    FROM hidden_library_items
+  `).get() as { n: number }).n
+}
+
 export function listSourceKeys(prefix?: string): string[] {
   const rows = prefix
     ? getDb().prepare(`
@@ -1462,6 +1530,7 @@ export function pruneOrphanedMovies(tmdbIds: number[]): number {
   db.transaction(() => {
     db.prepare(`DELETE FROM movie_release_preferences WHERE movie_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
     db.prepare(`DELETE FROM manual_movie_availability_overrides WHERE movie_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
+    db.prepare(`DELETE FROM hidden_library_items WHERE media_type = 'movie' AND tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
     db.prepare(`DELETE FROM movies WHERE tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
   })()
   return orphaned.length
@@ -1478,6 +1547,7 @@ export function pruneOrphanedShows(tmdbIds: number[]): number {
   const db = getDb()
   db.transaction(() => {
     db.prepare(`DELETE FROM manual_show_subscriptions WHERE show_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
+    db.prepare(`DELETE FROM hidden_library_items WHERE media_type = 'show' AND tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
     db.prepare(`DELETE FROM episodes WHERE show_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
     db.prepare(`DELETE FROM seasons WHERE show_tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
     db.prepare(`DELETE FROM shows WHERE tmdb_id IN (${sqlPlaceholders(orphaned.length)})`).run(...orphaned)
