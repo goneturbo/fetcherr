@@ -13,14 +13,15 @@ async function rdFetch(
   body?: Record<string, string>,
 ): Promise<unknown> {
   let res: Response
+  const formBody = body ? new URLSearchParams(body) : undefined
   try {
     res = await fetch(`${BASE}${path}`, {
       method,
       headers: {
         Authorization: `Bearer ${config.rdApiKey}`,
-        ...(body ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
+        ...(formBody ? { 'Content-Type': 'application/x-www-form-urlencoded' } : {}),
       },
-      body: body ? new URLSearchParams(body).toString() : undefined,
+      body: formBody,
       signal: AbortSignal.timeout(15_000),
     })
   } catch (err) {
@@ -202,6 +203,57 @@ function cacheResolvedStream(hash: string, filePathHint: string | undefined, val
   })
 }
 
+const SELECTABLE_VIDEO_EXTS = new Set(['mkv', 'mp4', 'avi', 'mov', 'm4v', 'ts', 'm2ts', 'wmv', 'flv', 'webm'])
+
+function torrentFileExt(path: string): string {
+  return path.split('?')[0]?.split('.').pop()?.toLowerCase() ?? ''
+}
+
+function isLikelyPlayableTorrentFile(file: RdTorrentFile): boolean {
+  const lower = file.path.toLowerCase()
+  if (/\bsample\b|\btrailer\b|\bextras?\b|\bfeaturette\b/.test(lower)) return false
+  return SELECTABLE_VIDEO_EXTS.has(torrentFileExt(lower))
+}
+
+function selectableTorrentFileIds(info: RdTorrentInfo, filePathHint?: string): number[] {
+  const files = info.files.filter(file => file.bytes > 0)
+  const playableFiles = files.filter(isLikelyPlayableTorrentFile)
+  const candidates = playableFiles.length ? playableFiles : files
+
+  if (filePathHint && candidates.length > 1) {
+    const hint = filePathHint.toLowerCase()
+    return [...candidates]
+      .sort((a, b) => similarity(b.path.toLowerCase(), hint) - similarity(a.path.toLowerCase(), hint))
+      .map(file => file.id)
+  }
+
+  return candidates.map(file => file.id)
+}
+
+function isMissingFilesParameterError(err: unknown): boolean {
+  return err instanceof Error && (
+    err.message.includes('"parameter_missing"')
+    || err.message.includes('{files} is missing')
+  )
+}
+
+async function selectTorrentFiles(torrentId: string, filePathHint?: string): Promise<void> {
+  try {
+    await selectFiles(torrentId, 'all')
+    return
+  } catch (err) {
+    if (!isMissingFilesParameterError(err)) throw err
+    console.warn(`rd: selectFiles(all) failed for ${torrentId}; retrying with explicit file ids`)
+  }
+
+  const info = await getTorrentInfo(torrentId)
+  const fileIds = selectableTorrentFileIds(info, filePathHint)
+  if (!fileIds.length) {
+    throw new Error(`RD torrent ${torrentId} has no selectable files`)
+  }
+  await selectFiles(torrentId, fileIds)
+}
+
 /**
  * Given a torrent hash and optional file-path hint, add to RD, unrestrict the
  * best matching file, delete the torrent, and return the direct-download URL.
@@ -227,7 +279,7 @@ export async function resolveStream(
 
   try {
     // Select all files so RD starts processing immediately; we'll pick later
-    await selectFiles(torrentId, 'all')
+    await selectTorrentFiles(torrentId, filePathHint)
     const info = await waitDownloaded(torrentId)
 
     // Choose the link whose file path best matches the hint, or pick largest

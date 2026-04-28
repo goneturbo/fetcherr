@@ -489,7 +489,7 @@
     if (hasNewValue) {
       setConfigStateBadge(service, 'Needs Validation', 'pending')
     } else if (cfg.hasStored()) {
-      setConfigStateBadge(service, 'Configured', 'ok')
+      setConfigStateBadge(service, 'Connected', 'ok')
     } else {
       setConfigStateBadge(service, '', '')
     }
@@ -789,8 +789,8 @@
     button.disabled = false
     if (res.ok) {
       button.hidden = true
-      setConfigStateBadge(service, 'Validated', 'ok')
-      showOut(`${cfg.label} API key is valid.`, 'success')
+      setConfigStateBadge(service, 'Connected', 'ok')
+      showOut(`${cfg.label} API key connected successfully.`, 'success')
     } else {
       button.hidden = false
       setConfigStateBadge(service, 'Invalid', 'err')

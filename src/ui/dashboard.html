@@ -342,7 +342,12 @@
 
   function closeLibraryActionMenu() {
     if (openLibraryActionMenuKey == null) return
+    const trigger = document.getElementById(`libraryActionTrigger-${openLibraryActionMenuKey}`)
     const menu = document.getElementById(`libraryActionMenu-${openLibraryActionMenuKey}`)
+    if (trigger) {
+      trigger.classList.remove('open')
+      trigger.setAttribute('aria-expanded', 'false')
+    }
     if (menu) {
       menu.classList.remove('open')
       menu.hidden = true
@@ -355,6 +360,11 @@
     const previous = openLibraryActionMenuKey
     if (previous != null && previous !== key) {
       const previousMenu = document.getElementById(`libraryActionMenu-${previous}`)
+      const previousTrigger = document.getElementById(`libraryActionTrigger-${previous}`)
+      if (previousTrigger) {
+        previousTrigger.classList.remove('open')
+        previousTrigger.setAttribute('aria-expanded', 'false')
+      }
       if (previousMenu) {
         previousMenu.classList.remove('open')
         previousMenu.hidden = true
@@ -363,10 +373,15 @@
 
     openLibraryActionMenuKey = previous === key ? null : key
     const menu = document.getElementById(`libraryActionMenu-${key}`)
+    const trigger = document.getElementById(`libraryActionTrigger-${key}`)
     if (menu) {
       const isOpen = openLibraryActionMenuKey === key
       menu.hidden = !isOpen
       menu.classList.toggle('open', isOpen)
+      if (trigger) {
+        trigger.classList.toggle('open', isOpen)
+        trigger.setAttribute('aria-expanded', isOpen ? 'true' : 'false')
+      }
     }
   }
 
@@ -386,13 +401,37 @@
       `
     return `
       <div class="library-action-wrap" onclick="event.stopPropagation()">
-        <button type="button" class="item-menu-trigger" title="Title options" aria-label="Title options" onclick="toggleLibraryActionMenu('${key}', event)">
-          <span aria-hidden="true">...</span>
+        <button type="button" id="libraryActionTrigger-${key}" class="item-menu-trigger" title="${isShow ? 'Series mode' : 'Release window'}" aria-label="${isShow ? 'Series mode' : 'Release window'}" aria-haspopup="menu" aria-expanded="false" onclick="toggleLibraryActionMenu('${key}', event)">
+          <svg aria-hidden="true" fill="currentColor" viewBox="0 0 24 24">
+            <circle cx="12" cy="12" r="1.8"/>
+            <circle cx="19" cy="12" r="1.8"/>
+            <circle cx="5" cy="12" r="1.8"/>
+          </svg>
         </button>
-        <div class="library-action-menu" id="libraryActionMenu-${key}" hidden>
+        <div class="library-action-menu" id="libraryActionMenu-${key}" role="menu" hidden>
           <div class="library-action-title">${isShow ? 'Series Mode' : 'Release Window'}</div>
           ${menuItems}
         </div>
+      </div>
+    `
+  }
+
+  function renderDetailModeControl(item, type) {
+    if (!currentUserIsAdmin) return ''
+    if (item.hidden) return ''
+    const isShow = type === 'tv'
+    const buttons = isShow
+      ? `
+        <button type="button" class="item-mode-btn ${item.libraryMode === 'all' ? 'active' : ''}" onclick="setShowLibraryMode(${item.tmdbId}, 'all', this, true)">Entire Series</button>
+        <button type="button" class="item-mode-btn ${item.libraryMode === 'latest' ? 'active' : ''}" onclick="setShowLibraryMode(${item.tmdbId}, 'latest', this, true)">Latest Season</button>
+      `
+      : `
+        <button type="button" class="item-mode-btn ${item.movieReleaseMode === 'digital' ? 'active' : ''}" onclick="setMovieReleaseMode(${item.tmdbId}, 'digital', this, true)">Digital Release</button>
+        <button type="button" class="item-mode-btn ${item.movieReleaseMode === 'theatrical' ? 'active' : ''}" onclick="setMovieReleaseMode(${item.tmdbId}, 'theatrical', this, true)">Theatrical Release</button>
+      `
+    return `
+      <div class="detail-mode-options" aria-label="${isShow ? 'Series mode' : 'Release window'}">
+        ${buttons}
       </div>
     `
   }
@@ -824,7 +863,7 @@
       `
       : ''
 
-    const detailActionMenu = item.inLibrary ? renderLibraryActionMenu(item, item.type, 'detail') : ''
+    const detailModeControl = item.inLibrary ? renderDetailModeControl(item, item.type) : ''
     const removeAction = item.hidden && currentUserIsAdmin
       ? `<button class="btn" onclick="unhideItem(${item.tmdbId}, '${item.type}', this)">Unhide from Library</button>`
       : item.inLibrary && currentUserIsAdmin
@@ -889,7 +928,7 @@
       ${movieOverrideCard}
       <div class="detail-actions">
         ${imdbLink}
-        ${detailActionMenu}
+        ${detailModeControl}
         ${removeAction}
       </div>
     `
@@ -925,8 +964,8 @@
   }
 
   async function setMovieReleaseMode(tmdbId, mode, btn, refreshDetail = false) {
-    const menu = btn.closest('.library-action-menu')
-    const buttons = menu ? [...menu.querySelectorAll('button')] : [btn]
+    const container = btn.closest('.library-action-menu') || btn.closest('.detail-mode-options') || btn.parentElement
+    const buttons = container ? [...container.querySelectorAll('button')] : [btn]
     buttons.forEach(el => { el.disabled = true })
     const res = await fetch('/ui/library/movie-release-mode', {
       method: 'POST',
