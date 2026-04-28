@@ -106,8 +106,18 @@
     <div class="section-title">TMDB <span class="optional-tag">Required for Search</span></div>
     <div class="field">
       <label for="tmdbApiKey">API Key</label>
-      <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key">
+      <div class="input-row">
+        <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key">
+        <button class="btn btn-sm" onclick="validateTMDB()">Validate</button>
+      </div>
       <div class="field-note">Used for metadata, artwork, and Add to Library search.</div>
+    </div>
+    <div class="status-row">
+      <div class="status-meta">
+        <strong>TMDB</strong>
+        <div class="detail" id="tmdbMeta">—</div>
+      </div>
+      <div id="tmdbStatus" class="pill">Not validated</div>
     </div>
   </section>
 
@@ -116,8 +126,18 @@
     <div class="section-title">TVDB <span class="optional-tag">Optional</span></div>
     <div class="field">
       <label for="tvdbApiKey">API Key</label>
-      <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key">
+      <div class="input-row">
+        <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key">
+        <button class="btn btn-sm" onclick="validateTVDB()">Validate</button>
+      </div>
       <div class="field-note">Optional fallback for missing TV episode thumbnails when TMDB has no still image.</div>
+    </div>
+    <div class="status-row">
+      <div class="status-meta">
+        <strong>TVDB</strong>
+        <div class="detail" id="tvdbMeta">—</div>
+      </div>
+      <div id="tvdbStatus" class="pill">Not validated</div>
     </div>
   </section>
 
@@ -372,10 +392,27 @@
     el.textContent = msg
   }
 
-  function maskKey(v) {
-    if (!v) return 'Not set'
-    if (v.length <= 8) return 'Configured'
-    return `${v.slice(0, 4)}••••${v.slice(-4)}`
+  function setSecretPlaceholder(id, hasStored, emptyPlaceholder) {
+    const input = document.getElementById(id)
+    input.value = ''
+    input.placeholder = hasStored ? '•••••••• saved on server' : emptyPlaceholder
+  }
+
+  function setApiStoredStatus(statusId, metaId, hasStored, serviceName) {
+    if (hasStored) {
+      setPill(statusId, 'Configured', 'ok')
+      document.getElementById(metaId).textContent = 'Stored on server'
+    } else {
+      setPill(statusId, 'Not set', '')
+      document.getElementById(metaId).textContent = `${serviceName} API key not configured`
+    }
+  }
+
+  function hasStoredApiKey(service) {
+    if (service === 'rd') return hasStoredRdApiKey
+    if (service === 'tmdb') return hasStoredTmdbApiKey
+    if (service === 'tvdb') return hasStoredTvdbApiKey
+    return false
   }
 
   async function loadSettings() {
@@ -389,14 +426,14 @@
     document.getElementById('sootioUrl').value         = d.sootioUrl         || ''
     renderProviderRows((d.streamProviderUrls || '').split('\n').map(v => v.trim()).filter(Boolean))
     document.getElementById('englishStreamMode').value = d.englishStreamMode || 'prefer'
-    document.getElementById('rdApiKey').value          = ''
-    document.getElementById('tmdbApiKey').value        = ''
-    document.getElementById('tvdbApiKey').value        = ''
+    setSecretPlaceholder('rdApiKey', hasStoredRdApiKey, 'Enter your Real-Debrid API key')
+    setSecretPlaceholder('tmdbApiKey', hasStoredTmdbApiKey, 'Enter your TMDB API key')
+    setSecretPlaceholder('tvdbApiKey', hasStoredTvdbApiKey, 'Enter your TVDB API key')
     document.getElementById('serverUrl').value         = d.serverUrl         || ''
     document.getElementById('showAddDefaultMode').value = d.showAddDefaultMode || 'all'
     document.getElementById('movieReleaseMode').value = d.movieReleaseMode || 'digital'
     document.getElementById('traktClientId').value     = d.traktClientId     || ''
-    document.getElementById('traktClientSecret').value = ''
+    setSecretPlaceholder('traktClientSecret', hasStoredTraktClientSecret, 'Trakt client secret')
     document.getElementById('traktWatchlistMovies').checked = d.traktWatchlistMovies !== false
     document.getElementById('traktWatchlistShows').checked = d.traktWatchlistShows !== false
     document.getElementById('traktWatchHistory').checked = d.traktWatchHistory === true
@@ -407,14 +444,9 @@
     deletedUserIds = new Set()
     renderUsers()
 
-    if (hasStoredRdApiKey) {
-      setPill('rdStatus', 'Configured', 'ok')
-      document.getElementById('rdMeta').textContent = 'Stored on server'
-    } else {
-      setPill('rdStatus', 'Not set', '')
-      document.getElementById('rdMeta').textContent = 'No API key configured'
-    }
-
+    setApiStoredStatus('rdStatus', 'rdMeta', hasStoredRdApiKey, 'Real-Debrid')
+    setApiStoredStatus('tmdbStatus', 'tmdbMeta', hasStoredTmdbApiKey, 'TMDB')
+    setApiStoredStatus('tvdbStatus', 'tvdbMeta', hasStoredTvdbApiKey, 'TVDB')
   }
 
   function roleOptions(selected) {
@@ -651,22 +683,43 @@
     })
   }
 
-  async function validateRD() {
-    const key = document.getElementById('rdApiKey').value.trim()
-    if (!key) { showOut('Enter an API key first.', 'error'); return }
-    const res = await fetch('https://api.real-debrid.com/rest/1.0/user', {
-      headers: { Authorization: `Bearer ${key}` }
-    })
-    if (res.ok) {
-      const d = await res.json()
-      setPill('rdStatus', 'Valid', 'ok')
-      document.getElementById('rdMeta').textContent = `Account: ${d.username || maskKey(key)}`
-      showOut('Real-Debrid API key is valid.', 'success')
-    } else {
-      setPill('rdStatus', 'Invalid', 'err')
-      document.getElementById('rdMeta').textContent = 'Key rejected by Real-Debrid'
-      showOut('Real-Debrid API key is invalid.', 'error')
+  async function validateApiKey(service, inputId, statusId, metaId, serviceName) {
+    const value = document.getElementById(inputId).value.trim()
+    if (!value && !hasStoredApiKey(service)) {
+      showOut(`Enter or save a ${serviceName} API key first.`, 'error')
+      return
     }
+
+    setPill(statusId, 'Checking', 'pending')
+    document.getElementById(metaId).textContent = value ? 'Validating entered key…' : 'Validating saved key…'
+
+    const res = await fetch('/ui/settings-data/validate-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ service, value }),
+    })
+    const d = await res.json().catch(() => ({}))
+    if (res.ok) {
+      setPill(statusId, 'Valid', 'ok')
+      document.getElementById(metaId).textContent = d.label || `${serviceName} key verified`
+      showOut(`${serviceName} API key is valid.`, 'success')
+    } else {
+      setPill(statusId, 'Invalid', 'err')
+      document.getElementById(metaId).textContent = d.error || `${serviceName} key validation failed`
+      showOut(d.error || `${serviceName} API key is invalid.`, 'error')
+    }
+  }
+
+  async function validateRD() {
+    await validateApiKey('rd', 'rdApiKey', 'rdStatus', 'rdMeta', 'Real-Debrid')
+  }
+
+  async function validateTMDB() {
+    await validateApiKey('tmdb', 'tmdbApiKey', 'tmdbStatus', 'tmdbMeta', 'TMDB')
+  }
+
+  async function validateTVDB() {
+    await validateApiKey('tvdb', 'tvdbApiKey', 'tvdbStatus', 'tvdbMeta', 'TVDB')
   }
 
   async function connectTrakt() {

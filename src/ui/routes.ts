@@ -92,6 +92,75 @@ const STATIC_MIME: Record<string, string> = {
   css: 'text/css',
 }
 
+type ApiKeyService = 'rd' | 'tmdb' | 'tvdb'
+
+interface TvdbValidationResponse {
+  data?: {
+    token?: string
+  }
+}
+
+function apiKeyServiceLabel(service: ApiKeyService): string {
+  if (service === 'rd') return 'Real-Debrid'
+  if (service === 'tmdb') return 'TMDB'
+  return 'TVDB'
+}
+
+function isApiKeyService(value: unknown): value is ApiKeyService {
+  return value === 'rd' || value === 'tmdb' || value === 'tvdb'
+}
+
+function configuredApiKeyForService(service: ApiKeyService): string {
+  if (service === 'rd') return config.rdApiKey
+  if (service === 'tmdb') return config.tmdbApiKey
+  return config.tvdbApiKey
+}
+
+async function validateRealDebridApiKey(key: string) {
+  const res = await fetch('https://api.real-debrid.com/rest/1.0/user', {
+    headers: { Authorization: `Bearer ${key}` },
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) throw new Error(`Real-Debrid rejected the key (${res.status}).`)
+  const json = await res.json() as { username?: string }
+  return {
+    label: json.username ? `Account: ${json.username}` : 'Real-Debrid account verified',
+  }
+}
+
+async function validateTmdbApiKey(key: string) {
+  const url = new URL('https://api.themoviedb.org/3/configuration')
+  url.searchParams.set('api_key', key)
+  const res = await fetch(url, { signal: AbortSignal.timeout(15_000) })
+  if (!res.ok) throw new Error(`TMDB rejected the key (${res.status}).`)
+  const json = await res.json() as { images?: unknown }
+  if (!json.images) throw new Error('TMDB accepted the request but returned an unexpected response.')
+  return {
+    label: 'TMDB key verified',
+  }
+}
+
+async function validateTvdbApiKey(key: string) {
+  const res = await fetch('https://api4.thetvdb.com/v4/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apikey: key }),
+    signal: AbortSignal.timeout(15_000),
+  })
+  if (!res.ok) throw new Error(`TVDB rejected the key (${res.status}).`)
+  const json = await res.json() as TvdbValidationResponse
+  if (!json.data?.token) throw new Error('TVDB accepted the request but did not return an auth token.')
+  return {
+    label: 'TVDB key verified',
+  }
+}
+
+async function validateApiKeyForService(service: ApiKeyService, key: string) {
+  if (service === 'rd') return validateRealDebridApiKey(key)
+  if (service === 'tmdb') return validateTmdbApiKey(key)
+  return validateTvdbApiKey(key)
+}
+
 function html(file: string) {
   return readFileSync(join(__dir, file), 'utf8')
     .replaceAll('__APP_VERSION_LABEL__', escapeHtml(APP_BUILD.label))
@@ -553,6 +622,33 @@ export async function uiRoutes(app: FastifyInstance) {
       }
     } catch (err) {
       return reply.code(502).send({ error: `Failed to load Trakt lists: ${String(err)}` })
+    }
+  })
+
+  app.post('/ui/settings-data/validate-key', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    const body = (req.body ?? {}) as { service?: unknown; value?: unknown }
+    if (!isApiKeyService(body.service)) {
+      return reply.code(400).send({ error: 'Unsupported API service.' })
+    }
+
+    const service = body.service
+    const enteredKey = typeof body.value === 'string' ? body.value.trim() : ''
+    const key = enteredKey || configuredApiKeyForService(service)
+    if (!key) {
+      return reply.code(400).send({ error: `${apiKeyServiceLabel(service)} API key is not configured.` })
+    }
+
+    try {
+      const result = await validateApiKeyForService(service, key)
+      return {
+        ok: true,
+        service,
+        label: result.label,
+        source: enteredKey ? 'entered' : 'stored',
+      }
+    } catch (err) {
+      return reply.code(502).send({ error: err instanceof Error ? err.message : 'API key validation failed.' })
     }
   })
 
