@@ -401,13 +401,7 @@
       `
     return `
       <div class="library-action-wrap" onclick="event.stopPropagation()">
-        <button type="button" id="libraryActionTrigger-${key}" class="item-menu-trigger" title="${isShow ? 'Series mode' : 'Release window'}" aria-label="${isShow ? 'Series mode' : 'Release window'}" aria-haspopup="menu" aria-expanded="false" onclick="toggleLibraryActionMenu('${key}', event)">
-          <svg aria-hidden="true" fill="currentColor" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="1.8"/>
-            <circle cx="19" cy="12" r="1.8"/>
-            <circle cx="5" cy="12" r="1.8"/>
-          </svg>
-        </button>
+        <button type="button" id="libraryActionTrigger-${key}" class="item-menu-trigger" title="${isShow ? 'Series mode' : 'Release window'}" aria-label="${isShow ? 'Series mode' : 'Release window'}" aria-haspopup="menu" aria-expanded="false" onclick="toggleLibraryActionMenu('${key}', event)"></button>
         <div class="library-action-menu" id="libraryActionMenu-${key}" role="menu" hidden>
           <div class="library-action-title">${isShow ? 'Series Mode' : 'Release Window'}</div>
           ${menuItems}

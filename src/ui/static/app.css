@@ -979,9 +979,14 @@ label {
   background: var(--accent-dim);
 }
 
-.item-menu-trigger svg {
-  width: 19px;
-  height: 19px;
+.item-menu-trigger::before {
+  content: "";
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: currentColor;
+  box-shadow: -7px 0 0 currentColor, 7px 0 0 currentColor;
+  opacity: .9;
   pointer-events: none;
 }
 
