@@ -401,7 +401,11 @@
       `
     return `
       <div class="library-action-wrap" onclick="event.stopPropagation()">
-        <button type="button" id="libraryActionTrigger-${key}" class="item-menu-trigger" title="${isShow ? 'Series mode' : 'Release window'}" aria-label="${isShow ? 'Series mode' : 'Release window'}" aria-haspopup="menu" aria-expanded="false" onclick="toggleLibraryActionMenu('${key}', event)"></button>
+        <button type="button" id="libraryActionTrigger-${key}" class="item-menu-trigger" title="${isShow ? 'Series mode' : 'Release window'}" aria-label="${isShow ? 'Series mode' : 'Release window'}" aria-haspopup="menu" aria-expanded="false" onclick="toggleLibraryActionMenu('${key}', event)">
+          <span class="item-menu-dots" aria-hidden="true">
+            <span></span><span></span><span></span>
+          </span>
+        </button>
         <div class="library-action-menu" id="libraryActionMenu-${key}" role="menu" hidden>
           <div class="library-action-title">${isShow ? 'Series Mode' : 'Release Window'}</div>
           ${menuItems}

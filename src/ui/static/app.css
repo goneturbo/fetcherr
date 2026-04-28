@@ -979,15 +979,20 @@ label {
   background: var(--accent-dim);
 }
 
-.item-menu-trigger::before {
-  content: "";
-  width: 4px;
-  height: 4px;
+.item-menu-dots {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  pointer-events: none;
+}
+
+.item-menu-dots span {
+  width: 5px;
+  height: 5px;
   border-radius: 50%;
   background: currentColor;
-  box-shadow: -7px 0 0 currentColor, 7px 0 0 currentColor;
-  opacity: .9;
-  pointer-events: none;
+  opacity: .95;
 }
 
 .library-action-menu {
