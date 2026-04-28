@@ -473,8 +473,9 @@
     const badge = cfg ? document.getElementById(cfg.badgeId) : null
     if (!badge) return
     badge.hidden = !text
-    badge.className = ['config-state', kind].filter(Boolean).join(' ')
-    badge.textContent = text || ''
+    badge.className = ['pill', kind].filter(Boolean).join(' ')
+    const dot = kind ? `<span class="pill-dot"></span>` : ''
+    badge.innerHTML = text ? `${dot}<span>${text}</span>` : ''
   }
 
   function setApiStoredStatus(service) {

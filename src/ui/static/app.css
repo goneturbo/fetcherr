@@ -934,6 +934,11 @@ label {
   height: 18px;
 }
 
+.btn-spinner {
+  animation: fetcherr-spin .75s linear infinite;
+  transform-origin: center;
+}
+
 .btn-unhide {
   color: #d9ffe2;
   border-color: var(--green-border);
@@ -1166,6 +1171,12 @@ label {
   }
 }
 
+@keyframes fetcherr-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .pill,
 .badge-in-lib,
 .log-badge {
@@ -1180,6 +1191,10 @@ label {
   font-size: 11px;
   font-weight: 650;
   white-space: nowrap;
+}
+
+.pill[hidden] {
+  display: none;
 }
 
 .pill.green,
