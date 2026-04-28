@@ -343,7 +343,10 @@
   function closeLibraryActionMenu() {
     if (openLibraryActionMenuKey == null) return
     const menu = document.getElementById(`libraryActionMenu-${openLibraryActionMenuKey}`)
-    if (menu) menu.classList.remove('open')
+    if (menu) {
+      menu.classList.remove('open')
+      menu.hidden = true
+    }
     openLibraryActionMenuKey = null
   }
 
@@ -352,12 +355,19 @@
     const previous = openLibraryActionMenuKey
     if (previous != null && previous !== key) {
       const previousMenu = document.getElementById(`libraryActionMenu-${previous}`)
-      if (previousMenu) previousMenu.classList.remove('open')
+      if (previousMenu) {
+        previousMenu.classList.remove('open')
+        previousMenu.hidden = true
+      }
     }
 
     openLibraryActionMenuKey = previous === key ? null : key
     const menu = document.getElementById(`libraryActionMenu-${key}`)
-    if (menu) menu.classList.toggle('open', openLibraryActionMenuKey === key)
+    if (menu) {
+      const isOpen = openLibraryActionMenuKey === key
+      menu.hidden = !isOpen
+      menu.classList.toggle('open', isOpen)
+    }
   }
 
   function renderLibraryActionMenu(item, type, scope = 'item') {
@@ -377,11 +387,9 @@
     return `
       <div class="library-action-wrap" onclick="event.stopPropagation()">
         <button type="button" class="item-menu-trigger" title="Title options" aria-label="Title options" onclick="toggleLibraryActionMenu('${key}', event)">
-          <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="5" cy="12" r="1.4"/><circle cx="12" cy="12" r="1.4"/><circle cx="19" cy="12" r="1.4"/>
-          </svg>
+          <span aria-hidden="true">...</span>
         </button>
-        <div class="library-action-menu" id="libraryActionMenu-${key}">
+        <div class="library-action-menu" id="libraryActionMenu-${key}" hidden>
           <div class="library-action-title">${isShow ? 'Series Mode' : 'Release Window'}</div>
           ${menuItems}
         </div>

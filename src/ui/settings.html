@@ -84,60 +84,39 @@
 
   <!-- Real-Debrid -->
   <section class="section" id="debrid">
-    <div class="section-title">Real-Debrid</div>
+    <div class="section-title">Real-Debrid <span id="rdConfigState" class="config-state" hidden></span></div>
     <div class="field">
       <label for="rdApiKey">API Key</label>
       <div class="input-row">
-        <input id="rdApiKey" type="password" placeholder="Enter your Real-Debrid API key">
-        <button class="btn btn-sm" onclick="validateRD()">Validate</button>
+        <input id="rdApiKey" type="password" placeholder="Enter your Real-Debrid API key" oninput="onApiKeyInput('rd')">
+        <button id="rdValidateBtn" class="btn btn-sm" onclick="validateRD()" hidden>Validate</button>
       </div>
-    </div>
-    <div class="status-row">
-      <div class="status-meta">
-        <strong>Real-Debrid</strong>
-        <div class="detail" id="rdMeta">—</div>
-      </div>
-      <div id="rdStatus" class="pill">Not validated</div>
     </div>
   </section>
 
   <!-- TMDB -->
   <section class="section" id="metadata">
-    <div class="section-title">TMDB <span class="optional-tag">Required for Search</span></div>
+    <div class="section-title">TMDB <span class="optional-tag">Required for Search</span> <span id="tmdbConfigState" class="config-state" hidden></span></div>
     <div class="field">
       <label for="tmdbApiKey">API Key</label>
       <div class="input-row">
-        <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key">
-        <button class="btn btn-sm" onclick="validateTMDB()">Validate</button>
+        <input id="tmdbApiKey" type="password" placeholder="Enter your TMDB API key" oninput="onApiKeyInput('tmdb')">
+        <button id="tmdbValidateBtn" class="btn btn-sm" onclick="validateTMDB()" hidden>Validate</button>
       </div>
       <div class="field-note">Used for metadata, artwork, and Add to Library search.</div>
-    </div>
-    <div class="status-row">
-      <div class="status-meta">
-        <strong>TMDB</strong>
-        <div class="detail" id="tmdbMeta">—</div>
-      </div>
-      <div id="tmdbStatus" class="pill">Not validated</div>
     </div>
   </section>
 
   <!-- TVDB -->
   <section class="section">
-    <div class="section-title">TVDB <span class="optional-tag">Optional</span></div>
+    <div class="section-title">TVDB <span class="optional-tag">Optional</span> <span id="tvdbConfigState" class="config-state" hidden></span></div>
     <div class="field">
       <label for="tvdbApiKey">API Key</label>
       <div class="input-row">
-        <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key">
-        <button class="btn btn-sm" onclick="validateTVDB()">Validate</button>
+        <input id="tvdbApiKey" type="password" placeholder="Enter your TVDB API key" oninput="onApiKeyInput('tvdb')">
+        <button id="tvdbValidateBtn" class="btn btn-sm" onclick="validateTVDB()" hidden>Validate</button>
       </div>
       <div class="field-note">Optional fallback for missing TV episode thumbnails when TMDB has no still image.</div>
-    </div>
-    <div class="status-row">
-      <div class="status-meta">
-        <strong>TVDB</strong>
-        <div class="detail" id="tvdbMeta">—</div>
-      </div>
-      <div id="tvdbStatus" class="pill">Not validated</div>
     </div>
   </section>
 
@@ -398,21 +377,59 @@
     input.placeholder = hasStored ? '•••••••• saved on server' : emptyPlaceholder
   }
 
-  function setApiStoredStatus(statusId, metaId, hasStored, serviceName) {
-    if (hasStored) {
-      setPill(statusId, 'Configured', 'ok')
-      document.getElementById(metaId).textContent = 'Stored on server'
+  const apiCredentialUi = {
+    rd: {
+      inputId: 'rdApiKey',
+      buttonId: 'rdValidateBtn',
+      badgeId: 'rdConfigState',
+      label: 'Real-Debrid',
+      hasStored: () => hasStoredRdApiKey,
+    },
+    tmdb: {
+      inputId: 'tmdbApiKey',
+      buttonId: 'tmdbValidateBtn',
+      badgeId: 'tmdbConfigState',
+      label: 'TMDB',
+      hasStored: () => hasStoredTmdbApiKey,
+    },
+    tvdb: {
+      inputId: 'tvdbApiKey',
+      buttonId: 'tvdbValidateBtn',
+      badgeId: 'tvdbConfigState',
+      label: 'TVDB',
+      hasStored: () => hasStoredTvdbApiKey,
+    },
+  }
+
+  function setConfigStateBadge(service, text, kind = '') {
+    const cfg = apiCredentialUi[service]
+    const badge = cfg ? document.getElementById(cfg.badgeId) : null
+    if (!badge) return
+    badge.hidden = !text
+    badge.className = ['config-state', kind].filter(Boolean).join(' ')
+    badge.textContent = text || ''
+  }
+
+  function setApiStoredStatus(service) {
+    const cfg = apiCredentialUi[service]
+    if (!cfg) return
+    const input = document.getElementById(cfg.inputId)
+    const button = document.getElementById(cfg.buttonId)
+    const hasNewValue = input.value.trim().length > 0
+    button.hidden = !hasNewValue
+    button.disabled = false
+
+    if (hasNewValue) {
+      setConfigStateBadge(service, 'Needs Validation', 'pending')
+    } else if (cfg.hasStored()) {
+      setConfigStateBadge(service, 'Configured', 'ok')
     } else {
-      setPill(statusId, 'Not set', '')
-      document.getElementById(metaId).textContent = `${serviceName} API key not configured`
+      setConfigStateBadge(service, '', '')
     }
   }
 
-  function hasStoredApiKey(service) {
-    if (service === 'rd') return hasStoredRdApiKey
-    if (service === 'tmdb') return hasStoredTmdbApiKey
-    if (service === 'tvdb') return hasStoredTvdbApiKey
-    return false
+  function onApiKeyInput(service) {
+    setApiStoredStatus(service)
   }
 
   async function loadSettings() {
@@ -444,9 +461,9 @@
     deletedUserIds = new Set()
     renderUsers()
 
-    setApiStoredStatus('rdStatus', 'rdMeta', hasStoredRdApiKey, 'Real-Debrid')
-    setApiStoredStatus('tmdbStatus', 'tmdbMeta', hasStoredTmdbApiKey, 'TMDB')
-    setApiStoredStatus('tvdbStatus', 'tvdbMeta', hasStoredTvdbApiKey, 'TVDB')
+    setApiStoredStatus('rd')
+    setApiStoredStatus('tmdb')
+    setApiStoredStatus('tvdb')
   }
 
   function roleOptions(selected) {
@@ -683,15 +700,18 @@
     })
   }
 
-  async function validateApiKey(service, inputId, statusId, metaId, serviceName) {
-    const value = document.getElementById(inputId).value.trim()
-    if (!value && !hasStoredApiKey(service)) {
-      showOut(`Enter or save a ${serviceName} API key first.`, 'error')
+  async function validateApiKey(service) {
+    const cfg = apiCredentialUi[service]
+    const input = cfg ? document.getElementById(cfg.inputId) : null
+    const button = cfg ? document.getElementById(cfg.buttonId) : null
+    const value = input ? input.value.trim() : ''
+    if (!cfg || !input || !button || !value) {
+      setApiStoredStatus(service)
       return
     }
 
-    setPill(statusId, 'Checking', 'pending')
-    document.getElementById(metaId).textContent = value ? 'Validating entered key…' : 'Validating saved key…'
+    button.disabled = true
+    setConfigStateBadge(service, 'Checking', 'pending')
 
     const res = await fetch('/ui/settings-data/validate-key', {
       method: 'POST',
@@ -699,27 +719,28 @@
       body: JSON.stringify({ service, value }),
     })
     const d = await res.json().catch(() => ({}))
+    button.disabled = false
     if (res.ok) {
-      setPill(statusId, 'Valid', 'ok')
-      document.getElementById(metaId).textContent = d.label || `${serviceName} key verified`
-      showOut(`${serviceName} API key is valid.`, 'success')
+      button.hidden = true
+      setConfigStateBadge(service, 'Validated', 'ok')
+      showOut(`${cfg.label} API key is valid.`, 'success')
     } else {
-      setPill(statusId, 'Invalid', 'err')
-      document.getElementById(metaId).textContent = d.error || `${serviceName} key validation failed`
-      showOut(d.error || `${serviceName} API key is invalid.`, 'error')
+      button.hidden = false
+      setConfigStateBadge(service, 'Invalid', 'err')
+      showOut(d.error || `${cfg.label} API key is invalid.`, 'error')
     }
   }
 
   async function validateRD() {
-    await validateApiKey('rd', 'rdApiKey', 'rdStatus', 'rdMeta', 'Real-Debrid')
+    await validateApiKey('rd')
   }
 
   async function validateTMDB() {
-    await validateApiKey('tmdb', 'tmdbApiKey', 'tmdbStatus', 'tmdbMeta', 'TMDB')
+    await validateApiKey('tmdb')
   }
 
   async function validateTVDB() {
-    await validateApiKey('tvdb', 'tvdbApiKey', 'tvdbStatus', 'tvdbMeta', 'TVDB')
+    await validateApiKey('tvdb')
   }
 
   async function connectTrakt() {

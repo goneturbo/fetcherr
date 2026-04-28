@@ -260,6 +260,11 @@ h1 {
   transition: background .15s, border-color .15s, color .15s, transform .15s;
 }
 
+.btn[hidden],
+button[hidden] {
+  display: none !important;
+}
+
 .btn:hover,
 .btn-add:hover {
   border-color: var(--border-strong);
@@ -496,6 +501,51 @@ label {
   font-size: 10px;
   font-weight: 650;
   text-transform: uppercase;
+}
+
+.config-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: rgba(255,255,255,.035);
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 750;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.config-state[hidden] {
+  display: none;
+}
+
+.config-state::before {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.config-state.ok {
+  color: #d9ffe2;
+  border-color: var(--green-border);
+  background: var(--green-dim);
+}
+
+.config-state.pending {
+  color: #ffedc2;
+  border-color: var(--amber-border);
+  background: var(--amber-dim);
+}
+
+.config-state.err {
+  color: #ffd2cf;
+  border-color: var(--red-border);
+  background: var(--red-dim);
 }
 
 .stats {
@@ -844,6 +894,9 @@ label {
 }
 
 .btn-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 40px;
   padding: 0;
@@ -881,6 +934,9 @@ label {
 }
 
 .item-menu-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 40px;
   height: 40px;
   padding: 0;
@@ -890,6 +946,15 @@ label {
   color: var(--muted-strong);
   cursor: pointer;
   transition: border-color .15s, background .15s, color .15s, transform .15s;
+}
+
+.item-menu-trigger span {
+  display: block;
+  margin-top: -5px;
+  font-size: 19px;
+  font-weight: 800;
+  letter-spacing: 0;
+  line-height: 1;
 }
 
 .item-menu-trigger:hover {
@@ -916,6 +981,10 @@ label {
   border-radius: var(--radius-lg);
   background: rgba(20, 24, 33, .98);
   box-shadow: var(--shadow-soft);
+}
+
+.library-action-menu[hidden] {
+  display: none !important;
 }
 
 .library-action-menu.open {
