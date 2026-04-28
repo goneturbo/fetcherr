@@ -9,6 +9,7 @@ import { fetchEpisodeStillFallbacks } from './tvdb.js'
 
 const BASE = 'https://api.themoviedb.org/3'
 const MISSING_STILL_RETRY_MS = 7 * 24 * 60 * 60 * 1000
+const ACTIVE_SHOW_REFRESH_MS = 6 * 60 * 60 * 1000
 
 async function tmdbGet(path: string): Promise<unknown> {
   const sep = path.includes('?') ? '&' : '?'
@@ -27,6 +28,35 @@ function shouldRetryMissingStillBackfill(episodes: Episode[]): boolean {
     if (Number.isNaN(syncedAt)) return true
     return now - syncedAt >= MISSING_STILL_RETRY_MS
   })
+}
+
+function isOngoingShow(show: Pick<Show, 'status'>): boolean {
+  const status = show.status.trim().toLowerCase()
+  return status !== 'ended' && status !== 'canceled' && status !== 'cancelled'
+}
+
+function isStaleSyncedAt(value: string, maxAgeMs: number): boolean {
+  const syncedAt = Date.parse(value)
+  if (Number.isNaN(syncedAt)) return true
+  return Date.now() - syncedAt >= maxAgeMs
+}
+
+function latestSeasonNumber(seasons: Season[]): number {
+  return seasons.reduce((max, season) => season.seasonNumber > 0 ? Math.max(max, season.seasonNumber) : max, 0)
+}
+
+async function refreshShowMetadata(show: Show): Promise<Show> {
+  try {
+    const r = await tmdbGet(`/tv/${show.tmdbId}?append_to_response=external_ids,images,content_ratings,keywords&include_image_language=en,null`) as
+      TmdbShowRaw & { external_ids?: { imdb_id?: string; tvdb_id?: number }; images?: TmdbImagesResponse; keywords?: TmdbKeywordsResponse }
+    const imdbId = r.external_ids?.imdb_id ?? show.imdbId
+    const tvdbId = r.external_ids?.tvdb_id ?? show.tvdbId
+    const updated = raw2show(r, imdbId, tvdbId, show.syncedAt)
+    upsertShow(updated)
+    return getShowByTmdbId(show.tmdbId) ?? { id: show.id, ...updated }
+  } catch {
+    return show
+  }
 }
 
 interface TmdbMovieRaw {
@@ -480,16 +510,33 @@ export async function refreshShowMetadataIfNeeded(show: Show): Promise<void> {
  * Fetches any season not yet present.
  */
 export async function ensureShowSeasonsCached(show: Show): Promise<void> {
-  const cached = getSeasonsForShow(show.tmdbId)
+  let effectiveShow = show
+  let cached = getSeasonsForShow(show.tmdbId)
+  const cachedLatestSeason = latestSeasonNumber(cached)
+  const cachedLatest = cached.find(season => season.seasonNumber === cachedLatestSeason)
+  if (config.tmdbApiKey && isOngoingShow(effectiveShow) && (!cachedLatest || isStaleSyncedAt(cachedLatest.syncedAt, ACTIVE_SHOW_REFRESH_MS))) {
+    effectiveShow = await refreshShowMetadata(effectiveShow)
+    cached = getSeasonsForShow(effectiveShow.tmdbId)
+  }
+
   const cachedNums = new Set(cached.map(s => s.seasonNumber))
-  const showMode = getEffectiveShowMode(show.tmdbId)
+  const cachedByNumber = new Map(cached.map(season => [season.seasonNumber, season]))
+  const showMode = getEffectiveShowMode(effectiveShow.tmdbId)
+  const latestKnownSeasonNumber = effectiveShow.numSeasons > 0 ? effectiveShow.numSeasons : (showMode.activeSeasonNumber || 0)
   const seasonNumbers = showMode.mode === 'latest'
-    ? [showMode.activeSeasonNumber || show.numSeasons].filter(n => n > 0)
-    : Array.from({ length: show.numSeasons }, (_, idx) => idx + 1)
+    ? [...new Set([showMode.activeSeasonNumber || latestKnownSeasonNumber, latestKnownSeasonNumber])].filter(n => n > 0)
+    : Array.from({ length: effectiveShow.numSeasons }, (_, idx) => idx + 1)
+  const activeSeasonNumber = seasonNumbers.reduce((max, n) => Math.max(max, n), 0)
 
   for (const n of seasonNumbers) {
     if (!cachedNums.has(n)) {
-      await fetchAndCacheSeasonDetails(show.tmdbId, n)
+      await fetchAndCacheSeasonDetails(effectiveShow.tmdbId, n)
+      continue
+    }
+
+    const cachedSeason = cachedByNumber.get(n)
+    if (cachedSeason && n === activeSeasonNumber && isOngoingShow(effectiveShow) && isStaleSyncedAt(cachedSeason.syncedAt, ACTIVE_SHOW_REFRESH_MS)) {
+      await fetchAndCacheSeasonDetails(effectiveShow.tmdbId, n)
       continue
     }
 
@@ -497,9 +544,9 @@ export async function ensureShowSeasonsCached(show: Show): Promise<void> {
     // This lets newly aired episodes pick up thumbnails after TMDB backfills
     // still_path without forcing all seasons with permanently missing artwork
     // to be re-fetched on every sync.
-    const airedEpisodes = getAiredEpisodesForSeason(show.tmdbId, n)
+    const airedEpisodes = getAiredEpisodesForSeason(effectiveShow.tmdbId, n)
     if (shouldRetryMissingStillBackfill(airedEpisodes)) {
-      await fetchAndCacheSeasonDetails(show.tmdbId, n)
+      await fetchAndCacheSeasonDetails(effectiveShow.tmdbId, n)
     }
   }
 }

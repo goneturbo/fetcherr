@@ -756,6 +756,10 @@ function visibleSeasonsForShow(show: Show): Season[] {
   return seasons.filter(s => s.seasonNumber === showMode.activeSeasonNumber)
 }
 
+function allAiredEpisodesForShow(show: Show): Episode[] {
+  return getSeasonsForShow(show.tmdbId).flatMap(s => getAiredEpisodesForSeason(show.tmdbId, s.seasonNumber))
+}
+
 function visibleAiredEpisodesForShow(show: Show): Episode[] {
   return visibleSeasonsForShow(show).flatMap(s => getAiredEpisodesForSeason(show.tmdbId, s.seasonNumber))
 }
@@ -895,11 +899,11 @@ async function buildSearchResultItems(
 }
 
 function findNextUpEpisode(show: Show, playedIds: Set<string>, resumeIds: Set<string>): Episode | null {
-  const airedEpisodes = visibleAiredEpisodesForShow(show)
-  if (!airedEpisodes.length) return null
+  const candidateEpisodes = visibleAiredEpisodesForShow(show)
+  if (!candidateEpisodes.length) return null
 
   let highestPlayed: Episode | null = null
-  for (const ep of airedEpisodes) {
+  for (const ep of allAiredEpisodesForShow(show)) {
     if (!playedIds.has(episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber))) continue
     if (!highestPlayed || compareEpisodeOrder(ep, highestPlayed) > 0) {
       highestPlayed = ep
@@ -908,7 +912,7 @@ function findNextUpEpisode(show: Show, playedIds: Set<string>, resumeIds: Set<st
 
   if (!highestPlayed) return null
 
-  for (const ep of airedEpisodes) {
+  for (const ep of candidateEpisodes) {
     if (compareEpisodeOrder(ep, highestPlayed) <= 0) continue
     const episodeId = episodeToId(show.tmdbId, ep.seasonNumber, ep.episodeNumber)
     if (resumeIds.has(episodeId)) continue

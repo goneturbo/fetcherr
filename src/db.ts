@@ -881,14 +881,15 @@ function row2season(r: Record<string, unknown>): Season {
 
 export function upsertSeason(s: Omit<Season, 'id'>): void {
   getDb().prepare(`
-    INSERT INTO seasons (show_tmdb_id, season_number, name, overview, poster_path, episode_count, air_date)
-    VALUES (@showTmdbId, @seasonNumber, @name, @overview, @posterPath, @episodeCount, @airDate)
+    INSERT INTO seasons (show_tmdb_id, season_number, name, overview, poster_path, episode_count, air_date, synced_at)
+    VALUES (@showTmdbId, @seasonNumber, @name, @overview, @posterPath, @episodeCount, @airDate, COALESCE(NULLIF(@syncedAt, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')))
     ON CONFLICT(show_tmdb_id, season_number) DO UPDATE SET
       name          = excluded.name,
       overview      = excluded.overview,
       poster_path   = excluded.poster_path,
       episode_count = excluded.episode_count,
-      air_date      = excluded.air_date
+      air_date      = excluded.air_date,
+      synced_at     = excluded.synced_at
   `).run(s)
 }
 
@@ -925,15 +926,16 @@ function row2episode(r: Record<string, unknown>): Episode {
 
 export function upsertEpisode(e: Omit<Episode, 'id'>): void {
   getDb().prepare(`
-    INSERT INTO episodes (show_tmdb_id, season_number, episode_number, name, overview, still_path, runtime_mins, community_rating, air_date)
-    VALUES (@showTmdbId, @seasonNumber, @episodeNumber, @name, @overview, @stillPath, @runtimeMins, @communityRating, @airDate)
+    INSERT INTO episodes (show_tmdb_id, season_number, episode_number, name, overview, still_path, runtime_mins, community_rating, air_date, synced_at)
+    VALUES (@showTmdbId, @seasonNumber, @episodeNumber, @name, @overview, @stillPath, @runtimeMins, @communityRating, @airDate, COALESCE(NULLIF(@syncedAt, ''), strftime('%Y-%m-%dT%H:%M:%SZ','now')))
     ON CONFLICT(show_tmdb_id, season_number, episode_number) DO UPDATE SET
       name         = excluded.name,
       overview     = excluded.overview,
       still_path   = excluded.still_path,
       runtime_mins = excluded.runtime_mins,
       community_rating = excluded.community_rating,
-      air_date     = excluded.air_date
+      air_date     = excluded.air_date,
+      synced_at    = excluded.synced_at
   `).run(e)
 }
 
