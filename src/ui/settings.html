@@ -293,6 +293,27 @@
   </div>
 </div>
 
+<div class="modal-backdrop" id="addonRemoveModalBackdrop" onclick="closeAddonRemoveModal(event)">
+  <div class="modal" onclick="event.stopPropagation()">
+    <div class="modal-head">
+      <div>
+        <h2 class="modal-title">Remove Add-on?</h2>
+        <p class="modal-sub">Removing this add-on stops Fetcherr from searching it for streams. Media that only resolves through this provider may become unplayable until another add-on can serve it.</p>
+      </div>
+      <button type="button" class="icon-btn" onclick="closeAddonRemoveModal()" aria-label="Close">
+        <svg xmlns="http://www.w3.org/2000/svg" width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+    <div class="addon-remove-summary" id="addonRemoveSummary"></div>
+    <div class="modal-actions">
+      <button type="button" class="btn" onclick="closeAddonRemoveModal()">Cancel</button>
+      <button type="button" class="btn btn-danger" id="confirmAddonRemoveBtn" onclick="confirmProviderRemove()">Remove Add-on</button>
+    </div>
+  </div>
+</div>
+
 <script>
   let selectedTraktLists = []
   let traktAuthPending = false
@@ -306,6 +327,7 @@
   let deletedUserIds = new Set()
   let userModalMode = 'create'
   let userModalTargetId = null
+  let pendingProviderRemoveBtn = null
 
   function escapeHtml(value) {
     return String(value ?? '')
@@ -328,13 +350,23 @@
       .filter(Boolean)
   }
 
+  function providerRemoveButtonHtml() {
+    return `
+      <button type="button" class="btn-remove provider-remove-btn" title="Remove add-on" aria-label="Remove add-on" onclick="promptRemoveProviderRow(this)">
+        <svg fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.4" stroke-linecap="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    `
+  }
+
   function renderProviderRows(urls = []) {
     const list = document.getElementById('streamProviderList')
     const values = urls.length ? urls : ['']
     list.innerHTML = values.map((url, idx) => `
       <div class="provider-row">
         <input class="provider-url-input" type="url" placeholder="${providerPlaceholder(idx)}" value="${url.replace(/"/g, '&quot;')}">
-        <button type="button" class="btn btn-sm" onclick="removeProviderRow(this)">Remove</button>
+        ${providerRemoveButtonHtml()}
       </div>
     `).join('')
   }
@@ -346,15 +378,50 @@
     const idx = list.children.length
     row.innerHTML = `
       <input class="provider-url-input" type="url" placeholder="${providerPlaceholder(idx)}" value="${value.replace(/"/g, '&quot;')}">
-      <button type="button" class="btn btn-sm" onclick="removeProviderRow(this)">Remove</button>
+      ${providerRemoveButtonHtml()}
     `
     list.appendChild(row)
+  }
+
+  function promptRemoveProviderRow(btn) {
+    const row = btn.closest('.provider-row')
+    const input = row?.querySelector('.provider-url-input')
+    const value = input?.value.trim() || ''
+    if (!value) {
+      removeProviderRow(btn)
+      return
+    }
+
+    pendingProviderRemoveBtn = btn
+    document.getElementById('addonRemoveSummary').textContent = value
+    document.getElementById('addonRemoveModalBackdrop').classList.add('open')
+    document.addEventListener('keydown', onAddonRemoveModalKey)
+    document.getElementById('confirmAddonRemoveBtn').focus()
   }
 
   function removeProviderRow(btn) {
     const list = document.getElementById('streamProviderList')
     btn.closest('.provider-row')?.remove()
     if (!list.children.length) renderProviderRows([''])
+  }
+
+  function closeAddonRemoveModal(event) {
+    if (event && event.target !== event.currentTarget) return
+    document.getElementById('addonRemoveModalBackdrop').classList.remove('open')
+    document.removeEventListener('keydown', onAddonRemoveModalKey)
+    pendingProviderRemoveBtn = null
+  }
+
+  function onAddonRemoveModalKey(event) {
+    if (event.key === 'Escape') closeAddonRemoveModal()
+  }
+
+  function confirmProviderRemove() {
+    if (pendingProviderRemoveBtn) {
+      removeProviderRow(pendingProviderRemoveBtn)
+      showOut('Add-on removed. Save settings to apply the change.', 'info')
+    }
+    closeAddonRemoveModal()
   }
 
   function setPill(id, text, kind = '') {

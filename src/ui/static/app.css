@@ -1594,6 +1594,10 @@ label {
   align-items: center;
 }
 
+.provider-remove-btn {
+  justify-self: end;
+}
+
 .provider-actions {
   margin-top: 10px;
 }
@@ -1637,6 +1641,19 @@ label {
 
 .callout a {
   color: var(--accent);
+}
+
+.addon-remove-summary {
+  overflow: hidden;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-inset);
+  color: var(--muted-strong);
+  font-size: 12px;
+  line-height: 1.45;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .checklist {
