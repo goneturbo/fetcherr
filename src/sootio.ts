@@ -18,6 +18,47 @@ export interface Stream {
   providerLabel?: string
 }
 
+export type StremioMediaType = 'movie' | 'series'
+
+export interface StremioMeta {
+  id: string
+  type?: StremioMediaType | string
+  name?: string
+  title?: string
+  poster?: string
+  background?: string
+  logo?: string
+  description?: string
+  overview?: string
+  genres?: string[]
+  genre?: string[]
+  releaseInfo?: string | number
+  year?: string | number
+  imdb_id?: string
+  imdbId?: string
+  runtime?: string
+  released?: string
+  videos?: StremioMeta[]
+  season?: number
+  episode?: number
+  number?: number
+}
+
+interface StremioCatalog {
+  id: string
+  type: string
+  name?: string
+  extra?: Array<{ name?: string; isRequired?: boolean }>
+}
+
+interface StremioManifest {
+  catalogs?: StremioCatalog[]
+}
+
+interface StremioCatalogResponse {
+  metas?: StremioMeta[]
+}
+
 export interface ProviderFetchMetric {
   time: string
   provider: string
@@ -419,6 +460,12 @@ function providerBases(): string[] {
   return [...new Set(urls)]
 }
 
+function searchProviderBases(): string[] {
+  const urls = [...config.stremioSearchProviderUrls]
+  if (!urls.length) urls.push(...providerBases())
+  return [...new Set(urls)]
+}
+
 function isSensitivePathSegment(segment: string): boolean {
   return segment.length >= 16
     || /^[0-9a-f]{12,}$/i.test(segment)
@@ -445,6 +492,72 @@ async function fetchStreams(url: string): Promise<{ streams: Stream[]; status: n
   if (!res.ok) throw new Error(`Stremio add-on returned ${res.status}`)
   const json = await res.json() as { streams?: Stream[] }
   return { streams: json.streams ?? [], status: res.status }
+}
+
+async function fetchJson<T>(url: string): Promise<T> {
+  const res = await fetch(url, { signal: AbortSignal.timeout(30_000) })
+  if (!res.ok) throw new Error(`Stremio add-on returned ${res.status}`)
+  return await res.json() as T
+}
+
+const manifestCache = new Map<string, { expiresAt: number; value: StremioManifest | null }>()
+const MANIFEST_CACHE_TTL_MS = 5 * 60 * 1000
+
+async function fetchManifest(base: string): Promise<StremioManifest | null> {
+  const cached = manifestCache.get(base)
+  if (cached && cached.expiresAt > Date.now()) return cached.value
+
+  try {
+    const value = await fetchJson<StremioManifest>(`${base}/manifest.json`)
+    manifestCache.set(base, { value, expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS })
+    return value
+  } catch {
+    manifestCache.set(base, { value: null, expiresAt: Date.now() + MANIFEST_CACHE_TTL_MS })
+    return null
+  }
+}
+
+function searchCatalog(manifest: StremioManifest | null, type: StremioMediaType): StremioCatalog | null {
+  const catalogs = manifest?.catalogs ?? []
+  return catalogs
+    .filter(catalog => catalog.type?.toLowerCase() === type)
+    .filter(catalog => catalog.extra?.some(extra => extra.name?.toLowerCase() === 'search'))
+    .sort((a, b) => Number(a.id.toLowerCase().includes('people')) - Number(b.id.toLowerCase().includes('people')))
+    [0] ?? null
+}
+
+async function fetchSearchMetasFromProvider(base: string, type: StremioMediaType, query: string): Promise<StremioMeta[]> {
+  const manifest = await fetchManifest(base)
+  const catalog = searchCatalog(manifest, type)
+  if (!catalog) return []
+
+  const url = `${base}/catalog/${type}/${encodeURIComponent(catalog.id)}/search=${encodeURIComponent(query)}.json`
+  const json = await fetchJson<StremioCatalogResponse>(url)
+  return (json.metas ?? []).map(meta => ({ ...meta, type: meta.type ?? type }))
+}
+
+export async function searchStremioMetas(query: string, types: StremioMediaType[]): Promise<StremioMeta[]> {
+  const providers = searchProviderBases()
+  if (!providers.length || !query.trim()) return []
+
+  const settled = await Promise.allSettled(
+    providers.flatMap((base, providerIdx) =>
+      types.map(async type => {
+        const metas = await fetchSearchMetasFromProvider(base, type, query)
+        return metas.map(meta => ({ meta, providerIdx }))
+      }),
+    ),
+  )
+
+  const deduped = new Map<string, StremioMeta>()
+  for (const result of settled) {
+    if (result.status !== 'fulfilled') continue
+    for (const { meta, providerIdx } of result.value) {
+      const key = `${String(meta.type ?? '').toLowerCase()}|${meta.id || meta.imdb_id || meta.imdbId}|${meta.name || meta.title}|${providerIdx}`
+      if (!deduped.has(key)) deduped.set(key, meta)
+    }
+  }
+  return [...deduped.values()]
 }
 
 export function summarizeStreamForLog(s: Stream): string {
@@ -578,6 +691,34 @@ export async function fetchRankedStreams(
     : rankStreamScores(streams, ctx)
   const ranked = summaries.map(score => score.stream)
   console.log(`streams: top candidates for ${imdbId}`)
+  for (const score of summaries.slice(0, 5)) {
+    console.log(`streams: ${scoreSummary(score)} :: ${score.stream.title || score.stream.name}`)
+  }
+  return ranked
+}
+
+export async function fetchRankedStremioStreams(
+  mediaType: StremioMediaType,
+  externalId: string,
+  expectedYear?: number,
+  preferredLanguage = config.preferredAudioLanguage,
+  mediaLanguage = '',
+  playbackClient = '',
+  preserveProviderOrder = false,
+): Promise<Stream[]> {
+  const streams = await fetchStreamsFromProviders(`/stream/${mediaType}/${encodeURIComponent(externalId)}.json`)
+  if (!streams.length) throw new Error(`No streams found for ${mediaType} ${externalId}`)
+  const notWebReadyDirectStreams = streams.filter(isNotWebReadyDirectStream).length
+  if (notWebReadyDirectStreams) {
+    console.log(`streams: ignored ${notWebReadyDirectStreams} notWebReady direct stream${notWebReadyDirectStreams === 1 ? '' : 's'} for ${mediaType} ${externalId}`)
+  }
+  const ctx = { expectedYear, preferredLanguage, mediaLanguage, playbackClient, mediaType: mediaType === 'series' ? 'episode' as const : 'movie' as const }
+  const summaries = preserveProviderOrder
+    ? playableStreamsInProviderOrder(streams, ctx).map(stream => precomputeScore(stream, ctx))
+    : rankStreamScores(streams, ctx)
+  const ranked = summaries.map(score => score.stream)
+  if (!ranked.length) throw new Error(`No ranked streams found for ${mediaType} ${externalId}`)
+  console.log(`streams: top Stremio candidates for ${mediaType} ${externalId}`)
   for (const score of summaries.slice(0, 5)) {
     console.log(`streams: ${scoreSummary(score)} :: ${score.stream.title || score.stream.name}`)
   }

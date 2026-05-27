@@ -158,6 +158,7 @@ export const config = {
   showAddDefaultMode: parseShowAddDefaultMode(process.env.SHOW_ADD_DEFAULT_MODE),
   movieReleaseMode: parseMovieReleaseMode(process.env.MOVIE_RELEASE_MODE),
   streamProviderUrls: parseStreamProviderUrls(process.env.STREAM_PROVIDER_URLS ?? ''),
+  stremioSearchProviderUrls: [] as string[],
   allowNotWebReadyDirectStreams: parseBooleanSetting(process.env.ALLOW_NOT_WEB_READY_DIRECT_STREAMS, false),
   musicAddonUrls: parseMusicAddonUrls(process.env.MUSIC_ADDON_URLS ?? process.env.MUSIC_ADDON_URL ?? process.env.SPOTIFLAC_URL ?? ''),
   preferredAudioLanguage: parseAudioLanguage(process.env.PREFERRED_AUDIO_LANGUAGE),

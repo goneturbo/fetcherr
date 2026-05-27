@@ -7,7 +7,7 @@ import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, extractHashFromStream, summarizeStreamForLog } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
@@ -113,6 +113,13 @@ getDb()
       config.streamProviderUrls.join('\n'),
     )
   }
+  config.stremioSearchProviderUrls = collectStreamProviderUrls(
+    s.rdStreamProviderUrls ?? '',
+    s.torBoxStreamProviderUrls ?? '',
+    s.streamProviderUrls ?? '',
+    config.streamProviderUrls.join('\n'),
+    config.sootioUrl,
+  )
 }
 
 rehydrateTorBoxCleanupJobs()
@@ -298,10 +305,13 @@ function prewarmPlayback(playPath: string, label: string): void {
     return
   }
 
+  const stremioRouteMatch = playPath.match(/^\/play\/stremio\/(movie|series)\/(.+)$/)
   const episodeMatch = playPath.match(/^\/play\/([^/]+)\/(\d+)\/(\d+)$/)
   const movieMatch = playPath.match(/^\/play\/([^/]+)$/)
   const clientName = playbackClientName(playPath)
-  const resolver = episodeMatch
+  const resolver = stremioRouteMatch
+    ? () => resolveStremioPlayback(stremioRouteMatch[1] as StremioMediaType, decodeURIComponent(stremioRouteMatch[2]), clientName)
+    : episodeMatch
     ? () => resolveEpisodePlayback(episodeMatch[1], Number.parseInt(episodeMatch[2], 10), Number.parseInt(episodeMatch[3], 10), clientName)
     : movieMatch
       ? () => resolveMoviePlayback(movieMatch[1], clientName)
@@ -958,6 +968,12 @@ async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promis
   return resolvePlayableStream(streams, imdbId, playPath, undefined, true)
 }
 
+async function resolveStremioPlayback(mediaType: StremioMediaType, externalId: string, playbackClient = ''): Promise<PlayResolution> {
+  const playPath = `/play/stremio/${mediaType}/${encodeURIComponent(externalId)}`
+  const streams = await fetchRankedStremioStreams(mediaType, externalId, undefined, config.preferredAudioLanguage, '', playbackClient, true)
+  return resolvePlayableStream(streams, `${mediaType} ${externalId}`, playPath, undefined, true)
+}
+
 async function resolveEpisodePlayback(imdbId: string, season: number, episodeNumber: number, playbackClient = ''): Promise<PlayResolution> {
   const playPath = `/play/${imdbId}/${season}/${episodeNumber}`
   const show = getShowByImdbId(imdbId)
@@ -991,6 +1007,47 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
     true,
   )
 }
+
+app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
+  const { mediaType, externalId } = req.params as { mediaType: StremioMediaType; externalId: string }
+  const query = req.query as { token?: string; expires?: string } | undefined
+  if (mediaType !== 'movie' && mediaType !== 'series') {
+    return reply.code(404).send({ error: 'Unsupported Stremio media type' })
+  }
+  let decodedExternalId: string
+  try { decodedExternalId = decodeURIComponent(externalId) }
+  catch { return reply.code(400).send({ error: 'Invalid external ID encoding' }) }
+  const playPath = `/play/stremio/${mediaType}/${encodeURIComponent(decodedExternalId)}`
+  if (!verifySignedPlaybackPath(playPath, query?.token, query?.expires)) {
+    if (!requestPlaybackUser(req.headers)) {
+      app.log.warn(`play: rejected unauthenticated Stremio playback request for ${mediaType} ${decodedExternalId}`)
+    } else {
+      app.log.warn(`play: rejected unsigned or expired Stremio playback request for ${mediaType} ${decodedExternalId}`)
+    }
+    return reply.code(401).send({ error: 'Unauthorized' })
+  }
+  const failedReason = getFailedPlayReason(playPath)
+  if (failedReason) {
+    app.log.info(`play: cached miss for Stremio ${mediaType} ${decodedExternalId} (${failedReason})`)
+    return reply.code(404).send({ error: failedReason, message: 'No Streams Found' })
+  }
+  try {
+    const label = `Stremio ${mediaType} ${decodedExternalId}`
+    const clientName = playbackClientName(playPath)
+    const { promise, reused } = getOrCreatePlaybackResolution(playPath, label, () => resolveStremioPlayback(mediaType, decodedExternalId, clientName))
+    if (reused) app.log.info(`play: using in-flight resolver for ${label}`)
+    const resolved = await promise
+    rememberTorBoxPlaybackUrl(playPath, resolved)
+    return reply.redirect(resolved.url, 302)
+  } catch (err) {
+    if (err instanceof PlaybackResolutionError) {
+      return reply.code(err.statusCode).send(err.response)
+    }
+    app.log.warn(`play: no Stremio stream for ${mediaType} ${decodedExternalId}: ${err}`)
+    cacheFailedPlay(playPath, 'No streams found')
+    return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
+  }
+})
 
 app.get('/play/:imdbId', async (req, reply) => {
   const { imdbId } = req.params as { imdbId: string }

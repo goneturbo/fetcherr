@@ -1,6 +1,6 @@
 {
   "name": "fetcherr",
-  "version": "1.6.7",
+  "version": "1.7.0",
   "type": "module",
   "scripts": {
     "build": "tsc && mkdir -p dist/ui/static && cp src/ui/*.html dist/ui/ && cp -R src/ui/static/. dist/ui/static/",
