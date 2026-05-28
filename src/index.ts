@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import { randomBytes } from 'node:crypto'
 import { collectStreamProviderUrls, config, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
@@ -7,7 +8,7 @@ import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
@@ -18,7 +19,7 @@ import {
 import { getShowByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
-import { verifySignedPlaybackPath } from './play-auth.js'
+import { createSignedPlaybackUrl, verifySignedPlaybackPath } from './play-auth.js'
 import { hasAudioLanguage, hasNonPreferredAudioMarker, hasPreferredAudioMarker } from './streamLanguage.js'
 import { streamMetadataText } from './streamUtils.js'
 
@@ -93,6 +94,7 @@ getDb()
   if (s.preferredAudioLanguage != null) config.preferredAudioLanguage = parseAudioLanguage(s.preferredAudioLanguage)
   if (s.englishStreamMode != null) config.englishStreamMode = parseEnglishStreamMode(s.englishStreamMode)
   if (s.streamRankingMode != null) config.streamRankingMode = parseStreamRankingMode(s.streamRankingMode)
+  if (s.mediaSourceSelection != null) config.mediaSourceSelection = parseBooleanSetting(s.mediaSourceSelection, false)
   const bothConfigured = Boolean(config.rdApiKey && config.torBoxApiKey)
   if (bothConfigured) {
     config.streamProviderUrls = collectStreamProviderUrls(
@@ -186,9 +188,12 @@ type PlaybackPrewarmEntry = { expiresAt: number; promise: Promise<PlayResolution
 const playbackPrewarmCache = new Map<string, PlaybackPrewarmEntry>()
 let activePlaybackPrewarmPath: string | null = null
 const PLAYBACK_ITEM_TTL_MS = 6 * 60 * 60 * 1000
+const PLAYBACK_CANDIDATE_TTL_MS = 10 * 60 * 1000
+const PLAYBACK_MEDIA_SOURCE_LIMIT = 5
 const playbackItemPaths = new Map<string, { playPath: string; expiresAt: number }>()
 const playbackClientNames = new Map<string, { clientName: string; expiresAt: number }>()
 const torBoxPlaybackUrls = new Map<string, { url: string; expiresAt: number }>()
+const playbackCandidates = new Map<string, { stream: Stream; playPath: string; label: string; fileHint?: string; expiresAt: number }>()
 
 class PlaybackResolutionError extends Error {
   constructor(
@@ -234,6 +239,9 @@ function cleanupPlaybackPrewarmCache() {
   }
   for (const [key, entry] of torBoxPlaybackUrls) {
     if (entry.expiresAt <= now) torBoxPlaybackUrls.delete(key)
+  }
+  for (const [key, entry] of playbackCandidates) {
+    if (entry.expiresAt <= now) playbackCandidates.delete(key)
   }
 }
 
@@ -426,6 +434,11 @@ function directStreamConflictsWithActiveDebrid(stream: { name?: string; title?: 
 
 function streamClearlyDirectDebrid(stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> }): boolean {
   return streamClearlyRealDebridCached(stream) || streamClearlyTorBoxCached(stream)
+}
+
+function streamEligibleForMediaSourceSelection(stream: { name?: string; title?: string; description?: string; behaviorHints?: Record<string, unknown> }): boolean {
+  const text = streamMetadataText(stream)
+  return streamClearlyDirectDebrid(stream) || /\bcached\b|\binstant\b|⚡/.test(text)
 }
 
 function streamMarkedNotWebReady(stream: { behaviorHints?: Record<string, unknown> }): boolean {
@@ -962,6 +975,273 @@ async function resolvePlayableStream(
   return { url: best.url }
 }
 
+function rememberPlaybackCandidate(playPath: string, label: string, stream: Stream, fileHint?: string): string {
+  cleanupPlaybackPrewarmCache()
+  const token = randomBytes(16).toString('hex')
+  playbackCandidates.set(token, {
+    stream,
+    playPath,
+    label,
+    fileHint,
+    expiresAt: Date.now() + PLAYBACK_CANDIDATE_TTL_MS,
+  })
+  return token
+}
+
+function getPlaybackCandidate(token: string | undefined, playPath: string) {
+  cleanupPlaybackPrewarmCache()
+  if (!token) return null
+  const entry = playbackCandidates.get(token)
+  if (!entry || entry.playPath !== playPath) return null
+  return entry
+}
+
+function streamOptionName(stream: Stream, fallbackName: string, index: number): string {
+  const text = `${stream.name ?? ''} ${stream.title ?? ''} ${stream.description ?? ''} ${typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''}`
+  const provider = streamProviderName(stream, index)
+  const displayTitle = stremioFormattedStreamTitle(stream)
+  const quality = [
+    normalizedResolutionLabel(text),
+    normalizedSourceLabel(text),
+    normalizedCodecLabel(text),
+    text.match(/(\d+(?:\.\d+)?)\s*(TB|GB|MB)\b/i)?.[0],
+  ].filter(Boolean).join(' ')
+  const title = displayTitle || stream.description || stream.name || fallbackName
+  return sanitizeMediaSourceText([quality, provider, title].filter(Boolean).join(' - ')).slice(0, 180) || `Option ${index + 1}`
+}
+
+function stremioFormattedStreamTitle(stream: Stream): string {
+  const filename = typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''
+  const title = stream.title || ''
+  if (!title) return ''
+  return title
+    .split(/\r?\n/)
+    .map(line => line.trim())
+    .filter(line => line && (!filename || !line.includes(filename)))
+    .join(' ')
+}
+
+function streamProviderName(stream: Stream, index: number): string {
+  const name = stream.name ?? ''
+  const bracket = name.match(/^\[[^\]]+\]\s*([^0-9\n\r]+)/)
+  if (bracket?.[1]?.trim()) return bracket[1].trim()
+  if (name.trim()) return name.trim()
+  if (stream.providerLabel) return stream.providerLabel.replace(/^provider#\d+\s+/, '').split('/')[0] || `Option ${index + 1}`
+  return `Option ${index + 1}`
+}
+
+function normalizedResolutionLabel(text: string): string | undefined {
+  if (/\b(2160p|4k|uhd)\b/i.test(text)) return '2160p'
+  if (/\b1080p\b/i.test(text)) return '1080p'
+  if (/\b720p\b/i.test(text)) return '720p'
+  if (/\b480p\b/i.test(text)) return '480p'
+  return undefined
+}
+
+function normalizedSourceLabel(text: string): string | undefined {
+  if (/\bremux\b/i.test(text)) return 'REMUX'
+  if (/\bblu[ -]?ray\b|\bbdrip\b/i.test(text)) return 'BluRay'
+  if (/\bweb[ ._-]?dl\b/i.test(text)) return 'WEB-DL'
+  if (/\bweb[ ._-]?rip\b/i.test(text)) return 'WEBRip'
+  if (/\bhdtv\b/i.test(text)) return 'HDTV'
+  return undefined
+}
+
+function normalizedCodecLabel(text: string): string | undefined {
+  if (/\bav1\b/i.test(text)) return 'AV1'
+  if (/\bhevc\b|h\.?265\b|x265\b/i.test(text)) return 'HEVC'
+  if (/\bh\.?264\b|x264\b|avc\b/i.test(text)) return 'H.264'
+  return undefined
+}
+
+function sanitizeMediaSourceText(value: string): string {
+  return value
+    .replace(/[\uD800-\uDFFF]/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function appendCandidateToSignedUrl(url: string, candidate: string): string {
+  const signed = new URL(url)
+  signed.searchParams.set('candidate', candidate)
+  return signed.toString()
+}
+
+function streamSizeBytes(stream: Stream): number | undefined {
+  if (typeof stream.behaviorHints?.videoSize === 'number' && Number.isFinite(stream.behaviorHints.videoSize)) {
+    return stream.behaviorHints.videoSize
+  }
+  const match = `${stream.name} ${stream.title} ${stream.description ?? ''}`.match(/(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB)/i)
+  if (!match) return undefined
+  const value = Number.parseFloat(match[1])
+  switch (match[2].toUpperCase()) {
+    case 'TB': return Math.round(value * 1e12)
+    case 'GB': return Math.round(value * 1e9)
+    case 'MB': return Math.round(value * 1e6)
+    case 'KB': return Math.round(value * 1e3)
+    default: return undefined
+  }
+}
+
+function streamContainer(stream: Stream): string {
+  const text = streamMetadataText(stream)
+  const match = text.match(/\.(mkv|mp4|m4v|avi|mov|wmv|webm|ts|m2ts)(?:\b|$)/i)
+  return (match?.[1] ?? 'mkv').toLowerCase()
+}
+
+function streamVideoCodec(stream: Stream): string {
+  const text = streamMetadataText(stream)
+  if (/\bav1\b/i.test(text)) return 'av1'
+  if (/\bhevc\b|h\.?265\b|x265\b/i.test(text)) return 'hevc'
+  if (/\bh\.?264\b|x264\b|avc\b/i.test(text)) return 'h264'
+  return 'h264'
+}
+
+function streamVideoDimensions(stream: Stream): { width: number; height: number } {
+  const text = streamMetadataText(stream)
+  if (/\b(2160p|4k|uhd)\b/i.test(text)) return { width: 3840, height: 2160 }
+  if (/\b1080p\b/i.test(text)) return { width: 1920, height: 1080 }
+  if (/\b720p\b/i.test(text)) return { width: 1280, height: 720 }
+  if (/\b480p\b/i.test(text)) return { width: 854, height: 480 }
+  return { width: 1920, height: 1080 }
+}
+
+function streamBitrate(sizeBytes: number | undefined, runtimeTicks: number): number | undefined {
+  if (!sizeBytes || runtimeTicks <= 0) return undefined
+  const seconds = runtimeTicks / 10_000_000
+  if (seconds <= 0) return undefined
+  return Math.round((sizeBytes * 8) / seconds)
+}
+
+function playbackMediaSource(id: string, name: string, path: string, runtimeTicks: number, stream?: Stream) {
+  const size = stream ? streamSizeBytes(stream) : undefined
+  const bitrate = streamBitrate(size, runtimeTicks)
+  const { width, height } = stream ? streamVideoDimensions(stream) : { width: 1920, height: 1080 }
+  const videoCodec = stream ? streamVideoCodec(stream) : 'h264'
+  const container = stream ? streamContainer(stream) : 'mkv'
+  return {
+    Id:                   id,
+    Name:                 name,
+    Type:                 'Default',
+    Protocol:             'Http',
+    Path:                 path,
+    IsRemote:             true,
+    SupportsDirectPlay:   true,
+    SupportsDirectStream: true,
+    SupportsTranscoding:  false,
+    RequiresOpening:      false,
+    RequiresClosing:      false,
+    Container:            container,
+    Size:                 size,
+    Bitrate:              bitrate,
+    VideoType:            'VideoFile',
+    RunTimeTicks:         runtimeTicks,
+    DefaultAudioStreamIndex: 1,
+    MediaStreams: [
+      {
+        Type: 'Video',
+        Index: 0,
+        Codec: videoCodec,
+        IsDefault: true,
+        Width: width,
+        Height: height,
+        BitRate: bitrate,
+        RealFrameRate: 23.976,
+        AverageFrameRate: 23.976,
+      },
+      { Type: 'Audio', Index: 1, Codec: 'aac', IsDefault: true, Language: 'eng' },
+    ],
+  }
+}
+
+async function playbackStreamsForPath(playPath: string, playbackClient: string): Promise<{ streams: Stream[]; label: string; fileHint?: string }> {
+  const stremioMatch = playPath.match(/^\/play\/stremio\/(movie|series)\/(.+)$/)
+  if (stremioMatch) {
+    const mediaType = stremioMatch[1] as StremioMediaType
+    const externalId = decodeURIComponent(stremioMatch[2])
+    return {
+      streams: await fetchRankedStremioStreams(mediaType, externalId, undefined, config.preferredAudioLanguage, '', playbackClient, true),
+      label: `${mediaType} ${externalId}`,
+    }
+  }
+
+  const episodeMatch = playPath.match(/^\/play\/([^/]+)\/(\d+)\/(\d+)$/)
+  if (episodeMatch) {
+    const imdbId = episodeMatch[1]
+    const season = Number.parseInt(episodeMatch[2], 10)
+    const episodeNumber = Number.parseInt(episodeMatch[3], 10)
+    const show = getShowByImdbId(imdbId)
+    const episode = show
+      ? getEpisodesForSeason(show.tmdbId, season).find(ep => ep.episodeNumber === episodeNumber)
+      : null
+    const episodeAirYear = episode?.airDate ? Number.parseInt(episode.airDate.slice(0, 4), 10) : undefined
+    return {
+      streams: await fetchRankedEpisodeStreams(
+        imdbId,
+        season,
+        episodeNumber,
+        show?.year || undefined,
+        Number.isFinite(episodeAirYear) ? episodeAirYear : undefined,
+        config.preferredAudioLanguage,
+        '',
+        playbackClient,
+        true,
+      ),
+      label: `${imdbId} S${season}E${episodeNumber}`,
+      fileHint: `s${pad2(season)}e${pad2(episodeNumber)}`,
+    }
+  }
+
+  const movieMatch = playPath.match(/^\/play\/([^/]+)$/)
+  if (movieMatch) {
+    const imdbId = movieMatch[1]
+    return {
+      streams: await fetchRankedStreams(imdbId, config.preferredAudioLanguage, '', playbackClient, true),
+      label: imdbId,
+    }
+  }
+
+  throw new Error(`Unsupported play path: ${playPath}`)
+}
+
+async function buildPlaybackMediaSources(input: {
+  itemId: string
+  sourceId: string
+  origin: string
+  playPath: string
+  name: string
+  runtimeTicks: number
+  playbackClient: string
+}) {
+  const fallbackUrl = createSignedPlaybackUrl(input.origin, input.playPath)
+  const fallbackSource = playbackMediaSource(input.sourceId, input.name, fallbackUrl, input.runtimeTicks)
+
+  try {
+    const { streams, label, fileHint } = await playbackStreamsForPath(input.playPath, input.playbackClient)
+    const usable = streams
+      .filter(stream => (stream.url || extractHashFromStream(stream)) && streamEligibleForMediaSourceSelection(stream))
+      .slice(0, PLAYBACK_MEDIA_SOURCE_LIMIT)
+
+    if (!usable.length) return [fallbackSource]
+
+    return usable.map((stream, index) => {
+      const candidate = rememberPlaybackCandidate(input.playPath, label, stream, fileHint)
+      const sourceId = `${input.itemId}:candidate:${candidate}`
+      const sourceName = streamOptionName(stream, input.name, index)
+      return playbackMediaSource(
+        sourceId,
+        sourceName,
+        appendCandidateToSignedUrl(createSignedPlaybackUrl(input.origin, input.playPath), candidate),
+        input.runtimeTicks,
+        stream,
+      )
+    })
+  } catch (err) {
+    app.log.warn(`playback: failed to build stream options for ${input.name}: ${err}`)
+    return [fallbackSource]
+  }
+}
+
 async function resolveMoviePlayback(imdbId: string, playbackClient = ''): Promise<PlayResolution> {
   const playPath = `/play/${imdbId}`
   const streams = await fetchRankedStreams(imdbId, config.preferredAudioLanguage, '', playbackClient, true)
@@ -1008,9 +1288,22 @@ async function resolveEpisodePlayback(imdbId: string, season: number, episodeNum
   )
 }
 
+async function resolvePlaybackCandidate(token: string | undefined, playPath: string): Promise<PlayResolution | null> {
+  const candidate = getPlaybackCandidate(token, playPath)
+  if (!candidate) return null
+  app.log.info(`play: resolving selected candidate for ${candidate.label}`)
+  return resolvePlayableStream(
+    [candidate.stream],
+    candidate.label,
+    `${playPath}:candidate:${token}`,
+    candidate.fileHint,
+    true,
+  )
+}
+
 app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
   const { mediaType, externalId } = req.params as { mediaType: StremioMediaType; externalId: string }
-  const query = req.query as { token?: string; expires?: string } | undefined
+  const query = req.query as { token?: string; expires?: string; candidate?: string } | undefined
   if (mediaType !== 'movie' && mediaType !== 'series') {
     return reply.code(404).send({ error: 'Unsupported Stremio media type' })
   }
@@ -1034,9 +1327,12 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
   try {
     const label = `Stremio ${mediaType} ${decodedExternalId}`
     const clientName = playbackClientName(playPath)
-    const { promise, reused } = getOrCreatePlaybackResolution(playPath, label, () => resolveStremioPlayback(mediaType, decodedExternalId, clientName))
-    if (reused) app.log.info(`play: using in-flight resolver for ${label}`)
-    const resolved = await promise
+    const selectedCandidate = await resolvePlaybackCandidate(query?.candidate, playPath)
+    const resolved = selectedCandidate ?? await (async () => {
+      const { promise, reused } = getOrCreatePlaybackResolution(playPath, label, () => resolveStremioPlayback(mediaType, decodedExternalId, clientName))
+      if (reused) app.log.info(`play: using in-flight resolver for ${label}`)
+      return promise
+    })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
     return reply.redirect(resolved.url, 302)
   } catch (err) {
@@ -1051,7 +1347,7 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
 
 app.get('/play/:imdbId', async (req, reply) => {
   const { imdbId } = req.params as { imdbId: string }
-  const query = req.query as { token?: string; expires?: string } | undefined
+  const query = req.query as { token?: string; expires?: string; candidate?: string } | undefined
   const playPath = `/play/${imdbId}`
   if (!verifySignedPlaybackPath(playPath, query?.token, query?.expires)) {
     if (!requestPlaybackUser(req.headers)) {
@@ -1069,9 +1365,12 @@ app.get('/play/:imdbId', async (req, reply) => {
   app.log.info(`play: resolving stream for ${imdbId}`)
   try {
     const clientName = playbackClientName(playPath)
-    const { promise, reused } = getOrCreatePlaybackResolution(playPath, imdbId, () => resolveMoviePlayback(imdbId, clientName))
-    if (reused) app.log.info(`play: using in-flight resolver for ${imdbId}`)
-    const resolved = await promise
+    const selectedCandidate = await resolvePlaybackCandidate(query?.candidate, playPath)
+    const resolved = selectedCandidate ?? await (async () => {
+      const { promise, reused } = getOrCreatePlaybackResolution(playPath, imdbId, () => resolveMoviePlayback(imdbId, clientName))
+      if (reused) app.log.info(`play: using in-flight resolver for ${imdbId}`)
+      return promise
+    })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
     return reply.redirect(resolved.url, 302)
   } catch (err) {
@@ -1086,7 +1385,7 @@ app.get('/play/:imdbId', async (req, reply) => {
 
 app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   const { imdbId, season, episode } = req.params as { imdbId: string; season: string; episode: string }
-  const query = req.query as { token?: string; expires?: string } | undefined
+  const query = req.query as { token?: string; expires?: string; candidate?: string } | undefined
   const playPath = `/play/${imdbId}/${season}/${episode}`
   if (!verifySignedPlaybackPath(playPath, query?.token, query?.expires)) {
     if (!requestPlaybackUser(req.headers)) {
@@ -1107,9 +1406,12 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   try {
     const label = `${imdbId} S${s}E${e}`
     const clientName = playbackClientName(playPath)
-    const { promise, reused } = getOrCreatePlaybackResolution(playPath, label, () => resolveEpisodePlayback(imdbId, s, e, clientName))
-    if (reused) app.log.info(`play: using in-flight resolver for ${label}`)
-    const resolved = await promise
+    const selectedCandidate = await resolvePlaybackCandidate(query?.candidate, playPath)
+    const resolved = selectedCandidate ?? await (async () => {
+      const { promise, reused } = getOrCreatePlaybackResolution(playPath, label, () => resolveEpisodePlayback(imdbId, s, e, clientName))
+      if (reused) app.log.info(`play: using in-flight resolver for ${label}`)
+      return promise
+    })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
     return reply.redirect(resolved.url, 302)
   } catch (err) {
@@ -1122,8 +1424,8 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
   }
 })
 
-await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem })
-await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem })
+await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources })
+await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, buildPlaybackMediaSources })
 await app.register(uiRoutes)
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────

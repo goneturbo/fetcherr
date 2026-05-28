@@ -59,6 +59,10 @@ interface StremioCatalogResponse {
   metas?: StremioMeta[]
 }
 
+interface StremioMetaResponse {
+  meta?: StremioMeta
+}
+
 export interface ProviderFetchMetric {
   time: string
   provider: string
@@ -536,6 +540,12 @@ async function fetchSearchMetasFromProvider(base: string, type: StremioMediaType
   return (json.metas ?? []).map(meta => ({ ...meta, type: meta.type ?? type }))
 }
 
+async function fetchMetaFromProvider(base: string, type: StremioMediaType, id: string): Promise<StremioMeta | null> {
+  const url = `${base}/meta/${type}/${encodeURIComponent(id)}.json`
+  const json = await fetchJson<StremioMetaResponse>(url)
+  return json.meta ? { ...json.meta, type: json.meta.type ?? type } : null
+}
+
 export async function searchStremioMetas(query: string, types: StremioMediaType[]): Promise<StremioMeta[]> {
   const providers = searchProviderBases()
   if (!providers.length || !query.trim()) return []
@@ -558,6 +568,20 @@ export async function searchStremioMetas(query: string, types: StremioMediaType[
     }
   }
   return [...deduped.values()]
+}
+
+export async function fetchStremioMeta(type: StremioMediaType, id: string): Promise<StremioMeta | null> {
+  const providers = searchProviderBases()
+  if (!providers.length || !id.trim()) return null
+
+  const settled = await Promise.allSettled(
+    providers.map(base => fetchMetaFromProvider(base, type, id)),
+  )
+
+  for (const result of settled) {
+    if (result.status === 'fulfilled' && result.value) return result.value
+  }
+  return null
 }
 
 export function summarizeStreamForLog(s: Stream): string {

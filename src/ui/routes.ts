@@ -711,6 +711,7 @@ export async function uiRoutes(app: FastifyInstance) {
       preferredAudioLanguage: config.preferredAudioLanguage,
       englishStreamMode: config.englishStreamMode,
       streamRankingMode: config.streamRankingMode,
+      mediaSourceSelection: config.mediaSourceSelection,
       serverUrl:         config.serverUrl,
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
@@ -839,6 +840,11 @@ export async function uiRoutes(app: FastifyInstance) {
       const mode = parseStreamRankingMode(body.streamRankingMode)
       setSetting('streamRankingMode', mode)
       config.streamRankingMode = mode
+    }
+    if (body.mediaSourceSelection != null) {
+      const enabled = parseBooleanSetting(String(body.mediaSourceSelection), false)
+      setSetting('mediaSourceSelection', enabled ? 'true' : 'false')
+      config.mediaSourceSelection = enabled
     }
     if (typeof body.preferredAudioLanguage === 'string') {
       const language = parseAudioLanguage(body.preferredAudioLanguage)
