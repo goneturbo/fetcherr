@@ -106,12 +106,20 @@
       <div class="field-note">Use Provider order when your add-on already ranks streams correctly.</div>
     </div>
     <label class="check-item field" for="mediaSourceSelection">
-      <input id="mediaSourceSelection" type="checkbox">
+      <input id="mediaSourceSelection" type="checkbox" onchange="syncMediaSourceLimitVisibility()">
       <div class="check-meta">
         <div class="check-title">Media source selection</div>
-        <div class="check-slug">Shows cached stream options for episode playback. Movies continue using automatic playback.</div>
+        <div class="check-slug">Shows cached stream options for movie and episode playback.</div>
       </div>
     </label>
+    <div class="field" id="mediaSourceLimitField" hidden>
+      <label for="mediaSourceLimit">Sources Offered</label>
+      <select id="mediaSourceLimit">
+        <option value="10">10 sources</option>
+        <option value="5">5 sources</option>
+      </select>
+      <div class="field-note">Versions are ordered by estimated Mbps.</div>
+    </div>
   </section>
 
   <!-- Debrid -->
@@ -625,6 +633,11 @@
     el.textContent = msg
   }
 
+  function syncMediaSourceLimitVisibility() {
+    const enabled = document.getElementById('mediaSourceSelection').checked
+    document.getElementById('mediaSourceLimitField').hidden = !enabled
+  }
+
   function setSecretPlaceholder(id, hasStored, emptyPlaceholder) {
     const input = document.getElementById(id)
     input.value = ''
@@ -863,6 +876,8 @@
     document.getElementById('englishStreamMode').value = d.englishStreamMode || 'prefer'
     document.getElementById('streamRankingMode').value = d.streamRankingMode || 'fetcherr'
     document.getElementById('mediaSourceSelection').checked = d.mediaSourceSelection === true
+    document.getElementById('mediaSourceLimit').value = String(d.mediaSourceLimit === 5 ? 5 : 10)
+    syncMediaSourceLimitVisibility()
     setSecretPlaceholder('rdApiKey', hasStoredRdApiKey, 'Enter your Real-Debrid API key')
     setSecretPlaceholder('torBoxApiKey', hasStoredTorBoxApiKey, 'Enter your TorBox API key')
     setSecretPlaceholder('tmdbApiKey', hasStoredTmdbApiKey, 'Enter your TMDB API key')
@@ -1249,6 +1264,7 @@
       englishStreamMode: document.getElementById('englishStreamMode').value,
       streamRankingMode: document.getElementById('streamRankingMode').value,
       mediaSourceSelection: document.getElementById('mediaSourceSelection').checked,
+      mediaSourceLimit: document.getElementById('mediaSourceLimit').value,
       serverUrl:         document.getElementById('serverUrl').value,
       showAddDefaultMode: document.getElementById('showAddDefaultMode').value,
       movieReleaseMode: document.getElementById('movieReleaseMode').value,

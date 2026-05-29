@@ -2259,6 +2259,48 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     }
   }
 
+  async function addMovieDetailMediaSources(
+    item: Record<string, unknown>,
+    headers: Record<string, string | string[] | undefined> | undefined,
+    input: {
+      itemId: string
+      sourceId: string
+      imdbId: string
+      name: string
+      runtimeTicks: number
+    },
+  ) {
+    if (!config.mediaSourceSelection) return item
+    return addDetailMediaSources(item, headers, {
+      itemId: input.itemId,
+      sourceId: input.sourceId,
+      playPath: `/play/${input.imdbId}`,
+      name: input.name,
+      runtimeTicks: input.runtimeTicks,
+    })
+  }
+
+  async function addStremioMovieDetailMediaSources(
+    item: Record<string, unknown>,
+    headers: Record<string, string | string[] | undefined> | undefined,
+    input: {
+      itemId: string
+      sourceId: string
+      externalId: string
+      name: string
+      runtimeTicks: number
+    },
+  ) {
+    if (!config.mediaSourceSelection) return item
+    return addDetailMediaSources(item, headers, {
+      itemId: input.itemId,
+      sourceId: input.sourceId,
+      playPath: `/play/stremio/movie/${encodeURIComponent(input.externalId)}`,
+      name: input.name,
+      runtimeTicks: input.runtimeTicks,
+    })
+  }
+
   async function handleItem(
     id: string,
     reply: { code: (n: number) => { send: (v: unknown) => unknown } },
@@ -2326,7 +2368,15 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         : stremioSearch.meta
       const item = stremioSearchMetaToItem(meta, stremioSearch.mediaType, stremioSearch.requestedId) as Record<string, unknown>
       if (stremioSearch.mediaType !== 'movie') return item
-      return searchMovieAutoplayItem(item)
+      const movieItem = searchMovieAutoplayItem(item)
+      const externalId = meta.imdb_id || meta.imdbId || meta.id
+      return addStremioMovieDetailMediaSources(movieItem, headers, {
+        itemId: stremioSearch.requestedId,
+        sourceId: stremioSearch.sourceId,
+        externalId,
+        name: stremioMetaName(meta),
+        runtimeTicks: stremioRuntimeTicks(meta, 90),
+      })
     }
 
     // Episode
@@ -2397,7 +2447,15 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       if (!movie) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
       const item = movieToSearchItem(movie) as Record<string, unknown>
-      return searchMovieAutoplayItem(item)
+      const movieItem = searchMovieAutoplayItem(item)
+      if (!movie.imdbId || !isMovieVisibleToLibrary(movie)) return movieItem
+      return addMovieDetailMediaSources(movieItem, headers, {
+        itemId: id,
+        sourceId: id,
+        imdbId: movie.imdbId,
+        name: movie.title,
+        runtimeTicks: (movie.runtimeMins || 90) * 60 * 10_000_000,
+      })
     }
 
     const tmdbId = idToTmdb(id)
@@ -2406,7 +2464,15 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const movie = getMovieByTmdbId(tmdbId) ?? await fetchMovieByTmdbId(tmdbId)
     if (!movie) return reply.code(404).send({ error: 'Not found' })
     if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
-    return movieToItem(movie, currentUser.id)
+    const item = movieToItem(movie, currentUser.id) as Record<string, unknown>
+    if (!movie.imdbId) return item
+    return addMovieDetailMediaSources(item, headers, {
+      itemId: id,
+      sourceId: id,
+      imdbId: movie.imdbId,
+      name: movie.title,
+      runtimeTicks: (movie.runtimeMins || 90) * 60 * 10_000_000,
+    })
   }
 
   app.get('/Items/:id', async (req, reply) => {
@@ -2812,7 +2878,17 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const name = stremioMetaName(meta)
       const runtimeTicks = stremioRuntimeTicks(meta, 90)
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = [defaultPlaybackMediaSource(sourceId, name, playUrl, runtimeTicks)]
+      const mediaSources = config.mediaSourceSelection
+        ? await playbackMediaSourcesFor(opts, {
+            itemId: id,
+            sourceId,
+            origin: buildPlaybackOrigin(req.headers),
+            playPath,
+            name,
+            runtimeTicks,
+            playbackClient,
+          })
+        : [defaultPlaybackMediaSource(sourceId, name, playUrl, runtimeTicks)]
       app.log.info(`playback: Stremio "${name}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -2881,7 +2957,17 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
       const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
       const playbackClient = playbackClientFromHeaders(req.headers)
-      const mediaSources = [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+      const mediaSources = config.mediaSourceSelection
+        ? await playbackMediaSourcesFor(opts, {
+            itemId: id,
+            sourceId: id,
+            origin: buildPlaybackOrigin(req.headers),
+            playPath,
+            name: movie.title,
+            runtimeTicks,
+            playbackClient,
+          })
+        : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
       app.log.info(`playback: "${movie.title}" → ${playUrl}`)
       opts.registerPlaybackItem?.(id, playPath)
       opts.registerPlaybackClient?.(playPath, playbackClient)
@@ -2906,7 +2992,17 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
     const runtimeTicks = (movie.runtimeMins || 90) * 60 * 10_000_000
     const playbackClient = playbackClientFromHeaders(req.headers)
-    const mediaSources = [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
+    const mediaSources = config.mediaSourceSelection
+      ? await playbackMediaSourcesFor(opts, {
+          itemId: id,
+          sourceId: id,
+          origin: buildPlaybackOrigin(req.headers),
+          playPath,
+          name: movie.title,
+          runtimeTicks,
+          playbackClient,
+        })
+      : [defaultPlaybackMediaSource(id, movie.title, playUrl, runtimeTicks)]
     app.log.info(`playback: "${movie.title}" → ${playUrl}`)
     opts.registerPlaybackItem?.(id, playPath)
     opts.registerPlaybackClient?.(playPath, playbackClient)

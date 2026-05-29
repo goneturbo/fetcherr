@@ -78,10 +78,16 @@ export type AudioLanguage =
 export type EnglishStreamMode = 'off' | 'prefer' | 'require'
 export type DirectPlaybackMode = 'off' | 'torrentsOnly' | 'all'
 export type StreamRankingMode = 'fetcherr' | 'provider'
+export type MediaSourceLimit = 5 | 10
 
 export function parseStreamRankingMode(value: string | undefined): StreamRankingMode {
   return value === 'provider' ? 'provider' : 'fetcherr'
 }
+
+export function parseMediaSourceLimit(value: string | undefined): MediaSourceLimit {
+  return value === '5' ? 5 : 10
+}
+
 export type ShowAddDefaultMode = 'all' | 'latest'
 export type MovieReleaseMode = 'digital' | 'theatrical'
 
@@ -166,5 +172,6 @@ export const config = {
   directPlaybackMode: parseDirectPlaybackMode(process.env.DIRECT_PLAYBACK_MODE),
   streamRankingMode: parseStreamRankingMode(process.env.STREAM_RANKING_MODE),
   mediaSourceSelection: parseBooleanSetting(process.env.MEDIA_SOURCE_SELECTION, false),
+  mediaSourceLimit: parseMediaSourceLimit(process.env.MEDIA_SOURCE_LIMIT),
   serverUrl:         (process.env.SERVER_URL ?? 'http://localhost:9990').replace(/\/$/, ''),
 }

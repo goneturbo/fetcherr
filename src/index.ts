@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { randomBytes } from 'node:crypto'
-import { collectStreamProviderUrls, config, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from './config.js'
+import { collectStreamProviderUrls, config, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
@@ -95,6 +95,7 @@ getDb()
   if (s.englishStreamMode != null) config.englishStreamMode = parseEnglishStreamMode(s.englishStreamMode)
   if (s.streamRankingMode != null) config.streamRankingMode = parseStreamRankingMode(s.streamRankingMode)
   if (s.mediaSourceSelection != null) config.mediaSourceSelection = parseBooleanSetting(s.mediaSourceSelection, false)
+  if (s.mediaSourceLimit != null) config.mediaSourceLimit = parseMediaSourceLimit(s.mediaSourceLimit)
   const bothConfigured = Boolean(config.rdApiKey && config.torBoxApiKey)
   if (bothConfigured) {
     config.streamProviderUrls = collectStreamProviderUrls(
@@ -189,7 +190,6 @@ const playbackPrewarmCache = new Map<string, PlaybackPrewarmEntry>()
 let activePlaybackPrewarmPath: string | null = null
 const PLAYBACK_ITEM_TTL_MS = 6 * 60 * 60 * 1000
 const PLAYBACK_CANDIDATE_TTL_MS = 10 * 60 * 1000
-const PLAYBACK_MEDIA_SOURCE_LIMIT = 5
 const playbackItemPaths = new Map<string, { playPath: string; expiresAt: number }>()
 const playbackClientNames = new Map<string, { clientName: string; expiresAt: number }>()
 const torBoxPlaybackUrls = new Map<string, { url: string; expiresAt: number }>()
@@ -501,7 +501,78 @@ function directUrlHost(url: string): string {
   }
 }
 
+function isAioPlaybackUrl(url: URL): boolean {
+  return /^\/api\/v\d+\/debrid\/playback\//.test(url.pathname)
+}
+
+function configuredAioOrigins(): string[] {
+  const urls = [
+    ...config.streamProviderUrls,
+    ...config.stremioSearchProviderUrls,
+    config.sootioUrl,
+  ]
+  const origins = new Set<string>()
+  for (const value of urls) {
+    if (!value) continue
+    try {
+      origins.add(new URL(value).origin)
+    } catch { /* ignore invalid provider values */ }
+  }
+  return [...origins]
+}
+
+function aioPlaybackRedirectCandidates(url: string): string[] {
+  let parsed: URL
+  try {
+    parsed = new URL(url)
+  } catch {
+    return []
+  }
+  if (!isAioPlaybackUrl(parsed)) return []
+
+  const candidates = new Set<string>()
+  for (const origin of configuredAioOrigins()) {
+    try {
+      const candidate = new URL(`${parsed.pathname}${parsed.search}`, origin)
+      if (candidate.origin !== parsed.origin) candidates.add(candidate.toString())
+    } catch { /* ignore invalid origin */ }
+  }
+  candidates.add(parsed.toString())
+  return [...candidates]
+}
+
+async function resolveAioPlaybackRedirectUrl(url: string): Promise<string | null> {
+  const candidates = aioPlaybackRedirectCandidates(url)
+  if (!candidates.length) return null
+
+  for (const candidate of candidates) {
+    try {
+      const res = await fetch(candidate, {
+        method: 'GET',
+        redirect: 'manual',
+        headers: { Range: 'bytes=0-0' },
+        signal: AbortSignal.timeout(10_000),
+      })
+      const location = res.headers.get('location')
+      if (location && res.status >= 300 && res.status < 400) {
+        const resolved = new URL(location, candidate).toString()
+        app.log.info(`play: AIO playback URL unwrapped to ${directUrlHost(resolved)}`)
+        return resolved
+      }
+      app.log.warn(`play: AIO playback unwrap returned ${res.status} from ${directUrlHost(candidate)}`)
+      await res.body?.cancel().catch(() => {})
+    } catch (err) {
+      app.log.warn(`play: AIO playback unwrap failed via ${directUrlHost(candidate)}: ${summarizeProbeError(err)}`)
+    }
+  }
+
+  return null
+}
+
 async function resolveDirectPlaybackUrl(url: string): Promise<string> {
+  const aioRedirect = await resolveAioPlaybackRedirectUrl(url)
+  if (aioRedirect) return aioRedirect
+
   try {
     const res = await fetch(url, {
       method: 'GET',
@@ -750,9 +821,10 @@ async function resolvePlayableStream(
             }
           }
 
-          app.log.info(`play: direct stream selected for ${label}${directFilename ? ` → ${directFilename}` : ''}`)
+          const resolvedUrl = await resolveDirectPlaybackUrl(stream.url)
+          app.log.info(`play: direct stream selected for ${label} from ${directUrlHost(resolvedUrl)}${directFilename ? ` → ${directFilename}` : ''}`)
           clearFailedPlay(cacheKey)
-          return { url: stream.url, filename: directFilename }
+          return { url: resolvedUrl, filename: directFilename }
         }
 
         app.log.info(`play: trying ${providerLabel} hash ${hash.slice(0, 8)}… for ${label}`)
@@ -1054,6 +1126,119 @@ function normalizedCodecLabel(text: string): string | undefined {
   return undefined
 }
 
+type StreamResolutionBucket = '2160p' | '1080p' | '720p' | '480p' | 'unknown'
+type StreamCodecBucket = 'h265' | 'h264' | 'av1' | 'other'
+type StreamVarietyKey = `${StreamResolutionBucket}:${StreamCodecBucket}`
+
+const STREAM_VARIETY_KEY_PRIORITY: StreamVarietyKey[] = [
+  '2160p:h265',
+  '2160p:h264',
+  '1080p:h265',
+  '1080p:h264',
+  '2160p:av1',
+  '1080p:av1',
+  '2160p:other',
+  '1080p:other',
+  '720p:h265',
+  '720p:h264',
+  '720p:av1',
+  '720p:other',
+  '480p:h265',
+  '480p:h264',
+  '480p:av1',
+  '480p:other',
+  'unknown:h265',
+  'unknown:h264',
+  'unknown:av1',
+  'unknown:other',
+]
+
+function streamResolutionBucket(stream: Stream): StreamResolutionBucket {
+  const text = streamMetadataText(stream)
+  if (/\b(2160p|4k|uhd)\b/i.test(text)) return '2160p'
+  if (/\b1080p\b/i.test(text)) return '1080p'
+  if (/\b720p\b/i.test(text)) return '720p'
+  if (/\b480p\b/i.test(text)) return '480p'
+  return 'unknown'
+}
+
+function streamCodecBucket(stream: Stream): StreamCodecBucket {
+  const text = streamMetadataText(stream)
+  if (/\bhevc\b|h\.?265\b|x265\b/i.test(text)) return 'h265'
+  if (/\bh\.?264\b|x264\b|avc\b/i.test(text)) return 'h264'
+  if (/\bav1\b/i.test(text)) return 'av1'
+  return 'other'
+}
+
+function streamVarietyKey(stream: Stream): StreamVarietyKey {
+  return `${streamResolutionBucket(stream)}:${streamCodecBucket(stream)}`
+}
+
+function selectPlaybackMediaSourceStreams(streams: Stream[], limit: number): Stream[] {
+  if (limit <= 0) return []
+  if (streams.length <= limit) return streams
+
+  const buckets = new Map<StreamVarietyKey, Stream[]>()
+  const firstSeenKeys: StreamVarietyKey[] = []
+  for (const stream of streams) {
+    const key = streamVarietyKey(stream)
+    const bucket = buckets.get(key)
+    if (bucket) {
+      bucket.push(stream)
+    } else {
+      buckets.set(key, [stream])
+      firstSeenKeys.push(key)
+    }
+  }
+
+  const priorityKeys = [
+    ...STREAM_VARIETY_KEY_PRIORITY.filter(key => buckets.has(key)),
+    ...firstSeenKeys.filter(key => !STREAM_VARIETY_KEY_PRIORITY.includes(key)),
+  ]
+  const selected: Stream[] = []
+  const selectedStreams = new Set<Stream>()
+
+  while (selected.length < limit) {
+    let addedInRound = false
+    for (const key of priorityKeys) {
+      const bucket = buckets.get(key)
+      const stream = bucket?.shift()
+      if (!stream || selectedStreams.has(stream)) continue
+      selected.push(stream)
+      selectedStreams.add(stream)
+      addedInRound = true
+      if (selected.length >= limit) break
+    }
+    if (!addedInRound) break
+  }
+
+  if (selected.length < limit) {
+    for (const stream of streams) {
+      if (selectedStreams.has(stream)) continue
+      selected.push(stream)
+      selectedStreams.add(stream)
+      if (selected.length >= limit) break
+    }
+  }
+
+  return selected
+}
+
+function streamBitrateSortValue(stream: Stream, runtimeTicks: number): number {
+  return streamBitrate(streamSizeBytes(stream), runtimeTicks) ?? 0
+}
+
+function sortPlaybackMediaSourceStreamsByBitrate(streams: Stream[], runtimeTicks: number): Stream[] {
+  return streams
+    .map((stream, index) => ({
+      stream,
+      index,
+      bitrate: streamBitrateSortValue(stream, runtimeTicks),
+    }))
+    .sort((a, b) => b.bitrate - a.bitrate || a.index - b.index)
+    .map(entry => entry.stream)
+}
+
 function sanitizeMediaSourceText(value: string): string {
   return value
     .replace(/[\uD800-\uDFFF]/g, '')
@@ -1218,9 +1403,14 @@ async function buildPlaybackMediaSources(input: {
 
   try {
     const { streams, label, fileHint } = await playbackStreamsForPath(input.playPath, input.playbackClient)
-    const usable = streams
-      .filter(stream => (stream.url || extractHashFromStream(stream)) && streamEligibleForMediaSourceSelection(stream))
-      .slice(0, PLAYBACK_MEDIA_SOURCE_LIMIT)
+    const bitrateSorted = sortPlaybackMediaSourceStreamsByBitrate(
+      streams.filter(stream => (stream.url || extractHashFromStream(stream)) && streamEligibleForMediaSourceSelection(stream)),
+      input.runtimeTicks,
+    )
+    const usable = sortPlaybackMediaSourceStreamsByBitrate(
+      selectPlaybackMediaSourceStreams(bitrateSorted, config.mediaSourceLimit),
+      input.runtimeTicks,
+    )
 
     if (!usable.length) return [fallbackSource]
 

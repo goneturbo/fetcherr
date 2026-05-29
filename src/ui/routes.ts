@@ -22,7 +22,7 @@ import {
   getSessionCookie, clearSessionCookie, getTokenFromCookie,
 } from './auth.js'
 import { config } from '../config.js'
-import { collectStreamProviderUrls, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from '../config.js'
+import { collectStreamProviderUrls, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from '../config.js'
 import { fetchMovieByTmdbId, fetchMovieCollection, fetchShowByTmdbId, ensureShowSeasonsCached } from '../tmdb.js'
 import { cleanupRemovedTraktListSources, fetchTraktUserLists } from '../trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries } from '../mdblist.js'
@@ -712,6 +712,7 @@ export async function uiRoutes(app: FastifyInstance) {
       englishStreamMode: config.englishStreamMode,
       streamRankingMode: config.streamRankingMode,
       mediaSourceSelection: config.mediaSourceSelection,
+      mediaSourceLimit: config.mediaSourceLimit,
       serverUrl:         config.serverUrl,
       traktClientId:     config.traktClientId,
       traktWatchlistMovies: config.traktWatchlistMovies,
@@ -845,6 +846,11 @@ export async function uiRoutes(app: FastifyInstance) {
       const enabled = parseBooleanSetting(String(body.mediaSourceSelection), false)
       setSetting('mediaSourceSelection', enabled ? 'true' : 'false')
       config.mediaSourceSelection = enabled
+    }
+    if (body.mediaSourceLimit != null) {
+      const limit = parseMediaSourceLimit(String(body.mediaSourceLimit))
+      setSetting('mediaSourceLimit', String(limit))
+      config.mediaSourceLimit = limit
     }
     if (typeof body.preferredAudioLanguage === 'string') {
       const language = parseAudioLanguage(body.preferredAudioLanguage)
