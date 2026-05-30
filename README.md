@@ -1,6 +1,6 @@
 # Fetcherr
 
-Fetcherr is a Jellyfin-compatible streaming bridge for Infuse and VidHub that syncs watchlists into a library and resolves playback through Real-Debrid, TorBox, or EasyNews streams returned by AIOStreams.
+Fetcherr is a Jellyfin-compatible streaming bridge for Infuse and VidHub that syncs watchlists into a library and resolves playback through Real-Debrid or TorBox streams returned by Stremio add-ons.
 
 ## Responsible Use
 
@@ -10,7 +10,7 @@ Fetcherr should only be used with media you own, have lawfully obtained, or are 
 
 - Docker
 - TMDB API key
-- Real-Debrid or TorBox API key, or AIOStreams configured with EasyNews
+- Real-Debrid or TorBox API key
 - Stremio add-on with playable streams (e.g. AIOStreams, Comet, Debridio)
 - Optional: TVDB API key, Trakt client ID/secret, MDBList API key
 
@@ -58,7 +58,7 @@ Configure AIOStreams with your provider, then paste the manifest URL into Fetche
 - **Language filter:** Set to your preferred language for pre-filtered results
 - In Fetcherr Settings, set **Stream Ranking** to **Provider Order** to preserve AIOStreams sort
 
-Fetcherr also supports EasyNews streams when they are returned by AIOStreams as direct playable URLs. When AIOStreams returns mixed EasyNews, TorBox, and Real-Debrid candidates, Fetcherr tries EasyNews first, then falls back to TorBox or Real-Debrid.
+Fetcherr also has mediated support for direct playable URLs returned by AIOStreams. For example, if your AIOStreams instance is configured with EasyNews and returns an EasyNews-backed stream URL, Fetcherr can unwrap and play that URL through the normal playback resolver. When AIOStreams returns mixed direct URL, TorBox, and Real-Debrid candidates, Fetcherr can try the direct URL first, then fall back to TorBox or Real-Debrid.
 
 ## Search Results
 
