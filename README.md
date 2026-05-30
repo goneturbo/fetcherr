@@ -60,6 +60,18 @@ Configure AIOStreams with your provider, then paste the manifest URL into Fetche
 
 Fetcherr also supports EasyNews streams when they are returned by AIOStreams as direct playable URLs. When AIOStreams returns mixed EasyNews, TorBox, and Real-Debrid candidates, Fetcherr tries EasyNews first, then falls back to TorBox or Real-Debrid.
 
+## Search Results
+
+Fetcherr exposes Jellyfin-compatible search results from both the synced library and configured Stremio add-ons. This lets clients find playable movies and shows returned by providers such as AIOStreams, then open them through the same Fetcherr playback resolver used by library items.
+
+For shows, Fetcherr hydrates search results into seasons and aired episodes so clients can drill into a result before playback. Future or unaired episodes are hidden from search drill-downs using the same visibility rules as the local library.
+
+## Media Source Selection
+
+Fetcherr can optionally expose multiple cached stream candidates as Jellyfin media sources. Infuse presents these as selectable versions before playback, which is useful when a provider returns multiple quality, codec, or source options for the same movie or episode.
+
+Enable **Media source selection** in Settings to offer source choices. By default Fetcherr keeps automatic playback behavior and selects a stream itself. The Settings UI also lets you choose whether to offer 5 or 10 sources.
+
 ## Connecting Infuse
 
 Add Fetcherr as a Jellyfin server in Infuse with your server URL and a Fetcherr account. Enable **Library Mode**, **Auto Scan**, and **Install InfuseSync Plugin**.
