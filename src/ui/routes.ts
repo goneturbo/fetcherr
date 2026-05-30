@@ -181,6 +181,24 @@ async function validateApiKeyForService(service: ApiKeyService, key: string) {
   return validateTvdbApiKey(key)
 }
 
+function refreshStreamProviderConfig(): void {
+  const rdProviderUrls = getSetting('rdStreamProviderUrls') ?? ''
+  const torBoxProviderUrls = getSetting('torBoxStreamProviderUrls') ?? ''
+  const genericProviderUrls = getSetting('streamProviderUrls') ?? ''
+  config.streamProviderUrls = collectStreamProviderUrls(
+    rdProviderUrls,
+    torBoxProviderUrls,
+    genericProviderUrls,
+  )
+  config.stremioSearchProviderUrls = collectStreamProviderUrls(
+    rdProviderUrls,
+    torBoxProviderUrls,
+    genericProviderUrls,
+    config.streamProviderUrls.join('\n'),
+    config.sootioUrl,
+  )
+}
+
 function html(file: string) {
   return readFileSync(join(__dir, file), 'utf8')
     .replaceAll('__APP_VERSION_LABEL__', escapeHtml(APP_BUILD.label))
@@ -827,11 +845,7 @@ export async function uiRoutes(app: FastifyInstance) {
       const enabled = parseBooleanSetting(String(body.torBoxCleanupEnabled), true)
       setSetting('torBoxCleanupMode', enabled ? 'delete' : 'keep')
     }
-    config.streamProviderUrls = collectStreamProviderUrls(
-      getSetting('rdStreamProviderUrls') ?? '',
-      getSetting('torBoxStreamProviderUrls') ?? '',
-      getSetting('streamProviderUrls') ?? '',
-    )
+    refreshStreamProviderConfig()
     if (typeof body.englishStreamMode === 'string') {
       const mode = parseEnglishStreamMode(body.englishStreamMode)
       setSetting('englishStreamMode', mode)

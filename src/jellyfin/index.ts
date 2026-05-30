@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply } from 'fastify'
 import { createHash, randomBytes } from 'node:crypto'
+import { lookup } from 'node:dns/promises'
+import { isIP } from 'node:net'
 import { config } from '../config.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
@@ -44,7 +46,13 @@ const FOLDER_ID = MOVIES_FOLDER_ID
 const API_LIBRARY_FILTER = { availableOnly: true as const }
 const READ_CACHE_TTL_MS = 3_000
 const IMAGE_PROXY_TTL_MS = 60 * 60 * 1000
+const IMAGE_PROXY_TIMEOUT_MS = 10_000
+const IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024
+const IMAGE_PROXY_MAX_REDIRECTS = 5
+const IMAGE_PROXY_CACHE_MAX_ITEMS = 250
 const STREMIO_SEARCH_CACHE_TTL_MS = 30 * 60 * 1000
+const STREMIO_SEARCH_CACHE_MAX_KEYS = 2_000
+const STREMIO_CACHE_MAX_ITEMS = 1_000
 const PLAYED_COMPLETION_THRESHOLD = 0.95
 const NEXT_UP_PROGRESS_THRESHOLD = 0.60
 const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -138,11 +146,13 @@ function idToTraktCollectionSlug(id: string): string | null {
 }
 
 function stremioSearchMetaIds(meta: StremioMeta, mediaType: StremioMediaType): { itemId: string; sourceId: string } {
+  pruneStremioCaches()
   const itemId = createHash('md5').update(`stremio:item:${mediaType}:${meta.id}`).digest('hex')
   const sourceId = createHash('md5').update(`stremio:source:${mediaType}:${meta.id}`).digest('hex')
   const cached = { meta, mediaType, itemId, sourceId, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS }
   stremioSearchCache.set(itemId, cached)
   stremioSearchCache.set(sourceId, cached)
+  trimStremioSearchCache()
   return { itemId, sourceId }
 }
 
@@ -166,6 +176,7 @@ async function hydrateStremioSeriesMeta(series: StremioMeta): Promise<StremioMet
 }
 
 function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; requestedId: string } | null {
+  pruneStremioCaches()
   if (!/^[0-9a-f]{32}$/i.test(id)) return null
   const cached = stremioSearchCache.get(id)
   if (!cached) return null
@@ -178,13 +189,16 @@ function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: Stre
 }
 
 function stremioSeasonToId(series: StremioMeta, seasonNumber: number): string {
+  pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-season:${series.id}:${seasonNumber}`).digest('hex')
   const id = `00000000-0000-4000-8008-${hash.slice(-12)}`
   stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  trimCacheMap(stremioSeasonCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }
 
 function idToStremioSeason(id: string): { series: StremioMeta; seasonNumber: number } | null {
+  pruneStremioCaches()
   if (!/^00000000-0000-4000-8008-[0-9a-f]{12}$/i.test(id)) return null
   const cached = stremioSeasonCache.get(id)
   if (!cached) return null
@@ -196,13 +210,16 @@ function idToStremioSeason(id: string): { series: StremioMeta; seasonNumber: num
 }
 
 function stremioEpisodeToId(series: StremioMeta, episode: StremioMeta): string {
+  pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-episode:${series.id}:${episode.id || episode.season}:${episode.episode || episode.number}`).digest('hex')
   const id = `00000000-0000-4000-8009-${hash.slice(-12)}`
   stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  trimCacheMap(stremioEpisodeCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }
 
 function idToStremioEpisode(id: string): { series: StremioMeta; episode: StremioMeta } | null {
+  pruneStremioCaches()
   if (!/^00000000-0000-4000-8009-[0-9a-f]{12}$/i.test(id)) return null
   const cached = stremioEpisodeCache.get(id)
   if (!cached) return null
@@ -211,6 +228,39 @@ function idToStremioEpisode(id: string): { series: StremioMeta; episode: Stremio
     return null
   }
   return { series: cached.series, episode: cached.episode }
+}
+
+function trimCacheMap<K, V>(cache: Map<K, V>, maxItems: number): void {
+  while (cache.size > maxItems) {
+    const firstKey = cache.keys().next().value as K | undefined
+    if (firstKey === undefined) return
+    cache.delete(firstKey)
+  }
+}
+
+function trimStremioSearchCache(): void {
+  const seen = new Set<object>()
+  for (const entry of stremioSearchCache.values()) {
+    if (stremioSearchCache.size <= STREMIO_SEARCH_CACHE_MAX_KEYS) return
+    if (seen.has(entry)) continue
+    seen.add(entry)
+    stremioSearchCache.delete(entry.itemId)
+    stremioSearchCache.delete(entry.sourceId)
+  }
+}
+
+function pruneStremioCaches(now = Date.now()): void {
+  for (const entry of stremioSearchCache.values()) {
+    if (entry.expiresAt > now) continue
+    stremioSearchCache.delete(entry.itemId)
+    stremioSearchCache.delete(entry.sourceId)
+  }
+  for (const [id, entry] of stremioSeasonCache) {
+    if (entry.expiresAt <= now) stremioSeasonCache.delete(id)
+  }
+  for (const [id, entry] of stremioEpisodeCache) {
+    if (entry.expiresAt <= now) stremioEpisodeCache.delete(id)
+  }
 }
 
 function seasonToId(showTmdbId: number, seasonNum: number): string {
@@ -302,6 +352,135 @@ function bodyString(body: Record<string, unknown> | undefined, keys: string[]): 
   return ''
 }
 
+const ALLOWED_IMAGE_CONTENT_TYPES = new Set([
+  'image/avif',
+  'image/bmp',
+  'image/gif',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/x-icon',
+])
+
+function normalizedHostname(hostname: string): string {
+  return hostname.toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '')
+}
+
+function ipv4ToNumber(address: string): number | null {
+  const parts = address.split('.').map(part => Number.parseInt(part, 10))
+  if (parts.length !== 4 || parts.some(part => !Number.isInteger(part) || part < 0 || part > 255)) return null
+  return ((parts[0] << 24) >>> 0) + (parts[1] << 16) + (parts[2] << 8) + parts[3]
+}
+
+function ipv4InCidr(address: string, base: string, bits: number): boolean {
+  const value = ipv4ToNumber(address)
+  const baseValue = ipv4ToNumber(base)
+  if (value == null || baseValue == null) return false
+  const mask = bits === 0 ? 0 : (0xffffffff << (32 - bits)) >>> 0
+  return (value & mask) === (baseValue & mask)
+}
+
+function isBlockedIpv4(address: string): boolean {
+  return [
+    ['0.0.0.0', 8],
+    ['10.0.0.0', 8],
+    ['100.64.0.0', 10],
+    ['127.0.0.0', 8],
+    ['169.254.0.0', 16],
+    ['172.16.0.0', 12],
+    ['192.0.0.0', 24],
+    ['192.0.2.0', 24],
+    ['192.168.0.0', 16],
+    ['198.18.0.0', 15],
+    ['198.51.100.0', 24],
+    ['203.0.113.0', 24],
+    ['224.0.0.0', 4],
+    ['240.0.0.0', 4],
+  ].some(([base, bits]) => ipv4InCidr(address, String(base), Number(bits)))
+}
+
+function isBlockedIpv6(address: string): boolean {
+  const lower = address.toLowerCase()
+  if (lower === '::' || lower === '::1') return true
+  const mappedIpv4 = lower.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+  if (mappedIpv4) return isBlockedIpv4(mappedIpv4[1])
+  const embeddedIpv4 = lower.match(/(?:^|:)(\d{1,3}(?:\.\d{1,3}){3})$/)
+  if (embeddedIpv4) return isBlockedIpv4(embeddedIpv4[1])
+  const firstHextet = Number.parseInt(lower.split(':')[0] || '0', 16)
+  if (!Number.isFinite(firstHextet)) return true
+  return (firstHextet & 0xfe00) === 0xfc00
+    || (firstHextet & 0xffc0) === 0xfe80
+    || (firstHextet & 0xff00) === 0xff00
+}
+
+function isBlockedIpAddress(address: string): boolean {
+  const normalized = normalizedHostname(address)
+  const version = isIP(normalized)
+  if (version === 4) return isBlockedIpv4(normalized)
+  if (version === 6) return isBlockedIpv6(normalized)
+  return true
+}
+
+async function isPublicHttpUrl(url: URL): Promise<boolean> {
+  if (url.protocol !== 'https:' && url.protocol !== 'http:') return false
+  if (url.username || url.password) return false
+
+  const hostname = normalizedHostname(url.hostname)
+  if (!hostname || hostname === 'localhost' || hostname.endsWith('.localhost') || hostname.endsWith('.local')) return false
+  if (isIP(hostname)) return !isBlockedIpAddress(hostname)
+
+  try {
+    const addresses = await lookup(hostname, { all: true, verbatim: true })
+    return addresses.length > 0 && addresses.every(entry => !isBlockedIpAddress(entry.address))
+  } catch {
+    return false
+  }
+}
+
+function imageContentType(raw: string | null): string | null {
+  const contentType = raw?.split(';')[0]?.trim().toLowerCase() ?? ''
+  return ALLOWED_IMAGE_CONTENT_TYPES.has(contentType) ? contentType : null
+}
+
+async function readLimitedResponseBody(res: Response): Promise<Buffer | null> {
+  const rawLength = res.headers.get('content-length')
+  const contentLength = rawLength ? Number.parseInt(rawLength, 10) : 0
+  if (Number.isFinite(contentLength) && contentLength > IMAGE_PROXY_MAX_BYTES) {
+    await res.body?.cancel().catch(() => {})
+    return null
+  }
+
+  if (!res.body) {
+    const buffer = Buffer.from(await res.arrayBuffer())
+    return buffer.length <= IMAGE_PROXY_MAX_BYTES ? buffer : null
+  }
+
+  const chunks: Buffer[] = []
+  let total = 0
+  const reader = res.body.getReader()
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      if (!value) continue
+      total += value.byteLength
+      if (total > IMAGE_PROXY_MAX_BYTES) {
+        await reader.cancel().catch(() => {})
+        return null
+      }
+      chunks.push(Buffer.from(value))
+    }
+  } finally {
+    reader.releaseLock()
+  }
+  return Buffer.concat(chunks, total)
+}
+
+function cacheProxiedImage(url: string, value: { buffer: Buffer; contentType: string }, now = Date.now()): void {
+  proxiedImageCache.set(url, { ...value, expiresAt: now + IMAGE_PROXY_TTL_MS })
+  trimCacheMap(proxiedImageCache, IMAGE_PROXY_CACHE_MAX_ITEMS)
+}
+
 async function fetchProxiedImage(url: string): Promise<{ buffer: Buffer; contentType: string } | null> {
   const now = Date.now()
   const cached = proxiedImageCache.get(url)
@@ -310,20 +489,44 @@ async function fetchProxiedImage(url: string): Promise<{ buffer: Buffer; content
   }
 
   try {
-    const res = await fetch(url, {
-      redirect: 'follow',
-      headers: {
-        'user-agent': 'Fetcherr/1.0',
-        'accept': 'image/avif,image/webp,image/apng,image/*,*/*;q=0.8',
-      },
-    })
-    if (!res.ok) return null
+    let current = new URL(url)
+    for (let redirects = 0; redirects <= IMAGE_PROXY_MAX_REDIRECTS; redirects++) {
+      if (!await isPublicHttpUrl(current)) return null
+      const res = await fetch(current, {
+        redirect: 'manual',
+        headers: {
+          'user-agent': 'Fetcherr/1.0',
+          'accept': 'image/avif,image/webp,image/png,image/jpeg,image/gif,image/*;q=0.8',
+        },
+        signal: AbortSignal.timeout(IMAGE_PROXY_TIMEOUT_MS),
+      })
 
-    const arrayBuffer = await res.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-    const contentType = res.headers.get('content-type') || 'image/jpeg'
-    proxiedImageCache.set(url, { buffer, contentType, expiresAt: now + IMAGE_PROXY_TTL_MS })
-    return { buffer, contentType }
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location')
+        await res.body?.cancel().catch(() => {})
+        if (!location) return null
+        current = new URL(location, current)
+        continue
+      }
+
+      if (!res.ok) {
+        await res.body?.cancel().catch(() => {})
+        return null
+      }
+
+      const contentType = imageContentType(res.headers.get('content-type'))
+      if (!contentType) {
+        await res.body?.cancel().catch(() => {})
+        return null
+      }
+
+      const buffer = await readLimitedResponseBody(res)
+      if (!buffer) return null
+      const result = { buffer, contentType }
+      cacheProxiedImage(url, result, now)
+      return result
+    }
+    return null
   } catch {
     return null
   }
@@ -3021,13 +3224,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   app.get('/Videos/:id/stream', async (req, reply) => {
     const { id } = req.params as { id: string }
     const query = req.query as { playSessionId?: string; PlaySessionId?: string; mediaSourceId?: string; MediaSourceId?: string } | undefined
-    const playSessionId = query?.playSessionId ?? query?.PlaySessionId
     const mediaSourceId = query?.mediaSourceId ?? query?.MediaSourceId
-    const sessionMatches = playSessionId === `fetcherr-${id}`
-    const sourceMatches = mediaSourceId === id
-      || Boolean(candidateTokenFromMediaSourceId(mediaSourceId))
-      || idToStremioSearchMeta(id)?.sourceId === mediaSourceId
-    const user = requestUser(req.headers) ?? ((sessionMatches || sourceMatches) ? fallbackUser() : null)
+    const user = requestUser(req.headers)
     if (!user) return reply.code(401).send({ error: 'Unauthorized' })
 
     const origin = buildPlaybackOrigin(req.headers as Record<string, string | undefined>)
