@@ -1,4 +1,5 @@
 import Fastify from 'fastify'
+import { parseTorrentTitle, type ParsedResult as ParsedTorrentTitleResult } from '@viren070/parse-torrent-title'
 import { randomBytes } from 'node:crypto'
 import { collectStreamProviderUrls, config, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists } from './config.js'
 import { getDb, getAllSettings } from './db.js'
@@ -1069,17 +1070,175 @@ function getPlaybackCandidate(token: string | undefined, playPath: string) {
 }
 
 function streamOptionName(stream: Stream, fallbackName: string, index: number): string {
-  const text = `${stream.name ?? ''} ${stream.title ?? ''} ${stream.description ?? ''} ${typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''}`
+  const text = rawStreamMetadataText(stream)
+  const parsed = parseStreamMetadata(stream, text)
+  const tokens = dedupeMediaSourceTokens([
+    compactCacheLabel(stream),
+    compactResolutionLabel(parsed, text),
+    compactSourceLabel(parsed, text),
+    compactCodecLabel(parsed, text),
+    compactHdrLabel(parsed, text),
+    compactFeatureLabel(parsed, text),
+    compactAudioLabel(parsed, text),
+    compactSizeLabel(stream, parsed),
+    compactProviderLabel(stream, index),
+  ])
+  const compact = sanitizeMediaSourceText(tokens.join(' '))
+  if (compact) return compact.slice(0, 64)
+  const title = stremioFormattedStreamTitle(stream) || stream.description || stream.name || fallbackName
+  return sanitizeMediaSourceText(title).slice(0, 64) || `Option ${index + 1}`
+}
+
+function rawStreamMetadataText(stream: Stream): string {
+  const filename = typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''
+  return `${stream.name ?? ''} ${stream.title ?? ''} ${stream.description ?? ''} ${filename}`
+}
+
+function parseStreamMetadata(stream: Stream, fallbackText: string): ParsedTorrentTitleResult {
+  const filename = typeof stream.behaviorHints?.filename === 'string' ? stream.behaviorHints.filename : ''
+  const title = stremioFormattedStreamTitle(stream)
+  const parseTarget = filename || title || fallbackText
+  try {
+    return parseTorrentTitle(parseTarget)
+  } catch {
+    return {}
+  }
+}
+
+function dedupeMediaSourceTokens(tokens: Array<string | undefined>): string[] {
+  const seen = new Set<string>()
+  const compact: string[] = []
+  for (const token of tokens) {
+    if (!token) continue
+    const key = token.toLowerCase().replace(/[^a-z0-9+]+/g, '')
+    if (!key || seen.has(key)) continue
+    seen.add(key)
+    compact.push(token)
+  }
+  return compact
+}
+
+function compactProviderLabel(stream: Stream, index: number): string | undefined {
   const provider = streamProviderName(stream, index)
-  const displayTitle = stremioFormattedStreamTitle(stream)
-  const quality = [
-    normalizedResolutionLabel(text),
-    normalizedSourceLabel(text),
-    normalizedCodecLabel(text),
-    text.match(/(\d+(?:\.\d+)?)\s*(TB|GB|MB)\b/i)?.[0],
-  ].filter(Boolean).join(' ')
-  const title = displayTitle || stream.description || stream.name || fallbackName
-  return sanitizeMediaSourceText([quality, provider, title].filter(Boolean).join(' - ')).slice(0, 180) || `Option ${index + 1}`
+    .replace(/\bsearch\b/ig, '')
+    .replace(/\bstreams?\b/ig, '')
+    .replace(/\badd-?on\b/ig, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+  if (!provider || /^option\s+\d+$/i.test(provider)) return undefined
+  if (/easy\s*news/i.test(provider)) return 'EasyNews'
+  if (/zilean/i.test(provider)) return 'Zilean'
+  if (/real[-\s]?debrid|\brd\b/i.test(provider)) return 'RealDebrid'
+  if (/torbox|\btb\b/i.test(provider)) return 'TorBox'
+  if (/torrentio/i.test(provider)) return 'Torrentio'
+  if (/mediafusion/i.test(provider)) return 'MediaFusion'
+  if (/aio\s*streams?/i.test(provider)) return 'AIOStreams'
+  if (/knight\s*crawler/i.test(provider)) return 'KnightCrawler'
+  if (/jackettio|jackett/i.test(provider)) return 'Jackettio'
+  if (/comet/i.test(provider)) return 'Comet'
+  if (/annatar/i.test(provider)) return 'Annatar'
+  if (/orion/i.test(provider)) return 'Orion'
+  if (/peerflix/i.test(provider)) return 'Peerflix'
+  if (/debridio/i.test(provider)) return 'Debridio'
+  if (/strem\s*thru/i.test(provider)) return 'StremThru'
+  if (/easy\s*debrid/i.test(provider)) return 'EasyDebrid'
+  if (/all\s*debrid/i.test(provider)) return 'AllDebrid'
+  if (/premiumize/i.test(provider)) return 'Premiumize'
+  if (/debrid[-\s]?link/i.test(provider)) return 'DebridLink'
+  if (/put\.?io/i.test(provider)) return 'Putio'
+  return provider.split(/[/:|-]/)[0]?.trim().slice(0, 14) || undefined
+}
+
+function compactCacheLabel(stream: Stream): string | undefined {
+  const text = `${rawStreamMetadataText(stream)} ${stream.url ?? ''} ${(stream.sources ?? []).join(' ')}`.toLowerCase()
+  if (/\[(?:rd|tb)\s+download\]|\bnot\s+ready\b|\buncached\b|⏳/.test(text)) return '⏳'
+  return undefined
+}
+
+function compactResolutionLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const resolution = parsed.resolution ?? ''
+  if (/\b(2160p|4k|uhd)\b/i.test(`${resolution} ${text}`)) return '4K'
+  if (/\b1440p\b/i.test(`${resolution} ${text}`)) return '1440p'
+  if (/\b1080p\b/i.test(`${resolution} ${text}`)) return '1080p'
+  if (/\b720p\b/i.test(`${resolution} ${text}`)) return '720p'
+  if (/\b576p\b/i.test(`${resolution} ${text}`)) return '576p'
+  if (/\b480p\b/i.test(`${resolution} ${text}`)) return '480p'
+  return normalizedResolutionLabel(text)
+}
+
+function compactSourceLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const quality = parsed.quality ?? ''
+  const combined = `${quality} ${text}`
+  if (/\bremux\b/i.test(combined)) return 'Remux'
+  if (/\buntouched\b/i.test(combined)) return 'Untouched'
+  if (/\bblu[ ._-]?ray\b|\bbdrip\b|\bbdremux\b/i.test(combined)) return 'BD'
+  if (/\bweb[ ._-]?dl\b/i.test(combined)) return 'WEB'
+  if (/\bweb[ ._-]?rip\b/i.test(combined)) return 'WEBRip'
+  if (/\bdvd[ ._-]?rip\b|\bdvdrip\b|\bdvd\b/i.test(combined)) return 'DVD'
+  if (/\bhdrip\b/i.test(combined)) return 'HDRip'
+  if (/\bhdtv\b/i.test(combined)) return 'HDTV'
+  return undefined
+}
+
+function compactCodecLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const codec = parsed.codec ?? ''
+  const combined = `${codec} ${text}`
+  if (/\bav1\b/i.test(combined)) return 'AV1'
+  if (/\bhevc\b|h\.?265\b|x265\b/i.test(combined)) return 'HEVC'
+  if (/\bh\.?264\b|x264\b|avc\b/i.test(combined)) return 'H264'
+  if (/\bvc[- .]?1\b/i.test(combined)) return 'VC1'
+  if (/\bxvid\b/i.test(combined)) return 'XviD'
+  return undefined
+}
+
+function compactHdrLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const hdr = (parsed.hdr ?? []).join(' ')
+  const combined = `${hdr} ${text}`
+  if (/\b(?:dolby[ ._-]?vision|dovi|dv)\b/i.test(combined)) return 'DV'
+  if (/\bhdr10\+\b/i.test(combined)) return 'HDR10+'
+  if (/\bhdr10\b/i.test(combined)) return 'HDR10'
+  if (/\bhdr\b/i.test(combined)) return 'HDR'
+  if (/\bsdr\b/i.test(combined)) return 'SDR'
+  return undefined
+}
+
+function compactFeatureLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const editions = (parsed.editions ?? []).join(' ')
+  const combined = `${editions} ${text}`
+  if (/\bimax\b/i.test(combined)) return 'IMAX'
+  if (parsed.upscaled || /\bai[ ._-]*upscale(?:d)?\b|\bupscale(?:d)?\b|\btopaz\b|\brealesrgan\b|\bai\b/i.test(combined)) return 'AI'
+  return undefined
+}
+
+function compactAudioLabel(parsed: ParsedTorrentTitleResult, text: string): string | undefined {
+  const audio = (parsed.audio ?? []).join(' ')
+  const combined = `${audio} ${text}`
+  if (/\batmos\b/i.test(combined)) return 'Atmos'
+  if (/\btruehd\b/i.test(combined)) return 'TrueHD'
+  if (/\bdts[ ._-]?x\b/i.test(combined)) return 'DTS-X'
+  if (/\bdts[ ._-]?hd\b|\bdts\s+lossless\b/i.test(combined)) return 'DTS-HD'
+  if (/\bdd\+|\be-?ac-?3\b/i.test(combined)) return 'DD+'
+  if (/\bdolby[ ._-]?digital\b|\bdd\b|\bac3\b/i.test(combined)) return 'DD'
+  if (/\bflac\b/i.test(combined)) return 'FLAC'
+  if (/\baac\b/i.test(combined)) return 'AAC'
+  return undefined
+}
+
+function compactSizeLabel(stream: Stream, parsed?: ParsedTorrentTitleResult): string | undefined {
+  const nbsp = '\u202F'
+  const bytes = streamSizeBytes(stream)
+  if (bytes && bytes > 0) {
+    if (bytes >= 1e12) return `${Math.round(bytes / 1e11) / 10}${nbsp}TB`
+    if (bytes >= 1e9) return `${Math.round(bytes / 1e9)}${nbsp}GB`
+    if (bytes >= 1e6) return `${Math.round(bytes / 1e6)}${nbsp}MB`
+    if (bytes >= 1e3) return `${Math.round(bytes / 1e3)}${nbsp}KB`
+    return `${bytes}${nbsp}B`
+  }
+  const size = parsed?.size?.match(/(\d+(?:\.\d+)?)\s*(TB|GB|MB|KB|B)/i)
+  if (!size) return undefined
+  const value = Number.parseFloat(size[1])
+  if (!Number.isFinite(value)) return undefined
+  return `${Math.round(value)}${nbsp}${size[2].toUpperCase()}`
 }
 
 function stremioFormattedStreamTitle(stream: Stream): string {
@@ -1242,7 +1401,7 @@ function sortPlaybackMediaSourceStreamsByBitrate(streams: Stream[], runtimeTicks
 function sanitizeMediaSourceText(value: string): string {
   return value
     .replace(/[\uD800-\uDFFF]/g, '')
-    .replace(/\s+/g, ' ')
+    .replace(/[ \t\r\n\f\v\u00A0]+/g, ' ')
     .trim()
 }
 
