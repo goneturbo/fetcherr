@@ -2051,7 +2051,7 @@ label {
 
 .user-table {
   width: 100%;
-  min-width: 820px;
+  min-width: 980px;
   border-collapse: collapse;
 }
 
@@ -2093,6 +2093,11 @@ label {
 .user-table select {
   min-width: 0;
   margin: 0;
+}
+
+.user-table .rating-limit-select {
+  width: min(100%, 10rem);
+  text-overflow: ellipsis;
 }
 
 .username-cell {
@@ -2543,6 +2548,7 @@ body.dashboard-page {
     grid-template-columns: minmax(0, 1fr) minmax(104px, .45fr);
     grid-template-areas:
       "identity role"
+      "limit limit"
       "password action";
     gap: 10px;
     padding: 12px;
@@ -2563,8 +2569,9 @@ body.dashboard-page {
 
   .settings-page .user-table tbody td:nth-child(1) { grid-area: identity; }
   .settings-page .user-table tbody td:nth-child(2) { grid-area: role; }
-  .settings-page .user-table tbody td:nth-child(3) { grid-area: password; }
-  .settings-page .user-table tbody td:nth-child(4) { grid-area: action; }
+  .settings-page .user-table tbody td:nth-child(3) { grid-area: limit; }
+  .settings-page .user-table tbody td:nth-child(4) { grid-area: password; }
+  .settings-page .user-table tbody td:nth-child(5) { grid-area: action; }
 
   .settings-page .user-table tbody td::before {
     display: none;
@@ -2887,6 +2894,7 @@ body.dashboard-page {
     grid-template-columns: minmax(0, 1fr) minmax(104px, .45fr);
     grid-template-areas:
       "identity role"
+      "limit limit"
       "password action";
     gap: 10px;
     padding: 12px;
@@ -2907,8 +2915,9 @@ body.dashboard-page {
 
   .user-table tbody td:nth-child(1) { grid-area: identity; }
   .user-table tbody td:nth-child(2) { grid-area: role; }
-  .user-table tbody td:nth-child(3) { grid-area: password; }
-  .user-table tbody td:nth-child(4) { grid-area: action; }
+  .user-table tbody td:nth-child(3) { grid-area: limit; }
+  .user-table tbody td:nth-child(4) { grid-area: password; }
+  .user-table tbody td:nth-child(5) { grid-area: action; }
 
   .user-table tbody td::before {
     display: none;

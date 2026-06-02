@@ -8,11 +8,13 @@ import {
   listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, type AppUser,
+  authEnabled, canUserAccessKnownRating, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, type AppUser,
 } from '../db.js'
 import {
   fetchMovieByTmdbId, posterUrl,
   fetchShowByTmdbId,
+  fetchMovieOfficialRatingByIds,
+  fetchShowOfficialRatingByIds,
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
 } from '../tmdb.js'
 import type { Movie, Show, Season, Episode } from '../db.js'
@@ -66,6 +68,7 @@ const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summari
 const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
 const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
 const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
+const stremioRatingCache = new Map<string, { rating: string; expiresAt: number }>()
 type JellyfinRouteOptions = {
   prewarmPlayback?: (playPath: string, label: string) => void
   registerPlaybackItem?: (itemId: string, playPath: string) => void
@@ -260,6 +263,9 @@ function pruneStremioCaches(now = Date.now()): void {
   }
   for (const [id, entry] of stremioEpisodeCache) {
     if (entry.expiresAt <= now) stremioEpisodeCache.delete(id)
+  }
+  for (const [key, entry] of stremioRatingCache) {
+    if (entry.expiresAt <= now) stremioRatingCache.delete(key)
   }
 }
 
@@ -1173,7 +1179,7 @@ function stremioSearchMetaToItem(
   meta: StremioMeta,
   mediaType: StremioMediaType,
   requestedId?: string,
-  options: { suppressMovieAutoplay?: boolean } = {},
+  options: { suppressMovieAutoplay?: boolean; officialRating?: string } = {},
 ) {
   const { itemId, sourceId } = stremioSearchMetaIds(meta, mediaType)
   const id = requestedId ?? itemId
@@ -1205,6 +1211,7 @@ function stremioSearchMetaToItem(
     Overview:           meta.overview || meta.description,
     Genres:             genres,
     GenreItems:         genreItems(genres),
+    OfficialRating:     options.officialRating || undefined,
     ExternalUrls:       meta.id.startsWith('tmdb:')
       ? [{ Name: 'TMDB', Url: `https://www.themoviedb.org/${mediaType === 'series' ? 'tv' : 'movie'}/${meta.id.slice(5)}` }]
       : stremioMetaExternalUrls(meta, mediaType),
@@ -1499,6 +1506,55 @@ function isStremioErrorMeta(meta: StremioMeta): boolean {
   return stremioMetaName(meta).startsWith('[x]') || stremioMetaName(meta).startsWith('[❌]')
 }
 
+function stremioMetaTmdbId(meta: StremioMeta): number | null {
+  if (!meta.id.startsWith('tmdb:')) return null
+  const tmdbId = Number.parseInt(meta.id.slice(5), 10)
+  return Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : null
+}
+
+function stremioMetaImdbId(meta: StremioMeta): string {
+  const imdbId = meta.imdb_id || meta.imdbId || (meta.id.startsWith('tt') ? meta.id : '')
+  return /^tt\d+$/i.test(imdbId) ? imdbId : ''
+}
+
+function stremioMetaTvdbId(meta: StremioMeta): number | undefined {
+  const raw = (meta as StremioMeta & { tvdb_id?: number | string; tvdbId?: number | string }).tvdb_id
+    ?? (meta as StremioMeta & { tvdb_id?: number | string; tvdbId?: number | string }).tvdbId
+  const tvdbId = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN
+  return Number.isFinite(tvdbId) && tvdbId > 0 ? tvdbId : undefined
+}
+
+function stremioRatingCacheKey(meta: StremioMeta, mediaType: StremioMediaType): string {
+  return `${mediaType}:${meta.id}:${stremioMetaImdbId(meta)}:${stremioMetaTmdbId(meta) ?? ''}:${stremioMetaTvdbId(meta) ?? ''}`
+}
+
+async function stremioOfficialRating(meta: StremioMeta, mediaType: StremioMediaType): Promise<string> {
+  pruneStremioCaches()
+  const key = stremioRatingCacheKey(meta, mediaType)
+  const cached = stremioRatingCache.get(key)
+  if (cached && cached.expiresAt > Date.now()) return cached.rating
+
+  const tmdbId = stremioMetaTmdbId(meta)
+  const imdbId = stremioMetaImdbId(meta)
+  const rating = mediaType === 'movie'
+    ? await fetchMovieOfficialRatingByIds({ tmdbId, imdbId })
+    : await fetchShowOfficialRatingByIds({ tmdbId, imdbId, tvdbId: stremioMetaTvdbId(meta) })
+  stremioRatingCache.set(key, { rating, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  trimCacheMap(stremioRatingCache, STREMIO_CACHE_MAX_ITEMS)
+  return rating
+}
+
+async function canUserAccessStremioMeta(user: AppUser, meta: StremioMeta, mediaType: StremioMediaType): Promise<boolean> {
+  if (!hasRatingLimit(user)) return true
+  const rating = await stremioOfficialRating(meta, mediaType)
+  return canUserAccessKnownRating(user.maxRating, rating)
+}
+
+async function stremioRatingForVisibleMeta(user: AppUser, meta: StremioMeta, mediaType: StremioMediaType): Promise<string> {
+  if (!hasRatingLimit(user)) return ''
+  return stremioOfficialRating(meta, mediaType)
+}
+
 async function buildSearchResultItems(
   searchTerm: string,
   includeTypes: string,
@@ -1531,25 +1587,27 @@ async function buildSearchResultItems(
   const localShowIds = new Set(localShows.map(show => show.tmdbId))
   const localMovieImdbIds = new Set(localMovies.map(movie => movie.imdbId).filter(Boolean))
   const localShowImdbIds = new Set(localShows.map(show => show.imdbId).filter(Boolean))
-  const stremioSearchMetas = stremioMetas
-    .filter(meta => {
-      const mediaType = String(meta.type ?? '').toLowerCase() as StremioMediaType
-      if (mediaType !== 'movie' && mediaType !== 'series') return false
-      const tmdbId = meta.id.startsWith('tmdb:') ? Number.parseInt(meta.id.slice(5), 10) : NaN
-      const imdbId = meta.imdb_id || meta.imdbId || (meta.id.startsWith('tt') ? meta.id : '')
-      if (mediaType === 'movie') {
-        if (Number.isFinite(tmdbId) && localMovieIds.has(tmdbId)) return false
-        if (imdbId && localMovieImdbIds.has(imdbId)) return false
-      } else {
-        if (Number.isFinite(tmdbId) && localShowIds.has(tmdbId)) return false
-        if (imdbId && localShowImdbIds.has(imdbId)) return false
-      }
-      return true
-    })
+  const stremioSearchMetas: StremioMeta[] = []
+  for (const meta of stremioMetas) {
+    const mediaType = String(meta.type ?? '').toLowerCase() as StremioMediaType
+    if (mediaType !== 'movie' && mediaType !== 'series') continue
+    const tmdbId = stremioMetaTmdbId(meta)
+    const imdbId = stremioMetaImdbId(meta)
+    if (mediaType === 'movie') {
+      if (tmdbId && localMovieIds.has(tmdbId)) continue
+      if (imdbId && localMovieImdbIds.has(imdbId)) continue
+    } else {
+      if (tmdbId && localShowIds.has(tmdbId)) continue
+      if (imdbId && localShowImdbIds.has(imdbId)) continue
+    }
+    if (!await canUserAccessStremioMeta(user, meta, mediaType)) continue
+    stremioSearchMetas.push(meta)
+  }
   const stremioSearchItems = await Promise.all(stremioSearchMetas.map(async meta => {
     const mediaType = String(meta.type ?? 'movie').toLowerCase() === 'series' ? 'series' : 'movie'
     const hydrated = mediaType === 'series' ? await hydrateStremioSeriesMeta(meta) : meta
-    const item = stremioSearchMetaToItem(hydrated, mediaType) as Record<string, unknown>
+    const rating = await stremioRatingForVisibleMeta(user, meta, mediaType)
+    const item = stremioSearchMetaToItem(hydrated, mediaType, undefined, { officialRating: rating }) as Record<string, unknown>
     return mediaType === 'movie' ? searchMovieAutoplayItem(item) : item
   }))
 
@@ -2138,6 +2196,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
     const stremioSeries = ParentId ? idToStremioSearchMeta(ParentId) : null
     if (stremioSeries?.mediaType === 'series') {
+      if (!await canUserAccessStremioMeta(user, stremioSeries.meta, 'series')) {
+        return { Items: [], TotalRecordCount: 0, StartIndex: offset }
+      }
       const seriesMeta = await hydrateStremioSeriesMeta(stremioSeries.meta)
       const visibleEpisodes = await visibleStremioEpisodes(seriesMeta)
       if (includeTypes.includes('episode')) {
@@ -2157,6 +2218,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
     const stremioSeasonRef = ParentId ? idToStremioSeason(ParentId) : null
     if (stremioSeasonRef) {
+      if (!await canUserAccessStremioMeta(user, stremioSeasonRef.series, 'series')) {
+        return { Items: [], TotalRecordCount: 0, StartIndex: offset }
+      }
       const episodes = (await visibleStremioEpisodes(stremioSeasonRef.series))
         .filter(ep => stremioEpisodeSeasonNumber(ep) === stremioSeasonRef.seasonNumber)
       return {
@@ -2546,6 +2610,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
     const stremioEpisode = idToStremioEpisode(id)
     if (stremioEpisode) {
+      if (!await canUserAccessStremioMeta(currentUser, stremioEpisode.series, 'series')) return reply.code(404).send({ error: 'Not found' })
       const item = stremioEpisodeToItem(stremioEpisode.series, stremioEpisode.episode) as Record<string, unknown>
       if (!config.mediaSourceSelection) return item
       const { series, episode } = stremioEpisode
@@ -2562,14 +2627,19 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     }
 
     const stremioSeason = idToStremioSeason(id)
-    if (stremioSeason) return stremioSeasonToItem(stremioSeason.series, stremioSeason.seasonNumber)
+    if (stremioSeason) {
+      if (!await canUserAccessStremioMeta(currentUser, stremioSeason.series, 'series')) return reply.code(404).send({ error: 'Not found' })
+      return stremioSeasonToItem(stremioSeason.series, stremioSeason.seasonNumber)
+    }
 
     const stremioSearch = idToStremioSearchMeta(id)
     if (stremioSearch) {
+      if (!await canUserAccessStremioMeta(currentUser, stremioSearch.meta, stremioSearch.mediaType)) return reply.code(404).send({ error: 'Not found' })
+      const rating = await stremioRatingForVisibleMeta(currentUser, stremioSearch.meta, stremioSearch.mediaType)
       const meta = stremioSearch.mediaType === 'series'
         ? await hydrateStremioSeriesMeta(stremioSearch.meta)
         : stremioSearch.meta
-      const item = stremioSearchMetaToItem(meta, stremioSearch.mediaType, stremioSearch.requestedId) as Record<string, unknown>
+      const item = stremioSearchMetaToItem(meta, stremioSearch.mediaType, stremioSearch.requestedId, { officialRating: rating }) as Record<string, unknown>
       if (stremioSearch.mediaType !== 'movie') return item
       const movieItem = searchMovieAutoplayItem(item)
       const externalId = meta.imdb_id || meta.imdbId || meta.id
@@ -2696,6 +2766,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const { seriesId } = req.params as { seriesId: string }
     const stremioSeries = idToStremioSearchMeta(seriesId)
     if (stremioSeries?.mediaType === 'series') {
+      if (!await canUserAccessStremioMeta(user, stremioSeries.meta, 'series')) {
+        return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
+      }
       const seriesMeta = await hydrateStremioSeriesMeta(stremioSeries.meta)
       const visibleEpisodes = await visibleStremioEpisodes(seriesMeta)
       const seasonNumbers = stremioSeriesSeasons(visibleEpisodes)
@@ -2731,6 +2804,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const SeasonId = q.seasonid
     const stremioSeries = idToStremioSearchMeta(seriesId)
     if (stremioSeries?.mediaType === 'series') {
+      if (!await canUserAccessStremioMeta(user, stremioSeries.meta, 'series')) {
+        return { Items: [], TotalRecordCount: 0, StartIndex: 0 }
+      }
       const seriesMeta = await hydrateStremioSeriesMeta(stremioSeries.meta)
       const stremioSeason = SeasonId ? idToStremioSeason(SeasonId) : null
       const visibleEpisodes = await visibleStremioEpisodes(seriesMeta)
@@ -2806,6 +2882,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
     const stremioEpisode = idToStremioEpisode(id)
     if (stremioEpisode) {
+      if (rootFolderUser && !await canUserAccessStremioMeta(rootFolderUser, stremioEpisode.series, 'series')) return reply.code(404).send()
       const path = stremioEpisode.episode.poster || stremioEpisode.series.poster
       if (path) return sendImageUrl(reply, headers, path, 'poster', query)
       return reply.code(404).send()
@@ -2813,6 +2890,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
 
     const stremioSeason = idToStremioSeason(id)
     if (stremioSeason) {
+      if (rootFolderUser && !await canUserAccessStremioMeta(rootFolderUser, stremioSeason.series, 'series')) return reply.code(404).send()
       if (stremioSeason.series.poster) return sendImageUrl(reply, headers, stremioSeason.series.poster, 'poster', query)
       return reply.code(404).send()
     }
@@ -2820,6 +2898,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const stremioSearch = idToStremioSearchMeta(id)
     if (stremioSearch) {
       const { meta } = stremioSearch
+      if (rootFolderUser && !await canUserAccessStremioMeta(rootFolderUser, meta, stremioSearch.mediaType)) return reply.code(404).send()
       if (isLogo && meta.logo) return sendImageUrl(reply, headers, meta.logo, 'logo', query)
       if (isThumb && meta.background) return sendImageUrl(reply, headers, meta.background, 'backdrop', query)
       if (isBackdrop && meta.background) return sendImageUrl(reply, headers, meta.background, 'backdrop', query)
@@ -3043,6 +3122,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const stremioEpisode = idToStremioEpisode(id)
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
+      if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send({ error: 'Not found' })
       const externalId = episode.id || `${series.id}:${stremioEpisodeSeasonNumber(episode)}:${stremioEpisodeNumber(episode)}`
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
@@ -3075,6 +3155,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (stremioSearch) {
       const { meta, mediaType, sourceId } = stremioSearch
       if (mediaType !== 'movie') return reply.code(404).send({ error: 'Not playable' })
+      if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send({ error: 'Not found' })
       const externalId = meta.imdb_id || meta.imdbId || meta.id
       const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
@@ -3233,6 +3314,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const stremioEpisode = idToStremioEpisode(id)
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
+      if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send()
       const externalId = episode.id || `${series.id}:${stremioEpisodeSeasonNumber(episode)}:${stremioEpisodeNumber(episode)}`
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
@@ -3242,6 +3324,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (stremioSearch) {
       const { meta, mediaType } = stremioSearch
       if (mediaType !== 'movie') return reply.code(404).send()
+      if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send()
       const externalId = meta.imdb_id || meta.imdbId || meta.id
       const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
       return reply.redirect(createSignedPlaybackUrl(origin, playPath), 302)

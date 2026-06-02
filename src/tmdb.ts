@@ -1,11 +1,11 @@
 import { config } from './config.js'
 import {
-  upsertMovie, getMovieByTmdbId, type Movie,
-  upsertShow, getShowByTmdbId, type Show,
+  upsertMovie, getMovieByTmdbId, getMovieByImdbId, type Movie,
+  upsertShow, getShowByTmdbId, getShowByImdbId, type Show,
   upsertSeason, getSeasonsForShow, type Season,
   upsertEpisode, type Episode, getAiredEpisodesForSeason, getEffectiveShowMode,
 } from './db.js'
-import { fetchEpisodeStillFallbacks, fetchSeriesLanguage } from './tvdb.js'
+import { fetchContentRatingFallback, fetchEpisodeStillFallbacks, fetchSeriesLanguage } from './tvdb.js'
 
 const BASE = 'https://api.themoviedb.org/3'
 const MISSING_STILL_RETRY_MS = 7 * 24 * 60 * 60 * 1000
@@ -129,6 +129,33 @@ interface TmdbKeywordsResponse {
   results?: TmdbKeyword[]
 }
 
+interface TmdbFindResponse {
+  movie_results?: Array<{ id?: number }>
+  tv_results?: Array<{ id?: number }>
+}
+
+async function findTmdbMovieIdByImdbId(imdbId: string): Promise<number | null> {
+  if (!config.tmdbApiKey || !imdbId.trim()) return null
+  try {
+    const r = await tmdbGet(`/find/${encodeURIComponent(imdbId)}?external_source=imdb_id`) as TmdbFindResponse
+    const tmdbId = r.movie_results?.find(result => typeof result.id === 'number')?.id
+    return tmdbId && Number.isFinite(tmdbId) ? tmdbId : null
+  } catch {
+    return null
+  }
+}
+
+async function findTmdbShowIdByImdbId(imdbId: string): Promise<number | null> {
+  if (!config.tmdbApiKey || !imdbId.trim()) return null
+  try {
+    const r = await tmdbGet(`/find/${encodeURIComponent(imdbId)}?external_source=imdb_id`) as TmdbFindResponse
+    const tmdbId = r.tv_results?.find(result => typeof result.id === 'number')?.id
+    return tmdbId && Number.isFinite(tmdbId) ? tmdbId : null
+  } catch {
+    return null
+  }
+}
+
 interface TmdbImageFile {
   file_path: string
   iso_639_1?: string | null
@@ -229,6 +256,30 @@ export async function fetchMovieByTmdbId(tmdbId: number, listedAt = ''): Promise
   } catch {
     return null
   }
+}
+
+export async function fetchMovieByImdbId(imdbId: string): Promise<Movie | null> {
+  const normalized = imdbId.trim()
+  if (!normalized) return null
+  const cached = getMovieByImdbId(normalized)
+  if (cached) return cached
+  const tmdbId = await findTmdbMovieIdByImdbId(normalized)
+  return tmdbId ? fetchMovieByTmdbId(tmdbId) : null
+}
+
+export async function fetchMovieOfficialRatingByIds(opts: { tmdbId?: number | null; imdbId?: string }): Promise<string> {
+  const tmdbId = opts.tmdbId && Number.isFinite(opts.tmdbId) ? opts.tmdbId : null
+  const imdbId = (opts.imdbId ?? '').trim()
+  let movie = tmdbId ? await fetchMovieByTmdbId(tmdbId) : null
+  if (!movie && imdbId) movie = await fetchMovieByImdbId(imdbId)
+  if (movie?.officialRating) return movie.officialRating
+
+  const fallback = await fetchContentRatingFallback('movie', { imdbId: movie?.imdbId || imdbId })
+  if (fallback && movie) {
+    const { id: _id, ...stored } = movie
+    upsertMovie({ ...stored, officialRating: fallback })
+  }
+  return fallback
 }
 
 export async function fetchMovieCollection(movieTmdbId: number): Promise<MovieCollectionItem[]> {
@@ -358,6 +409,33 @@ export async function fetchShowByTmdbId(tmdbId: number, listedAt = ''): Promise<
   } catch {
     return null
   }
+}
+
+export async function fetchShowByImdbId(imdbId: string): Promise<Show | null> {
+  const normalized = imdbId.trim()
+  if (!normalized) return null
+  const cached = getShowByImdbId(normalized)
+  if (cached) return cached
+  const tmdbId = await findTmdbShowIdByImdbId(normalized)
+  return tmdbId ? fetchShowByTmdbId(tmdbId) : null
+}
+
+export async function fetchShowOfficialRatingByIds(opts: { tmdbId?: number | null; imdbId?: string; tvdbId?: number }): Promise<string> {
+  const tmdbId = opts.tmdbId && Number.isFinite(opts.tmdbId) ? opts.tmdbId : null
+  const imdbId = (opts.imdbId ?? '').trim()
+  let show = tmdbId ? await fetchShowByTmdbId(tmdbId) : null
+  if (!show && imdbId) show = await fetchShowByImdbId(imdbId)
+  if (show?.officialRating) return show.officialRating
+
+  const fallback = await fetchContentRatingFallback('series', {
+    imdbId: show?.imdbId || imdbId,
+    tvdbId: show?.tvdbId || opts.tvdbId,
+  })
+  if (fallback && show) {
+    const { id: _id, ...stored } = show
+    upsertShow({ ...stored, officialRating: fallback })
+  }
+  return fallback
 }
 
 /**

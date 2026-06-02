@@ -190,20 +190,15 @@ export interface TorBoxCleanupJob {
 export const DEFAULT_ADMIN_USER_ID = 'a0000000-0000-0000-0000-000000000002'
 export const MAX_RATING_OPTIONS = [
   'unrestricted',
-  'G',
-  'PG',
-  'PG-13',
-  'R',
-  'NC-17',
-  'TV-Y',
-  'TV-Y7',
-  'TV-G',
-  'TV-PG',
-  'TV-14',
-  'TV-MA',
+  '0',
+  '1',
+  '2',
+  '3',
+  '4',
 ] as const
 
 export type MaxRating = typeof MAX_RATING_OPTIONS[number]
+export type RatingLimit = MaxRating
 
 const schema = `
 CREATE TABLE IF NOT EXISTS movies (
@@ -520,10 +515,12 @@ function normalizeUsername(username: string): string {
 }
 
 function normalizeMaxRating(value: string | null | undefined): MaxRating {
-  const normalized = (value ?? '').trim().toUpperCase()
-  if (!normalized) return 'unrestricted'
-  const match = MAX_RATING_OPTIONS.find(option => option.toUpperCase() === normalized)
-  return match ?? 'unrestricted'
+  const raw = (value ?? '').trim()
+  if (!raw) return 'unrestricted'
+  if (['0', '1', '2', '3', '4'].includes(raw)) return raw as MaxRating
+  if (raw.toLowerCase() === 'unrestricted') return 'unrestricted'
+  const severity = ratingSeverity(raw)
+  return severity == null ? 'unrestricted' : String(severity) as MaxRating
 }
 
 function normalizeUserRole(value: string | null | undefined): AppUserRole {
@@ -534,8 +531,8 @@ function normalizeUserRole(value: string | null | undefined): AppUserRole {
 }
 
 function effectiveMaxRatingForRole(role: AppUserRole, maxRating: string): MaxRating {
-  if (role === 'kids') return 'TV-PG'
-  return 'unrestricted'
+  if (role === 'admin') return 'unrestricted'
+  return normalizeMaxRating(maxRating)
 }
 
 function row2appUser(r: Record<string, unknown>): AppUser {
@@ -1641,7 +1638,7 @@ function normalizeOfficialRating(rating: string): string {
   if (!raw) return ''
   const compact = raw.replace(/\s+/g, '').replace(/_/g, '-')
   if (compact === 'TVY') return 'TV-Y'
-  if (compact === 'TVY7' || compact === 'TVY7FV') return 'TV-Y7'
+  if (compact === 'TVY7' || compact === 'TVY7FV' || compact === 'TV-Y7-FV' || compact === 'Y7FV') return 'TV-Y7'
   if (compact === 'TVG') return 'TV-G'
   if (compact === 'TVPG') return 'TV-PG'
   if (compact === 'TV14') return 'TV-14'
@@ -1678,21 +1675,36 @@ function ratingSeverity(rating: string): number | null {
 export function canUserAccessRating(maxRating: string, officialRating: string): boolean {
   const normalizedMax = normalizeMaxRating(maxRating)
   if (normalizedMax === 'unrestricted') return true
-  const limit = ratingSeverity(normalizedMax)
+  const limit = Number.parseInt(normalizedMax, 10)
   const actual = ratingSeverity(officialRating)
-  if (limit == null) return true
+  if (!Number.isFinite(limit)) return true
   if (actual == null) return true
   return actual <= limit
 }
 
+export function canUserAccessKnownRating(maxRating: string, officialRating: string): boolean {
+  const normalizedMax = normalizeMaxRating(maxRating)
+  if (normalizedMax === 'unrestricted') return true
+  const limit = Number.parseInt(normalizedMax, 10)
+  const actual = ratingSeverity(officialRating)
+  if (!Number.isFinite(limit)) return true
+  if (actual == null) return false
+  return actual <= limit
+}
+
+export function hasRatingLimit(user: Pick<AppUser, 'role' | 'maxRating'>): boolean {
+  if (user.role === 'admin') return false
+  return normalizeMaxRating(user.maxRating) !== 'unrestricted'
+}
+
 export function canUserAccessMovie(user: Pick<AppUser, 'role' | 'maxRating'>, movie: Pick<Movie, 'officialRating'>): boolean {
   if (user.role === 'admin') return true
-  return canUserAccessRating(effectiveMaxRatingForRole(user.role, user.maxRating), movie.officialRating)
+  return canUserAccessKnownRating(effectiveMaxRatingForRole(user.role, user.maxRating), movie.officialRating)
 }
 
 export function canUserAccessShow(user: Pick<AppUser, 'role' | 'maxRating'>, show: Pick<Show, 'officialRating'>): boolean {
   if (user.role === 'admin') return true
-  return canUserAccessRating(effectiveMaxRatingForRole(user.role, user.maxRating), show.officialRating)
+  return canUserAccessKnownRating(effectiveMaxRatingForRole(user.role, user.maxRating), show.officialRating)
 }
 
 function row2manualShowSubscription(r: Record<string, unknown>): ManualShowSubscription {

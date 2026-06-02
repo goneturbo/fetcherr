@@ -31,6 +31,25 @@ interface TvdbSeriesResponse {
   } | null
 }
 
+interface TvdbContentRating {
+  name?: string | null
+  country?: string | null
+  contentType?: string | null
+}
+
+interface TvdbExtendedRatingResponse {
+  data?: {
+    contentRatings?: TvdbContentRating[]
+  } | null
+}
+
+interface TvdbRemoteSearchResponse {
+  data?: Array<{
+    movie?: { id?: number | null } | null
+    series?: { id?: number | null } | null
+  }>
+}
+
 async function login(): Promise<string> {
   if (!config.tvdbApiKey) throw new Error('TVDB_API_KEY not configured')
   if (cachedToken && Date.now() < cachedTokenExpiresAt) return cachedToken
@@ -99,6 +118,55 @@ export async function fetchSeriesLanguage(tvdbId: number): Promise<string> {
     } catch {
       // ignore and try the next endpoint shape
     }
+  }
+  return ''
+}
+
+function pickUsContentRating(ratings: TvdbContentRating[] | undefined, mediaType: 'movie' | 'series'): string {
+  const expectedContentType = mediaType === 'series' ? 'series' : 'movie'
+  const matches = (ratings ?? []).filter(rating => {
+    const country = (rating.country ?? '').trim().toLowerCase()
+    const contentType = (rating.contentType ?? '').trim().toLowerCase()
+    const isUs = country === 'us' || country === 'usa' || country === 'united states'
+    const matchesType = !contentType || contentType === expectedContentType
+    return isUs && matchesType && rating.name
+  })
+  return matches[0]?.name?.trim() ?? ''
+}
+
+async function fetchContentRatingByTvdbId(mediaType: 'movie' | 'series', tvdbId: number): Promise<string> {
+  if (!config.tvdbApiKey || !tvdbId) return ''
+  const path = mediaType === 'movie' ? `/movies/${tvdbId}/extended?short=true` : `/series/${tvdbId}/extended?short=true`
+  try {
+    const json = await tvdbGet(path) as TvdbExtendedRatingResponse
+    return pickUsContentRating(json.data?.contentRatings, mediaType)
+  } catch {
+    return ''
+  }
+}
+
+export async function fetchContentRatingFallback(
+  mediaType: 'movie' | 'series',
+  opts: { imdbId?: string; tvdbId?: number },
+): Promise<string> {
+  if (!config.tvdbApiKey) return ''
+  if (opts.tvdbId) {
+    const rating = await fetchContentRatingByTvdbId(mediaType, opts.tvdbId)
+    if (rating) return rating
+  }
+
+  const imdbId = (opts.imdbId ?? '').trim()
+  if (!imdbId) return ''
+  try {
+    const json = await tvdbGet(`/search/remoteid/${encodeURIComponent(imdbId)}`) as TvdbRemoteSearchResponse
+    for (const result of json.data ?? []) {
+      const tvdbId = mediaType === 'movie' ? result.movie?.id : result.series?.id
+      if (!tvdbId) continue
+      const rating = await fetchContentRatingByTvdbId(mediaType, tvdbId)
+      if (rating) return rating
+    }
+  } catch {
+    return ''
   }
   return ''
 }
