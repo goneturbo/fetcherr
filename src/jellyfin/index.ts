@@ -3327,7 +3327,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send()
       const externalId = meta.imdb_id || meta.imdbId || meta.id
       const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
-      return reply.redirect(createSignedPlaybackUrl(origin, playPath), 302)
+      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
     }
 
     const epRef = idToEpisode(id)
@@ -3347,7 +3347,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       if (!canUserAccessMovie(user, movie)) return reply.code(404).send()
       if (!isMovieVisibleToLibrary(movie)) return reply.code(409).send({ error: 'Title not yet available', message: 'Not Yet Released' })
       const playPath = `/play/${movie.imdbId}`
-      return reply.redirect(createSignedPlaybackUrl(origin, playPath), 302)
+      return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
     }
 
     const tmdbId = idToTmdb(id)
