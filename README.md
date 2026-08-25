@@ -58,6 +58,12 @@ Configure AIOStreams with your provider, then paste the manifest URL into Fetche
 
 Fetcherr also has mediated support for direct playable URLs returned by AIOStreams. For example, if your AIOStreams instance is configured with EasyNews and returns an EasyNews-backed stream URL, Fetcherr can unwrap and play that URL through the normal playback resolver. When AIOStreams returns mixed direct URL, TorBox, and Real-Debrid candidates, Fetcherr can try the direct URL first, then fall back to TorBox or Real-Debrid.
 
+### Trakt connection limits
+
+Trakt now limits free accounts to one connected third-party app at a time — connecting a second app (Kometa, a scrobbler, Fetcherr, etc.) revokes whichever app was connected first. This is a Trakt account policy, not a Fetcherr bug or bitrate/traffic issue; Fetcherr detects the resulting token revocation and prompts you to reconnect in **Settings**, but it can't avoid consuming a connection slot.
+
+If you already use another Trakt-connected app and don't want Fetcherr to compete for that one free slot, use **MDBList** as your sync source instead — Fetcherr supports MDBList lists and watchlists with no Trakt connection required.
+
 ## Search Results
 
 Fetcherr exposes Jellyfin-compatible search results from both the synced library and configured Stremio add-ons. This lets clients find playable movies and shows returned by providers such as AIOStreams, then open them through the same Fetcherr playback resolver used by library items.

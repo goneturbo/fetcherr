@@ -1362,7 +1362,7 @@
       const callout = document.getElementById('traktCallout')
       callout.className = 'callout error'
       callout.style.display = ''
-      callout.textContent = d.authError.message
+      callout.textContent = `${d.authError.message} Prefer to keep your other Trakt app connected instead? Switch to MDBList as your sync source — it needs no Trakt connection.`
       return
     }
     if (d.authenticated) {
