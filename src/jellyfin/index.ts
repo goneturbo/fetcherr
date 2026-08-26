@@ -25,6 +25,7 @@ import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
 import { searchTraktMetas } from '../trakt.js'
+import { PLAYBACK_PROFILES, playbackProfileForKey, type PlaybackProfile } from '../playback-profiles.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -48,6 +49,7 @@ const SHOWS_FOLDER_ID  = 'a0000000-0000-4000-8000-000000000002'
 const COLLECTIONS_FOLDER_ID = 'a0000000-0000-4000-8007-000000000001'
 const SEARCH_DISABLED_ITEM_ID = 'a0000000-0000-4000-800a-000000000001'
 const SEARCH_DISABLED_RUNTIME_TICKS = 60 * 10_000_000
+const MEDIA_SOURCE_ITEM_ETAG_VERSION = 'media-sources-discovery-v4'
 const SERVER_GUID      = 'a0000000-0000-0000-0000-000000000001'
 const SEARCH_SERVER_GUID = 'a0000000-0000-0000-0000-00000000f001'
 const DISCOVER_FOLDER_ID = 'a0000000-0000-4000-8000-000000000003'
@@ -859,13 +861,20 @@ function buildDiscoverRootFolderItem(user: AppUser) {
   }
 }
 
+function mdblistCollectionTypeForUrl(url: string): 'movies' | 'tvshows' | 'boxsets' {
+  const pathParts = mdblistListPathFromUrl(url).split('/').map(part => part.toLowerCase())
+  if (pathParts.includes('movies')) return 'movies'
+  if (pathParts.includes('shows') || pathParts.includes('series')) return 'tvshows'
+  return 'boxsets'
+}
+
 function buildMdblistCollectionItem(entry: MdblistListEntry, count: number) {
   const path = mdblistListPathFromUrl(entry.url)
   const id = mdblistCollectionIdFromPath(path)
   const name = nameForMdblistUrl(entry.url)
   return {
     Id: id, ServerId: SERVER_GUID, Name: name, SortName: name.toLowerCase(),
-    Type: 'BoxSet', CollectionType: 'boxsets', IsFolder: true,
+    Type: 'CollectionFolder', CollectionType: mdblistCollectionTypeForUrl(entry.url), IsFolder: true,
     CanDelete: false, CanDownload: false, PlayAccess: 'Full',
     ChildCount: count, RecursiveItemCount: count,
     ImageTags: { Primary: 'mdblist', Backdrop: 'mdblist' },
@@ -926,7 +935,10 @@ function dateCreatedForSourcePosition(syncedAt: string | undefined, sourcePositi
   if (!sourcePosition || sourcePosition <= 0) return syncedAt
   const baseMs = Date.parse(syncedAt ?? '')
   if (!Number.isFinite(baseMs)) return syncedAt
-  return new Date(baseMs - ((sourcePosition - 1) * 1000)).toISOString()
+  // Treat the source ranking as an ordered sequence: rank 1 is the oldest
+  // synthetic date, so Infuse's normal ascending Date Added order shows the
+  // list's ranking order and descending reverses it.
+  return new Date(baseMs + ((sourcePosition - 1) * 1000)).toISOString()
 }
 
 function mdblistFolderMembers(user: AppUser, listUrl: string): CollectionMember[] {
@@ -941,22 +953,86 @@ function mdblistFolderMembers(user: AppUser, listUrl: string): CollectionMember[
   })
 }
 
+function latestEpisodePlayedDate(showTmdbId: number, userId: string): string {
+  const row = getDb().prepare(`
+    SELECT max(u.last_played_date) AS last_played_date
+    FROM user_item_data u
+    JOIN episodes e
+      ON u.item_id = ('00000000-0000-4000-8003-' || lower(printf('%06x%03x%03x', e.show_tmdb_id, e.season_number, e.episode_number)))
+    WHERE u.user_id = ? AND e.show_tmdb_id = ?
+  `).get(userId, showTmdbId) as { last_played_date?: string } | undefined
+  return row?.last_played_date ?? ''
+}
+
+function latestEpisodeAddedDate(showTmdbId: number): string {
+  const row = getDb().prepare('SELECT max(synced_at) AS synced_at FROM episodes WHERE show_tmdb_id = ?')
+    .get(showTmdbId) as { synced_at?: string } | undefined
+  return row?.synced_at ?? ''
+}
+
 function sortMdblistFolderItems<T extends Record<string, unknown>>(items: T[], sortBy?: string, sortOrder?: string): T[] {
   const normalizedSort = (sortBy ?? '').split(',')[0].trim().toLowerCase()
   const normalizedOrder = (sortOrder ?? '').split(',')[0].trim().toLowerCase()
   const direction = normalizedOrder === 'ascending' || normalizedOrder === 'asc' ? 1 : -1
   const compareStrings = (a: unknown, b: unknown) => String(a ?? '').localeCompare(String(b ?? ''), undefined, { sensitivity: 'base' })
   const compareNumbers = (a: unknown, b: unknown) => (Number(a ?? 0) || 0) - (Number(b ?? 0) || 0)
+  const compareDates = (a: unknown, b: unknown) => compareStrings(a, b)
+  const compareUserData = (a: T, b: T, field: 'PlayCount' | 'LastPlayedDate') => {
+    const aValue = (a.UserData as Record<string, unknown> | undefined)?.[field]
+    const bValue = (b.UserData as Record<string, unknown> | undefined)?.[field]
+    return field === 'PlayCount' ? compareNumbers(aValue, bValue) : compareDates(aValue, bValue)
+  }
+  const sourceOrder = (a: T, b: T) => compareNumbers(a.SourcePosition, b.SourcePosition)
+    || compareStrings(a.SortName ?? a.Name, b.SortName ?? b.Name)
+
+  if (!normalizedSort) return [...items]
+  if (normalizedSort === 'random') {
+    const shuffled = [...items]
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+    }
+    return shuffled
+  }
 
   return [...items].sort((a, b) => {
-    if (['sortname', 'name'].includes(normalizedSort)) return compareStrings(a.SortName ?? a.Name, b.SortName ?? b.Name) * direction
-    if (['communityrating', 'rating', 'imdbrating'].includes(normalizedSort)) return compareNumbers(a.CommunityRating, b.CommunityRating) * direction
-    if (['officialrating', 'parentalrating'].includes(normalizedSort)) return compareStrings(a.OfficialRating, b.OfficialRating) * direction
-    if (['premieredate', 'releasedate', 'productionyear'].includes(normalizedSort)) return compareStrings(a.PremiereDate ?? a.ProductionYear, b.PremiereDate ?? b.ProductionYear) * direction
-    if (['datecreated', 'dateshowadded', 'dateadded', 'addeddate'].includes(normalizedSort)) return compareStrings(a.DateCreated, b.DateCreated) * direction
-    if (['runtime', 'runtimeticks'].includes(normalizedSort)) return compareNumbers(a.RunTimeTicks, b.RunTimeTicks) * direction
-    return compareNumbers(a.SourcePosition, b.SourcePosition) || compareStrings(a.SortName ?? a.Name, b.SortName ?? b.Name)
+    let result: number | undefined
+    if (['sortname', 'name'].includes(normalizedSort)) result = compareStrings(a.SortName ?? a.Name, b.SortName ?? b.Name)
+    else if (['communityrating', 'rating', 'imdbrating'].includes(normalizedSort)) result = compareNumbers(a.CommunityRating, b.CommunityRating)
+    else if (['officialrating', 'parentalrating'].includes(normalizedSort)) result = compareStrings(a.OfficialRating, b.OfficialRating)
+    else if (['premieredate', 'releasedate', 'productionyear'].includes(normalizedSort)) result = compareDates(a.PremiereDate ?? a.ProductionYear, b.PremiereDate ?? b.ProductionYear)
+    // MDBList rank 1 is represented by the oldest synthetic DateCreated, so
+    // Infuse's normal ascending Date Added order shows the ranking order.
+    else if (['datecreated', 'dateshowadded', 'dateadded', 'addeddate'].includes(normalizedSort)) result = sourceOrder(a, b)
+    else if (['dateepisodeadded', 'episodeaddeddate'].includes(normalizedSort)) result = compareDates(a.EpisodeAddedDate, b.EpisodeAddedDate)
+    else if (['dateplayed', 'lastplayeddate'].includes(normalizedSort)) result = compareUserData(a, b, 'LastPlayedDate')
+    else if (normalizedSort === 'playcount') result = compareUserData(a, b, 'PlayCount')
+    else if (['runtime', 'runtimeticks'].includes(normalizedSort)) result = compareNumbers(a.RunTimeTicks, b.RunTimeTicks)
+    else if (['isfolder', 'folders'].includes(normalizedSort)) result = compareNumbers(a.IsFolder ? 1 : 0, b.IsFolder ? 1 : 0)
+    // Fetcherr does not currently store a critic score. Keep the MDBList rank
+    // stable instead of presenting TMDB's community score as a critic score.
+    else if (['criticrating', 'criticsrating'].includes(normalizedSort)) result = sourceOrder(a, b)
+    else result = sourceOrder(a, b)
+    return (result || 0) * direction
   })
+}
+
+function sortCollectionItems<T extends Record<string, unknown>>(items: T[], sortBy?: string, sortOrder?: string): T[] {
+  const normalizedSort = (sortBy ?? '').split(',')[0].trim().toLowerCase()
+  if (!normalizedSort) return [...items]
+  if (normalizedSort === 'random') {
+    const shuffled = [...items]
+    for (let i = shuffled.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1))
+      ;[shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]]
+    }
+    return shuffled
+  }
+  const direction = (sortOrder ?? '').split(',')[0].trim().toLowerCase() === 'ascending' || (sortOrder ?? '').split(',')[0].trim().toLowerCase() === 'asc' ? 1 : -1
+  const compare = (a: T, b: T) => String(a.SortName ?? a.Name ?? '').localeCompare(String(b.SortName ?? b.Name ?? ''), undefined, { sensitivity: 'base' })
+  // Collection tiles have no movie/show rating, runtime, or playback value.
+  // Name is the meaningful deterministic fallback for those Infuse keys.
+  return [...items].sort((a, b) => compare(a, b) * direction)
 }
 
 async function mdblistFolderContents(listUrl: string, user: AppUser, sortBy?: string, sortOrder?: string) {
@@ -976,10 +1052,16 @@ async function mdblistFolderContents(listUrl: string, user: AppUser, sortBy?: st
     }
     const show = getShowByTmdbId(member.tmdbId) ?? await fetchShowByTmdbId(member.tmdbId)
     if (show && canUserAccessShow(user, show)) {
+      const item = showToSeriesItem(show, user.id)
       items.push({
-        ...showToSeriesItem(show, user.id),
+        ...item,
         DateCreated: dateCreatedForSourcePosition(member.syncedAt, member.sourcePosition),
+        EpisodeAddedDate: latestEpisodeAddedDate(show.tmdbId),
         SourcePosition: member.sourcePosition ?? 0,
+        UserData: {
+          ...(item.UserData as Record<string, unknown>),
+          LastPlayedDate: latestEpisodePlayedDate(show.tmdbId, user.id),
+        },
       })
     }
   }
@@ -1294,6 +1376,89 @@ function userDataForItem(itemId: string, ud: { played: boolean; playCount: numbe
   }
 }
 
+function mediaSourceItemEtag(scope: string, identity: string | number, syncedAt: string | undefined): string {
+  return createHash('md5').update([
+    MEDIA_SOURCE_ITEM_ETAG_VERSION,
+    scope,
+    identity,
+    syncedAt,
+    config.mediaSourceSelection ? 'versions-enabled' : 'versions-disabled',
+    config.mediaSourceLimit,
+  ].join(':')).digest('hex')
+}
+
+function movieItemEtag(movie: Movie): string {
+  return mediaSourceItemEtag('movie', movie.tmdbId, movie.syncedAt)
+}
+
+function episodeItemEtag(ep: Episode, show: Show): string {
+  return mediaSourceItemEtag('episode', `${show.tmdbId}:${ep.seasonNumber}:${ep.episodeNumber}`, ep.syncedAt)
+}
+
+function virtualProfileMediaSourceId(itemId: string, profile: PlaybackProfile): string {
+  return `${itemId}:profile:${profile.key}`
+}
+
+function virtualProfilePath(itemId: string, mediaSourceId: string): string {
+  const params = new URLSearchParams({
+    PlaySessionId: `fetcherr-${itemId}`,
+    MediaSourceId: mediaSourceId,
+  })
+  return `/Videos/${encodeURIComponent(itemId)}/stream?${params.toString()}`
+}
+
+function virtualProfileDimensions(profile: PlaybackProfile): { width: number; height: number } {
+  switch (profile.targetHeight) {
+    case 2160: return { width: 3840, height: 2160 }
+    case 1080: return { width: 1920, height: 1080 }
+    case 720: return { width: 1280, height: 720 }
+    case 360: return { width: 640, height: 360 }
+    default: return { width: 1920, height: 1080 }
+  }
+}
+
+function virtualProfileMediaSources(itemId: string, runtimeTicks: number, hasPlaybackIdentity: boolean) {
+  if (!config.mediaSourceSelection || !hasPlaybackIdentity) return []
+  if (!config.sootioUrl && config.streamProviderUrls.length === 0) return []
+
+  return PLAYBACK_PROFILES.map(profile => {
+    const mediaSourceId = virtualProfileMediaSourceId(itemId, profile)
+    const { width, height } = virtualProfileDimensions(profile)
+    const bitrate = profile.targetBitrateMbps
+      ? profile.targetBitrateMbps * 1_000_000
+      : undefined
+    return {
+      Id: mediaSourceId,
+      Name: profile.name,
+      Type: 'Default',
+      Protocol: 'Http',
+      Path: virtualProfilePath(itemId, mediaSourceId),
+      IsRemote: true,
+      SupportsDirectPlay: true,
+      SupportsDirectStream: true,
+      SupportsTranscoding: false,
+      RequiresOpening: false,
+      RequiresClosing: false,
+      Container: 'mkv',
+      Bitrate: bitrate,
+      VideoType: 'VideoFile',
+      RunTimeTicks: runtimeTicks,
+      DefaultAudioStreamIndex: 1,
+      MediaStreams: [
+        {
+          Type: 'Video',
+          Index: 0,
+          Codec: 'h264',
+          IsDefault: true,
+          Width: width,
+          Height: height,
+          BitRate: bitrate,
+        },
+        { Type: 'Audio', Index: 1, Codec: 'aac', IsDefault: true, Language: 'eng' },
+      ],
+    }
+  })
+}
 function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
   const genres: string[] = JSON.parse(m.genres || '[]')
   const runtimeTicks = (m.runtimeMins || 90) * 60 * 10_000_000
@@ -1303,6 +1468,7 @@ function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
   const posterTag = m.posterPath ? m.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const thumbTag = (m.backdropPath || m.posterPath) ? (m.backdropPath || m.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
   const logoTag = m.logoPath ? m.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
+  const virtualMediaSources = virtualProfileMediaSources(id, runtimeTicks, Boolean(m.imdbId))
   return {
     Id:                 id,
     ServerId:           SERVER_GUID,
@@ -1328,10 +1494,16 @@ function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
     ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
     PremiereDate:       jellyfinPremiereDate(m.releaseDate || m.digitalReleaseDate),
     DateCreated:        m.syncedAt,
+    Etag:               movieItemEtag(m),
     RunTimeTicks:       runtimeTicks,
     IsFolder:           false,
     Path:               fakePath,
     EnableMediaSourceDisplay: true,
+    ...(virtualMediaSources.length ? {
+      MediaSources: virtualMediaSources,
+      AlternateMediaSources: virtualMediaSources,
+      MediaSourceCount: virtualMediaSources.length,
+    } : {}),
     ImageTags:          {
       ...(posterTag ? { Primary: posterTag } : {}),
       ...(logoTag ? { Logo: logoTag } : {}),
@@ -1687,6 +1859,7 @@ function movieToSearchItem(m: Movie) {
     ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
     PremiereDate:       jellyfinPremiereDate(m.releaseDate || m.digitalReleaseDate),
     DateCreated:        m.syncedAt,
+    Etag:               movieItemEtag(m),
     IsFolder:           false,
     ImageTags:          {
       ...(posterTag ? { Primary: posterTag } : {}),
@@ -2184,6 +2357,7 @@ function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) 
   const showPosterTag = show.posterPath ? show.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const showBackdropTag = show.backdropPath ? show.backdropPath.replace(/\W/g, '').slice(0, 16) : undefined
   const showLogoTag = show.logoPath ? show.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
+  const virtualMediaSources = virtualProfileMediaSources(id, runtimeTicks, Boolean(show.imdbId))
   return {
     Id:                    id,
     ServerId:              SERVER_GUID,
@@ -2211,11 +2385,18 @@ function episodeToItem(ep: Episode, show: Show, userId = DEFAULT_ADMIN_USER_ID) 
     ExternalUrls:          null,
     PremiereDate:          jellyfinPremiereDate(ep.airDate),
     DateCreated:           ep.airDate ? `${ep.airDate}T00:00:00Z` : ep.syncedAt,
+    Etag:                  episodeItemEtag(ep, show),
     IsFolder:              false,
     IndexNumber:           ep.episodeNumber,
     ParentIndexNumber:     ep.seasonNumber,
     RunTimeTicks:          runtimeTicks,
     Path:                  fakePath,
+    EnableMediaSourceDisplay: true,
+    ...(virtualMediaSources.length ? {
+      MediaSources: virtualMediaSources,
+      AlternateMediaSources: virtualMediaSources,
+      MediaSourceCount: virtualMediaSources.length,
+    } : {}),
     ImageTags:             ep.stillPath ? { Primary: 'still' } : (showBackdropTag ? { Primary: showBackdropTag } : {}),
     PrimaryImageTag:       undefined,
     BackdropImageTags:     [],
@@ -2400,10 +2581,19 @@ function candidateTokenFromMediaSourceId(mediaSourceId: string | undefined): str
   return match?.[1] ?? null
 }
 
+function playbackProfileFromMediaSourceId(mediaSourceId: string | undefined, itemId?: string): PlaybackProfile | null {
+  if (!mediaSourceId) return null
+  if (itemId && !mediaSourceId.startsWith(`${itemId}:profile:`)) return null
+  const match = mediaSourceId.match(/:profile:([^:]+)$/i)
+  return playbackProfileForKey(match?.[1])
+}
+
 function signedPlaybackUrlForMediaSource(origin: string, playPath: string, mediaSourceId: string | undefined): string {
   const url = new URL(createSignedPlaybackUrl(origin, playPath))
   const candidate = candidateTokenFromMediaSourceId(mediaSourceId)
   if (candidate) url.searchParams.set('candidate', candidate)
+  const profile = playbackProfileFromMediaSourceId(mediaSourceId)
+  if (profile) url.searchParams.set('profile', profile.key)
   return url.toString()
 }
 
@@ -2683,7 +2873,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         const traktItems = traktCollectionItemsForUser(user)
         const mdblistItems = mdblistCollectionItems(user)
         const discoverItems = discoverCollectionItemsForUser(user)
-        const collections = [...traktItems, ...mdblistItems, ...discoverItems]
+        const collections = sortCollectionItems([...traktItems, ...mdblistItems, ...discoverItems], SortBy, SortOrder)
         return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
       }
       if (includeTypes.includes('season')) {
@@ -2826,7 +3016,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const traktItems = traktCollectionItemsForUser(user)
       const mdblistItems = mdblistCollectionItems(user)
       const discoverItems = discoverCollectionItemsForUser(user)
-      const collections = [...traktItems, ...mdblistItems, ...discoverItems]
+      const collections = sortCollectionItems([...traktItems, ...mdblistItems, ...discoverItems], SortBy, SortOrder)
       return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
     }
 
@@ -2838,7 +3028,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const traktItems = traktCollectionItemsForUser(user)
       const mdblistItems = mdblistCollectionItems(user)
       const discoverItems = discoverCollectionItemsForUser(user)
-      const collections = [...traktItems, ...mdblistItems, ...discoverItems]
+      const collections = sortCollectionItems([...traktItems, ...mdblistItems, ...discoverItems], SortBy, SortOrder)
       return { Items: pagedItems(collections, offset, limit), TotalRecordCount: collections.length, StartIndex: offset }
     }
 
@@ -3337,11 +3527,13 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
   }
 
   app.get('/Items/:id', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store')
     const user = requireRequestUser(req.headers, reply as never)
     if (!user) return
     return handleItem((req.params as { id: string }).id, reply as never, user, req.headers)
   })
   app.get('/Users/:userId/Items/:itemId', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store')
     const user = requireRequestUser(req.headers, reply as never)
     if (!user) return
     return handleItem((req.params as { itemId: string }).itemId, reply as never, user, req.headers)
@@ -3929,8 +4121,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     }
   }
 
-  app.get('/Items/:id/PlaybackInfo',  async (req, reply) => handlePlaybackInfo(req as never, reply as never))
-  app.post('/Items/:id/PlaybackInfo', async (req, reply) => handlePlaybackInfo(req as never, reply as never))
+  app.get('/Items/:id/PlaybackInfo',  async (req, reply) => {
+    reply.header('Cache-Control', 'no-store')
+    return handlePlaybackInfo(req as never, reply as never)
+  })
+  app.post('/Items/:id/PlaybackInfo', async (req, reply) => {
+    reply.header('Cache-Control', 'no-store')
+    return handlePlaybackInfo(req as never, reply as never)
+  })
 
   // Video stream redirect (fallback for some Infuse/VidHub versions)
   app.get('/Videos/:id/stream', async (req, reply) => {
@@ -3945,10 +4143,11 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       && mediaSourceId?.startsWith(`${id}:candidate:`)
       && opts.validatePlaybackCandidate?.(candidate, id),
     )
+    const profileMatches = Boolean(playbackProfileFromMediaSourceId(mediaSourceId, id))
     const headersWithToken = query?.api_key
       ? { ...req.headers as Record<string, string | string[] | undefined>, 'x-emby-token': query.api_key }
       : req.headers as Record<string, string | string[] | undefined>
-    const user = requestUser(headersWithToken) ?? ((sessionMatches || sourceMatches || candidateMatches) ? fallbackUser() : null)
+    const user = requestUser(headersWithToken) ?? ((sessionMatches || sourceMatches || candidateMatches || profileMatches) ? fallbackUser() : null)
 
     if (!user) return reply.code(401).send({ error: 'Unauthorized' })
 

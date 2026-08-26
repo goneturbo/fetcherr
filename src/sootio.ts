@@ -108,6 +108,11 @@ interface RankedStreamScore {
 
 const PROVIDER_METRICS_MAX = 250
 const providerFetchMetrics: ProviderFetchMetric[] = []
+const STREAM_RESPONSE_CACHE_TTL_MS = 60 * 1000
+const STREAM_RESPONSE_CACHE_MAX_ITEMS = 200
+type StreamResponseCacheEntry = { streams: Stream[]; expiresAt: number }
+const streamResponseCache = new Map<string, StreamResponseCacheEntry>()
+const streamResponseInFlight = new Map<string, Promise<Stream[]>>()
 
 function recordProviderFetchMetric(metric: ProviderFetchMetric): void {
   providerFetchMetrics.push(metric)
@@ -609,7 +614,15 @@ export function summarizeStreamForLog(s: Stream): string {
   ].join(' ')
 }
 
-async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
+function trimStreamResponseCache(): void {
+  while (streamResponseCache.size > STREAM_RESPONSE_CACHE_MAX_ITEMS) {
+    const firstKey = streamResponseCache.keys().next().value as string | undefined
+    if (firstKey === undefined) break
+    streamResponseCache.delete(firstKey)
+  }
+}
+
+async function fetchStreamsFromProvidersUncached(path: string): Promise<Stream[]> {
   const providers = providerBases()
   if (!providers.length) throw new Error('No stream provider URL configured')
 
@@ -685,6 +698,34 @@ async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
   }
 
   return [...deduped.values()]
+}
+
+async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
+  const now = Date.now()
+  const cached = streamResponseCache.get(path)
+  if (cached && cached.expiresAt > now) {
+    console.log(`streams: cache hit for ${path} (${cached.streams.length} streams)`)
+    return cached.streams
+  }
+  if (cached) streamResponseCache.delete(path)
+
+  const existing = streamResponseInFlight.get(path)
+  if (existing) {
+    console.log(`streams: reusing in-flight request for ${path}`)
+    return existing
+  }
+
+  const request = fetchStreamsFromProvidersUncached(path)
+    .then(streams => {
+      streamResponseCache.set(path, { streams, expiresAt: Date.now() + STREAM_RESPONSE_CACHE_TTL_MS })
+      trimStreamResponseCache()
+      return streams
+    })
+    .finally(() => {
+      if (streamResponseInFlight.get(path) === request) streamResponseInFlight.delete(path)
+    })
+  streamResponseInFlight.set(path, request)
+  return request
 }
 
 /**

@@ -98,6 +98,10 @@ Search results can always include synced Fetcherr library items. When Stremio se
 > [!NOTE]
 > The `/search` endpoint presents a separate Jellyfin server identity with no library folders or library items. Infuse can use that second connection for search results, while the normal connection remains available for Library Mode browsing and scanning.
 
+### Experimental Infuse version discovery
+
+This branch also preserves a separate Infuse workaround for version discovery. Some Infuse library views only request compact list items and do not request their detail records, so Fetcherr never gets the opportunity to resolve and expose the real Stremio-backed versions. When **Media source selection** is enabled, Fetcherr advertises two lightweight discovery markers on movie and episode list items; when Infuse follows up with the detail or playback request, those markers are replaced by the real filtered and renamed playable sources. Series folders remain non-playable, so discovery markers belong on their episode items rather than on the series itself. The markers are not separate transcodes or quality profiles, and the `A`/`B` names are discovery signals only. Library enumeration performs no provider probing; actual sources are resolved just in time when Infuse requests them. Provider responses are cached briefly and duplicate in-flight probes are coalesced. This is client-specific experimental behavior and should be evaluated independently before proposing it upstream.
+
 ## Connecting VidHub
 
 Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, use `http://YOUR_SERVER:9990/emby`.
