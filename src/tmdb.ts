@@ -31,6 +31,15 @@ async function tmdbGet(path: string): Promise<unknown> {
   return res.json()
 }
 
+export async function findTmdbIdByImdbId(imdbId: string, mediaType: 'movie' | 'show'): Promise<number | null> {
+  const result = await tmdbGet(`/find/${encodeURIComponent(imdbId)}?external_source=imdb_id`) as {
+    movie_results?: Array<{ id: number }>
+    tv_results?: Array<{ id: number }>
+  }
+  const match = (mediaType === 'movie' ? result.movie_results : result.tv_results)?.[0]
+  return match?.id && Number.isFinite(match.id) ? match.id : null
+}
+
 function shouldRetryMissingStillBackfill(episodes: Episode[]): boolean {
   const now = Date.now()
   return episodes.some(ep => {

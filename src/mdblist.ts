@@ -9,7 +9,7 @@ import {
   upsertManualShowSubscription,
   type MediaType,
 } from './db.js'
-import { fetchMovieByTmdbId, fetchShowByTmdbId } from './tmdb.js'
+import { fetchMovieByTmdbId, fetchShowByTmdbId, findTmdbIdByImdbId } from './tmdb.js'
 
 const MDBLIST_SOURCE_PREFIX = 'mdblist:list:'
 const MDBLIST_WEB_ORIGIN = 'https://mdblist.com'
@@ -208,6 +208,40 @@ function extractPublicListEntries(html: string): MdblistEntry[] {
   return entries
 }
 
+function extractPublicListItemPaths(html: string): Array<{ mediaType: MediaType; path: string }> {
+  const entries: Array<{ mediaType: MediaType; path: string }> = []
+  const seen = new Set<string>()
+  const pattern = /class="jw-chart-card__poster"\s+href="\/(movie|show)\/([^"]+)"/gi
+  let match: RegExpExecArray | null
+  while ((match = pattern.exec(html)) !== null) {
+    const mediaType: MediaType = match[1].toLowerCase() === 'show' ? 'show' : 'movie'
+    const path = `${mediaType}/${match[2]}`
+    if (seen.has(path)) continue
+    seen.add(path)
+    entries.push({ mediaType, path })
+  }
+  return entries
+}
+
+async function extractCurrentPublicListEntries(html: string, maxEntries: number): Promise<MdblistEntry[]> {
+  const directEntries = extractPublicListEntries(html)
+  if (directEntries.length) return directEntries.slice(0, maxEntries)
+
+  const itemPaths = extractPublicListItemPaths(html).slice(0, maxEntries)
+  const resolved = await Promise.all(itemPaths.map(async ({ mediaType, path }, index) => {
+    try {
+      const detailHtml = await fetchPublicListHtml(`${MDBLIST_WEB_ORIGIN}/${path}`)
+      const imdbMatch = detailHtml.match(/imdb\.com\/title\/(tt\d+)/i)
+      if (!imdbMatch) return null
+      const tmdbId = await findTmdbIdByImdbId(imdbMatch[1], mediaType)
+      return tmdbId ? { tmdbId, mediaType, rank: index + 1 } : null
+    } catch {
+      return null
+    }
+  }))
+  return resolved.filter((entry): entry is NonNullable<typeof entry> => !!entry)
+}
+
 interface MdblistApiItem {
   id?: number
   rank?: number
@@ -341,7 +375,7 @@ async function fetchMdblistEntries(listUrl: string, maxEntries: number): Promise
     return result
   }
   const html = await fetchPublicListHtml(listUrl)
-  const allEntries = extractPublicListEntries(html)
+  const allEntries = await extractCurrentPublicListEntries(html, maxEntries)
   if (!allEntries.length) {
     throw new Error('No TMDB links found on public MDBList page')
   }

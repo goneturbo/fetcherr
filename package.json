@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build": "tsc && mkdir -p dist/ui/static && cp src/ui/*.html dist/ui/ && cp -R src/ui/static/. dist/ui/static/",
-    "mock:jellyfin": "node scripts/mock-jellyfin-client.mjs",
+    "probe:jellyfin": "node scripts/integration/jellyfin-playback-probe.mjs",
     "start": "node dist/index.js",
     "dev": "node --watch --import tsx/esm src/index.ts"
   },
