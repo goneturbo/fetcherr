@@ -18,6 +18,7 @@ import {
   fetchShowOfficialRatingByIds,
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
   fetchMovieRecommendations, fetchShowRecommendations,
+  resolveTmdbPrefixedImdbId,
   type CreditPerson,
 } from '../tmdb.js'
 import type { Movie, Show, Season, Episode } from '../db.js'
@@ -1610,6 +1611,63 @@ function stremioSeriesSeasons(series: StremioMeta[]) {
   return [...new Set(series.map(stremioEpisodeSeasonNumber).filter(n => Number.isFinite(n) && n > 0))].sort((a, b) => a - b)
 }
 
+// Some catalog addons (Cinemeta, for shows it carries in TVDB aired order)
+// number split/reordered shows differently than TMDB does — e.g. Futurama's
+// four DVD movies get their own TVDB season, shifting every later episode's
+// season/episode relative to TMDB, while release names (and so stream-
+// provider files) follow TMDB's numbering. Querying a stream provider with
+// the catalog's own S/E returns files from the wrong era entirely (issue
+// #34). Built once per show, permanently cached in the episode table by
+// fetchAndCacheSeasonDetails.
+const stremioAirDateIndexCache = new Map<number, Map<string, { season: number; episode: number }>>()
+
+async function buildTmdbAirDateIndex(tmdbId: number): Promise<Map<string, { season: number; episode: number }>> {
+  const cached = stremioAirDateIndexCache.get(tmdbId)
+  if (cached) return cached
+  const index = new Map<string, { season: number; episode: number }>()
+  const show = getShowByTmdbId(tmdbId) ?? await fetchShowByTmdbId(tmdbId).catch(() => null)
+  if (show?.numSeasons) {
+    for (let seasonNumber = 1; seasonNumber <= show.numSeasons; seasonNumber++) {
+      if (!getEpisodesForSeason(tmdbId, seasonNumber).length) {
+        await fetchAndCacheSeasonDetails(tmdbId, seasonNumber).catch(() => [])
+      }
+      for (const ep of getEpisodesForSeason(tmdbId, seasonNumber)) {
+        if (ep.airDate) index.set(ep.airDate, { season: ep.seasonNumber, episode: ep.episodeNumber })
+      }
+    }
+  }
+  stremioAirDateIndexCache.set(tmdbId, index)
+  return index
+}
+
+// Remaps a catalog episode's season/episode to TMDB's numbering when they
+// diverge, matched by air date. Cheap in the common case (no divergence):
+// only consults the season TMDB data visibility-filtering already cached.
+// Falls back to the catalog's own numbers whenever there's no tmdbId, no air
+// date to match on, or no TMDB episode shares that date — never worse than
+// today's behavior.
+async function remapStremioEpisodeNumbering(series: StremioMeta, ep: StremioMeta): Promise<{ season: number; episode: number }> {
+  const catalogNumbering = { season: stremioEpisodeSeasonNumber(ep), episode: stremioEpisodeNumber(ep) }
+  const tmdbId = stremioSeriesTmdbId(series)
+  const airDate = stremioEpisodeAirDate(ep)
+  if (!tmdbId || !airDate) return catalogNumbering
+  const directMatch = getEpisodesForSeason(tmdbId, catalogNumbering.season).find(e => e.episodeNumber === catalogNumbering.episode)
+  if (directMatch && directMatch.airDate === airDate) return catalogNumbering
+  const index = await buildTmdbAirDateIndex(tmdbId)
+  return index.get(airDate) ?? catalogNumbering
+}
+
+// Playback-query id for a Stremio episode: series imdb id (resolved through
+// tmdb: ids per resolveStremioPlaybackExternalId) plus TMDB-remapped S/E,
+// matching the AIOStreams series endpoint format {imdbId}:{season}:{episode}
+// exactly. Deliberately does not reuse the catalog's own episode.id, which
+// embeds the same catalog numbering this function corrects.
+async function resolveStremioEpisodePlaybackExternalId(series: StremioMeta, episode: StremioMeta): Promise<string> {
+  const seriesImdbId = await resolveStremioPlaybackExternalId(series, 'series')
+  const { season, episode: episodeNumber } = await remapStremioEpisodeNumbering(series, episode)
+  return `${seriesImdbId}:${season}:${episodeNumber}`
+}
+
 function stremioSeasonToItem(series: StremioMeta, seasonNumber: number) {
   const id = stremioSeasonToId(series, seasonNumber)
   const seriesId = stremioSearchMetaToId(series, 'series')
@@ -1892,6 +1950,21 @@ function stremioMetaTmdbId(meta: StremioMeta): number | null {
 function stremioMetaImdbId(meta: StremioMeta): string {
   const imdbId = meta.imdb_id || meta.imdbId || (meta.id.startsWith('tt') ? meta.id : '')
   return /^tt\d+$/i.test(imdbId) ? imdbId : ''
+}
+
+// TMDB-catalog Stremio addons emit tmdb: ids for titles without an IMDb
+// mapping in the catalog's own data. Stream-provider addons key on imdb ids,
+// so a bare tmdb: id passed straight through to them returns zero streams
+// (issue #34). Resolve through TMDB's external_ids before falling back to
+// the raw catalog id.
+async function resolveStremioPlaybackExternalId(meta: StremioMeta, mediaType: StremioMediaType): Promise<string> {
+  const direct = meta.imdb_id || meta.imdbId || ''
+  if (direct) return direct
+  if (meta.id.startsWith('tmdb:')) {
+    const resolved = await resolveTmdbPrefixedImdbId(mediaType, meta.id)
+    if (resolved) return resolved
+  }
+  return meta.id
 }
 
 function stremioMetaTvdbId(meta: StremioMeta): number | undefined {
@@ -3035,9 +3108,17 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const limit = q.limit ? parseInt(q.limit, 10) : 50
     const offset = q.startindex ? parseInt(q.startindex, 10) : 0
     if (opts.searchOnly) return emptyItems(offset)
-    return withReadCache(`resume:${user.id}:${offset}:${limit}`, async () => {
-      const resumeIds = listResumeItemIds(10_000, 0, user.id).filter(id => !isStremioSearchItemId(id))
-      const ids = resumeIds.slice(offset, offset + limit)
+    // Resolve the full (unpaged) list once and slice for the page, rather than
+    // pairing a paged item resolution with an independent count. Two disagree
+    // whenever a row's handleItem resolution comes back empty (e.g. a Type the
+    // page filters out, or previously, an expired ephemeral search-item meta
+    // cache before isStremioSearchItemId excluded those ids upfront), leaving
+    // a phantom entry in TotalRecordCount that no page of Items ever accounts
+    // for (issue #34). Cache key is per-user so concurrent differently-paged
+    // requests within the TTL window share one resolution instead of each
+    // re-resolving the whole list.
+    const resolved = await withReadCache(`resume:${user.id}`, async () => {
+      const ids = listResumeItemIds(10_000, 0, user.id).filter(id => !isStremioSearchItemId(id))
       const items = []
       for (const id of ids) {
         const item = await handleItem(id, {
@@ -3052,8 +3133,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           items.push(item)
         }
       }
-      return { Items: items, TotalRecordCount: resumeIds.length, StartIndex: offset }
+      return items
     })
+    return { Items: resolved.slice(offset, offset + limit), TotalRecordCount: resolved.length, StartIndex: offset }
   }
   app.get('/Users/:id/Items/Resume', async (req, reply) => handleResumeItems(req as never, reply as never))
   app.get('/UserItems/Resume', async (req, reply) => handleResumeItems(req as never, reply as never))
@@ -3218,7 +3300,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       if (!await canUserAccessStremioMeta(currentUser, stremioEpisode.series, 'series')) return reply.code(404).send({ error: 'Not found' })
       const item = stremioEpisodeToItem(stremioEpisode.series, stremioEpisode.episode) as Record<string, unknown>
       const { series, episode } = stremioEpisode
-      const externalId = episode.id || `${series.id}:${stremioEpisodeSeasonNumber(episode)}:${stremioEpisodeNumber(episode)}`
+      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
       return addDetailMediaSources(item, headers, {
@@ -3246,7 +3328,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const item = stremioSearchMetaToItem(meta, stremioSearch.mediaType, stremioSearch.requestedId, { officialRating: rating }) as Record<string, unknown>
       if (stremioSearch.mediaType !== 'movie') return item
       const movieItem = searchMovieAutoplayItem(item)
-      const externalId = meta.imdb_id || meta.imdbId || meta.id
+      const externalId = await resolveStremioPlaybackExternalId(meta, 'movie')
       return addStremioMovieDetailMediaSources(movieItem, headers, {
         itemId: stremioSearch.requestedId,
         sourceId: stremioSearch.sourceId,
@@ -3771,7 +3853,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
       if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send({ error: 'Not found' })
-      const externalId = episode.id || `${series.id}:${stremioEpisodeSeasonNumber(episode)}:${stremioEpisodeNumber(episode)}`
+      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
@@ -3804,7 +3886,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const { meta, mediaType, sourceId } = stremioSearch
       if (mediaType !== 'movie') return reply.code(404).send({ error: 'Not playable' })
       if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send({ error: 'Not found' })
-      const externalId = meta.imdb_id || meta.imdbId || meta.id
+      const externalId = await resolveStremioPlaybackExternalId(meta, 'movie')
       const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
       const playUrl = createSignedPlaybackUrl(buildPlaybackOrigin(req.headers), playPath)
       const name = stremioMetaName(meta)
@@ -3978,7 +4060,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
       if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send()
-      const externalId = episode.id || `${series.id}:${stremioEpisodeSeasonNumber(episode)}:${stremioEpisodeNumber(episode)}`
+      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
     }
@@ -3988,7 +4070,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const { meta, mediaType } = stremioSearch
       if (mediaType !== 'movie') return reply.code(404).send()
       if (!await canUserAccessStremioMeta(user, meta, mediaType)) return reply.code(404).send()
-      const externalId = meta.imdb_id || meta.imdbId || meta.id
+      const externalId = await resolveStremioPlaybackExternalId(meta, 'movie')
       const playPath = `/play/stremio/movie/${encodeURIComponent(externalId)}`
       return reply.redirect(signedPlaybackUrlForMediaSource(origin, playPath, mediaSourceId), 302)
     }

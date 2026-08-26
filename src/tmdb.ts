@@ -211,6 +211,43 @@ async function findTmdbShowIdByImdbId(imdbId: string): Promise<number | null> {
   }
 }
 
+interface TmdbExternalIdsResponse {
+  imdb_id?: string | null
+}
+
+// Cached: catalog addons that emit tmdb-only ids (no imdb mapping) re-hit this
+// per search render — the id-to-imdb mapping never changes, so cache forever
+// per process lifetime rather than re-querying TMDB on every search.
+const tmdbToImdbCache = new Map<string, string>()
+
+async function findImdbIdByTmdbId(mediaType: 'movie' | 'series', tmdbId: number): Promise<string> {
+  const cacheKey = `${mediaType}:${tmdbId}`
+  const cached = tmdbToImdbCache.get(cacheKey)
+  if (cached !== undefined) return cached
+  if (!config.tmdbApiKey) return ''
+  try {
+    const path = mediaType === 'series' ? `/tv/${tmdbId}/external_ids` : `/movie/${tmdbId}/external_ids`
+    const r = await tmdbGet(path) as TmdbExternalIdsResponse
+    const imdbId = /^tt\d+$/i.test(r.imdb_id ?? '') ? (r.imdb_id as string) : ''
+    tmdbToImdbCache.set(cacheKey, imdbId)
+    return imdbId
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * Resolve a tmdb: prefixed id (as emitted by TMDB-catalog Stremio addons for
+ * titles without an IMDb mapping in the catalog's own data) to an imdb id.
+ * Stream-provider addons key almost exclusively on imdb ids, so a bare
+ * tmdb: id passed straight through returns zero streams.
+ */
+export async function resolveTmdbPrefixedImdbId(mediaType: 'movie' | 'series', id: string): Promise<string> {
+  const m = id.match(/^tmdb:(\d+)$/)
+  if (!m) return ''
+  return findImdbIdByTmdbId(mediaType, Number.parseInt(m[1], 10))
+}
+
 interface TmdbImageFile {
   file_path: string
   iso_639_1?: string | null
