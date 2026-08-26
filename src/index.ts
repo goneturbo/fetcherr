@@ -201,6 +201,7 @@ function requestPlaybackUser(headers: Record<string, string | string[] | undefin
 function pad2(n: number) { return n.toString().padStart(2, '0') }
 
 const FAILED_PLAY_TTL_MS = 3 * 60 * 1000
+const FAILED_PLAY_EMPTY_TTL_MS = 15_000
 const PLAYBACK_PREWARM_TTL_MS = 5 * 60 * 1000
 const MAX_RD_TRANSIENT_FAILURES = 3
 type FailedPlayCacheEntry = { expiresAt: number; reason: string }
@@ -236,11 +237,22 @@ function getFailedPlayReason(cacheKey: string): string | null {
   return entry.reason
 }
 
-function cacheFailedPlay(cacheKey: string, reason: string) {
+function cacheFailedPlay(cacheKey: string, reason: string, ttlMs = FAILED_PLAY_TTL_MS) {
   failedPlayCache.set(cacheKey, {
-    expiresAt: Date.now() + FAILED_PLAY_TTL_MS,
+    expiresAt: Date.now() + ttlMs,
     reason,
   })
+}
+
+// Empty provider results (e.g. AIOStreams answering mid-scrape while a season
+// view bursts a dozen parallel fetches) are transient: cache the miss only
+// briefly so a retry succeeds within seconds. Genuine resolver failures keep
+// the longer TTL.
+function failedPlayTtlMs(err: unknown): number {
+  const message = err instanceof Error ? err.message : String(err)
+  return /\bNo (?:ranked |year-matched )?streams found\b/.test(message)
+    ? FAILED_PLAY_EMPTY_TTL_MS
+    : FAILED_PLAY_TTL_MS
 }
 
 function clearFailedPlay(cacheKey: string) {
@@ -1814,7 +1826,7 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
       return reply.code(err.statusCode).send(err.response)
     }
     app.log.warn(`play: no Stremio stream for ${mediaType} ${decodedExternalId}: ${err}`)
-    cacheFailedPlay(playPath, 'No streams found')
+    cacheFailedPlay(playPath, 'No streams found', failedPlayTtlMs(err))
     return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
   }
 })
@@ -1852,7 +1864,7 @@ app.get('/play/:imdbId', async (req, reply) => {
       return reply.code(err.statusCode).send(err.response)
     }
     app.log.warn(`play: no stream for ${imdbId}: ${err}`)
-    cacheFailedPlay(playPath, 'No streams found')
+    cacheFailedPlay(playPath, 'No streams found', failedPlayTtlMs(err))
     return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
   }
 })
@@ -1893,7 +1905,7 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
       return reply.code(err.statusCode).send(err.response)
     }
     app.log.warn(`play: no stream for ${imdbId} S${s}E${e}: ${err}`)
-    cacheFailedPlay(playPath, 'No streams found')
+    cacheFailedPlay(playPath, 'No streams found', failedPlayTtlMs(err))
     return reply.code(404).send({ error: 'No stream available', message: 'No Streams Found' })
   }
 })

@@ -609,7 +609,51 @@ export function summarizeStreamForLog(s: Stream): string {
   ].join(' ')
 }
 
+const STREAM_RESULT_CACHE_TTL_MS = 90_000
+type StreamFetchCacheEntry = { promise: Promise<Stream[]>; expiresAt: number }
+const streamFetchCache = new Map<string, StreamFetchCacheEntry>()
+
+function cleanupStreamFetchCache(now: number) {
+  for (const [key, entry] of streamFetchCache) {
+    if (entry.expiresAt <= now) streamFetchCache.delete(key)
+  }
+}
+
+/**
+ * Coalesce concurrent provider fetches for the same path (e.g. Infuse
+ * requesting MediaSources for a whole season at once) into a single query,
+ * and reuse successful results briefly. Empty or failed fetches are never
+ * cached, so the next caller queries the providers again.
+ */
 async function fetchStreamsFromProviders(path: string): Promise<Stream[]> {
+  const now = Date.now()
+  cleanupStreamFetchCache(now)
+  const existing = streamFetchCache.get(path)
+  if (existing) {
+    console.log(`streams: reusing in-flight or cached provider fetch for ${path}`)
+    return existing.promise
+  }
+
+  const promise = fetchStreamsFromProvidersUncached(path).then(
+    streams => {
+      const current = streamFetchCache.get(path)
+      if (current?.promise === promise) {
+        if (streams.length) current.expiresAt = Date.now() + STREAM_RESULT_CACHE_TTL_MS
+        else streamFetchCache.delete(path)
+      }
+      return streams
+    },
+    err => {
+      const current = streamFetchCache.get(path)
+      if (current?.promise === promise) streamFetchCache.delete(path)
+      throw err
+    },
+  )
+  streamFetchCache.set(path, { promise, expiresAt: now + STREAM_RESULT_CACHE_TTL_MS })
+  return promise
+}
+
+async function fetchStreamsFromProvidersUncached(path: string): Promise<Stream[]> {
   const providers = providerBases()
   if (!providers.length) throw new Error('No stream provider URL configured')
 
