@@ -2260,10 +2260,10 @@ export function getUserData(itemId: string, userId = DEFAULT_ADMIN_USER_ID): Use
 }
 
 export function clearProgress(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
+  // Update-only on purpose: a missing row already means "no progress", and
+  // failed play attempts report position 0, which used to insert junk rows here.
   getDb().prepare(`
-    INSERT INTO user_item_data (user_id, item_id, position_ticks)
-    VALUES (?, ?, 0)
-    ON CONFLICT(user_id, item_id) DO UPDATE SET position_ticks = 0
+    UPDATE user_item_data SET position_ticks = 0 WHERE user_id = ? AND item_id = ?
   `).run(userId, itemId)
 }
 
@@ -2389,15 +2389,16 @@ export function syncPlayed(itemId: string, lastPlayedDate: string, userId = DEFA
 
 export function markUnplayed(itemId: string, userId = DEFAULT_ADMIN_USER_ID): void {
   const now = new Date().toISOString()
+  // Update-only on purpose: unplaying an item that has no row is a no-op, and
+  // clients that bulk-sync watched state would otherwise insert junk rows.
   getDb().prepare(`
-    INSERT INTO user_item_data (user_id, item_id, played, play_count, position_ticks, last_played_date, watch_state_source, watch_state_updated_at)
-    VALUES (?, ?, 0, 0, 0, '', 'local', ?)
-    ON CONFLICT(user_id, item_id) DO UPDATE SET
+    UPDATE user_item_data SET
       played                 = 0,
       play_count             = 0,
       position_ticks         = 0,
       last_played_date       = '',
       watch_state_source     = 'local',
-      watch_state_updated_at = excluded.watch_state_updated_at
-  `).run(userId, itemId, now)
+      watch_state_updated_at = ?
+    WHERE user_id = ? AND item_id = ?
+  `).run(now, userId, itemId)
 }
