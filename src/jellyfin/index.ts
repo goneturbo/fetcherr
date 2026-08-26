@@ -6,7 +6,7 @@ import { config, normalizeListPresentation, discoverPresentationFromMode, DISCOV
 import { discoverSourceKey } from '../discover.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
-  listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, countResumeItems, getAllPlayedItemIds,
+  listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
   authEnabled, canUserAccessKnownRating, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
@@ -242,6 +242,10 @@ function idToTraktCollectionSlug(id: string): string | null {
   return config.traktLists.find(slug => traktCollectionSlugToId(slug) === id) ?? null
 }
 
+const STREMIO_SEARCH_META_ID_PATTERN = /^[0-9a-f]{32}$/i
+const STREMIO_SEASON_ID_PREFIX = '00000000-0000-4000-8008-'
+const STREMIO_EPISODE_ID_PREFIX = '00000000-0000-4000-8009-'
+
 function stremioSearchMetaIds(meta: StremioMeta, mediaType: StremioMediaType): { itemId: string; sourceId: string } {
   pruneStremioCaches()
   const itemId = createHash('md5').update(`stremio:item:${mediaType}:${meta.id}`).digest('hex')
@@ -274,7 +278,7 @@ async function hydrateStremioSeriesMeta(series: StremioMeta): Promise<StremioMet
 
 function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; requestedId: string } | null {
   pruneStremioCaches()
-  if (!/^[0-9a-f]{32}$/i.test(id)) return null
+  if (!STREMIO_SEARCH_META_ID_PATTERN.test(id)) return null
   const cached = stremioSearchCache.get(id)
   if (!cached) return null
   if (cached.expiresAt <= Date.now()) {
@@ -291,7 +295,7 @@ function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: Stre
 function stremioSeasonToId(series: StremioMeta, seasonNumber: number): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-season:${series.id}:${seasonNumber}`).digest('hex')
-  const id = `00000000-0000-4000-8008-${hash.slice(-12)}`
+  const id = `${STREMIO_SEASON_ID_PREFIX}${hash.slice(-12)}`
   stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
   trimCacheMap(stremioSeasonCache, STREMIO_CACHE_MAX_ITEMS)
   return id
@@ -312,7 +316,7 @@ function idToStremioSeason(id: string): { series: StremioMeta; seasonNumber: num
 function stremioEpisodeToId(series: StremioMeta, episode: StremioMeta): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-episode:${series.id}:${episode.id || episode.season}:${episode.episode || episode.number}`).digest('hex')
-  const id = `00000000-0000-4000-8009-${hash.slice(-12)}`
+  const id = `${STREMIO_EPISODE_ID_PREFIX}${hash.slice(-12)}`
   stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
   trimCacheMap(stremioEpisodeCache, STREMIO_CACHE_MAX_ITEMS)
   return id
@@ -328,6 +332,18 @@ function idToStremioEpisode(id: string): { series: StremioMeta; episode: Stremio
     return null
   }
   return { series: cached.series, episode: cached.episode }
+}
+
+// Stremio search ids (32-hex search metas plus stremio season/episode GUIDs)
+// only resolve through the in-memory stremio caches above, so they are
+// ephemeral: once the cache expires they can never hydrate again. Watch-state
+// rows persisted for them by plays on the search identity must not surface in
+// the library identity's resume/next-up reads.
+function isStremioSearchItemId(id: string): boolean {
+  const lower = id.toLowerCase()
+  return STREMIO_SEARCH_META_ID_PATTERN.test(id)
+    || lower.startsWith(STREMIO_SEASON_ID_PREFIX)
+    || lower.startsWith(STREMIO_EPISODE_ID_PREFIX)
 }
 
 function trimCacheMap<K, V>(cache: Map<K, V>, maxItems: number): void {
@@ -2981,7 +2997,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const seriesTmdbId = q.seriesid ? idToShowTmdb(q.seriesid) : null
     const allNextUp = await withReadCache(`nextup:${user.id}`, async () => {
       const playedIds = getAllPlayedItemIds(user.id)
-      const resumeIds = new Set(listResumeItemIds(10_000, 0, user.id))
+      const resumeIds = new Set(listResumeItemIds(10_000, 0, user.id).filter(id => !isStremioSearchItemId(id)))
       return filterShowsForUser(user, listShows({ limit: 100_000, userId: user.id, ...apiLibraryFilter() }))
         .map(show => {
           const ep = findNextUpEpisode(show, playedIds, resumeIds, user.id)
@@ -3020,7 +3036,8 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const offset = q.startindex ? parseInt(q.startindex, 10) : 0
     if (opts.searchOnly) return emptyItems(offset)
     return withReadCache(`resume:${user.id}:${offset}:${limit}`, async () => {
-      const ids = listResumeItemIds(limit, offset, user.id)
+      const resumeIds = listResumeItemIds(10_000, 0, user.id).filter(id => !isStremioSearchItemId(id))
+      const ids = resumeIds.slice(offset, offset + limit)
       const items = []
       for (const id of ids) {
         const item = await handleItem(id, {
@@ -3035,7 +3052,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           items.push(item)
         }
       }
-      return { Items: items, TotalRecordCount: countResumeItems(user.id), StartIndex: offset }
+      return { Items: items, TotalRecordCount: resumeIds.length, StartIndex: offset }
     })
   }
   app.get('/Users/:id/Items/Resume', async (req, reply) => handleResumeItems(req as never, reply as never))
