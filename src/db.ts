@@ -2303,17 +2303,6 @@ export function listResumeItemIds(limit = 50, offset = 0, userId = DEFAULT_ADMIN
   return rows.map(r => r.item_id)
 }
 
-export function countResumeItems(userId = DEFAULT_ADMIN_USER_ID): number {
-  const row = getDb().prepare(`
-    SELECT COUNT(*) AS n
-    FROM user_item_data
-    WHERE user_id = ?
-      AND position_ticks >= ?
-      AND played = 0
-  `).get(userId, MIN_RESUME_TICKS) as { n: number }
-  return row.n
-}
-
 export function getAllPlayedItemIds(userId = DEFAULT_ADMIN_USER_ID): Set<string> {
   const rows = getDb().prepare(`
     SELECT item_id
