@@ -1189,6 +1189,7 @@ function streamOptionName(stream: Stream, fallbackName: string, index: number): 
     compactHdrLabel(parsed, text),
     compactFeatureLabel(parsed, text),
     compactAudioLabel(parsed, text),
+    compactLanguageLabel(parsed),
     compactSizeLabel(stream, parsed),
     compactProviderLabel(stream, index),
   ])
@@ -1331,6 +1332,19 @@ function compactAudioLabel(parsed: ParsedTorrentTitleResult, text: string): stri
   if (/\bflac\b/i.test(combined)) return 'FLAC'
   if (/\baac\b/i.test(combined)) return 'AAC'
   return undefined
+}
+
+// Omits English (the default assumption for most of the catalog) so the
+// common case stays quiet — only surfaces when a source is dubbed/foreign or
+// carries multiple audio tracks, which is the actual disambiguation need
+// (issue #26).
+function compactLanguageLabel(parsed: ParsedTorrentTitleResult): string | undefined {
+  const languages = (parsed.languages ?? []).map(lang => lang.toLowerCase())
+  if (languages.some(lang => lang.includes('multi'))) return 'Multi'
+  if (languages.some(lang => lang.includes('dual'))) return 'Dual'
+  const code = languages.find(lang => lang in LANGUAGE_ISO3 && lang !== 'en')
+  if (!code) return undefined
+  return code === 'zh-tw' ? 'ZH' : code.toUpperCase()
 }
 
 function compactSizeLabel(stream: Stream, parsed?: ParsedTorrentTitleResult): string | undefined {
