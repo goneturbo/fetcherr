@@ -1,6 +1,6 @@
 import Fastify from 'fastify'
 import { parseTorrentTitle, type ParsedResult as ParsedTorrentTitleResult } from '@viren070/parse-torrent-title'
-import { randomBytes } from 'node:crypto'
+import { createHash } from 'node:crypto'
 import { collectStreamProviderUrls, config, isListPresentationEnabled, normalizeListPresentation, normalizeSootioUrl, parseAudioLanguage, parseBooleanSetting, parseDiscoverPresentationMode, parseFoldersSetting, parseEnglishStreamMode, parseMdblistLists, parseMediaSourceLimit, parseMovieReleaseMode, parseMusicAddonUrls, parseShowAddDefaultMode, parseStreamProviderUrls, parseStreamRankingMode, parseTraktLists, parseTraktListModes, parseStremioSearchSource } from './config.js'
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
@@ -216,6 +216,14 @@ const playbackItemPaths = new Map<string, { playPath: string; expiresAt: number 
 const playbackClientNames = new Map<string, { clientName: string; expiresAt: number }>()
 const torBoxPlaybackUrls = new Map<string, { url: string; expiresAt: number }>()
 const playbackCandidates = new Map<string, { stream: Stream; itemId: string; playPath: string; label: string; fileHint?: string; expiresAt: number }>()
+// Providers routinely advertise a scene .rar as a .mkv — only addMagnet+unrestrict
+// reveals the truth, which happens in resolvePlayableStream at actual play time, a
+// different pass than the one that builds the MediaSources list. Without remembering
+// the verdict, the same dead hash gets re-offered (and re-pays the resolve round-trip)
+// on every PlaybackInfo call (issue #38). Keyed by hash+label, not bare hash, so a
+// season pack that yields an archive for one episode doesn't blacklist the rest.
+const KNOWN_ARCHIVE_TTL_MS = 24 * 60 * 60 * 1000
+const knownArchiveCandidates = new Map<string, { filename: string; expiresAt: number }>()
 
 class PlaybackResolutionError extends Error {
   constructor(
@@ -259,6 +267,25 @@ function clearFailedPlay(cacheKey: string) {
   failedPlayCache.delete(cacheKey)
 }
 
+function knownArchiveKey(hash: string, label: string): string {
+  return `${hash.toLowerCase()}::${label}`
+}
+
+function markKnownArchive(hash: string, label: string, filename: string) {
+  knownArchiveCandidates.set(knownArchiveKey(hash, label), { filename, expiresAt: Date.now() + KNOWN_ARCHIVE_TTL_MS })
+}
+
+function isKnownArchive(hash: string | null | undefined, label: string): boolean {
+  if (!hash) return false
+  const entry = knownArchiveCandidates.get(knownArchiveKey(hash, label))
+  if (!entry) return false
+  if (entry.expiresAt <= Date.now()) {
+    knownArchiveCandidates.delete(knownArchiveKey(hash, label))
+    return false
+  }
+  return true
+}
+
 function cleanupPlaybackPrewarmCache() {
   const now = Date.now()
   for (const [key, entry] of playbackPrewarmCache) {
@@ -275,6 +302,9 @@ function cleanupPlaybackPrewarmCache() {
   }
   for (const [key, entry] of playbackCandidates) {
     if (entry.expiresAt <= now) playbackCandidates.delete(key)
+  }
+  for (const [key, entry] of knownArchiveCandidates) {
+    if (entry.expiresAt <= now) knownArchiveCandidates.delete(key)
   }
 }
 
@@ -1090,6 +1120,7 @@ async function resolvePlayableStream(
         if (!resolved) continue
 
         if (!isVideoFile(resolved.filename)) {
+          markKnownArchive(normalizedHash, label, resolved.filename)
           app.log.info(`play: skipping non-video file ${resolved.filename}, trying next`)
           continue
         }
@@ -1151,9 +1182,29 @@ async function resolvePlayableStream(
   return { url: best.url }
 }
 
+// Deterministic, not random: Infuse re-reads an item's MediaSources constantly
+// (every detail-screen refresh), and buildPlaybackMediaSources rebuilds this
+// list from scratch on every call. A random token meant a chosen source's id
+// changed underneath the client on the very next read, so a non-default
+// selection could never stick (issue #39). Hashing the candidate's own stable
+// identity instead means the same source gets the same id across requests,
+// while genuinely distinct sources still land on distinct ids.
+function playbackCandidateToken(itemId: string, playPath: string, stream: Stream, fileHint?: string): string {
+  return createHash('sha256').update([
+    itemId,
+    playPath,
+    extractHashFromStream(stream) ?? '',
+    stream.url ?? '',
+    stream.name ?? '',
+    stream.description ?? stream.title ?? '',
+    String(stream.behaviorHints?.videoSize ?? ''),
+    fileHint ?? '',
+  ].join('\0')).digest('hex').slice(0, 32)
+}
+
 function rememberPlaybackCandidate(itemId: string, playPath: string, label: string, stream: Stream, fileHint?: string): string {
   cleanupPlaybackPrewarmCache()
-  const token = randomBytes(16).toString('hex')
+  const token = playbackCandidateToken(itemId, playPath, stream, fileHint)
   playbackCandidates.set(token, {
     stream,
     itemId,
@@ -1610,7 +1661,11 @@ async function buildPlaybackMediaSources(input: {
 
   try {
     const { streams, label, fileHint } = await playbackStreamsForPath(input.playPath, input.playbackClient, false)
-    const qualityRanked = streams.filter(stream => (stream.url || extractHashFromStream(stream)) && streamEligibleForMediaSourceSelection(stream))
+    const qualityRanked = streams.filter(stream =>
+      (stream.url || extractHashFromStream(stream))
+      && streamEligibleForMediaSourceSelection(stream)
+      && !isKnownArchive(extractHashFromStream(stream), label),
+    )
     const usable = qualityRanked.slice(0, config.mediaSourceLimit)
 
     if (!usable.length) return [fallbackSource]
