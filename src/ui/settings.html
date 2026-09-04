@@ -220,6 +220,7 @@
   <section class="section" id="users">
     <div class="section-title">Users</div>
     <div class="field-note">Set an optional ratings limit for User and Kids accounts. Admin accounts are always unrestricted.</div>
+    <div class="field-note" id="ldapStatus">LDAP: not configured</div>
     <div class="user-table-wrap">
       <div class="user-table-scroll">
         <div id="userList"></div>
@@ -1113,6 +1114,9 @@
     selectedTraktLists = Array.isArray(d.traktLists) ? d.traktLists : []
     managedUsers = Array.isArray(d.users) ? d.users.map(user => ({ ...user, pendingPassword: '' })) : []
     deletedUserIds = new Set()
+    document.getElementById('ldapStatus').textContent = d.ldap && d.ldap.enabled
+      ? `LDAP: enabled \u2014 ${d.ldap.url}`
+      : 'LDAP: not configured'
     renderUsers()
 
     renderProviderRows(streamProviderUrls)
@@ -1195,7 +1199,7 @@
           ${managedUsers.map(user => `
             <tr class="${user.deleted ? 'deleted' : ''}">
               <td data-label="Username">
-                <div class="username-cell">${escapeHtml(user.username)}</div>
+                <div class="username-cell">${escapeHtml(user.username)}${user.authSource === 'ldap' ? ' <span class="config-state" title="Managed by LDAP">LDAP</span>' : ''}</div>
                 <div class="user-id-cell">${user.isNew ? 'New user' : escapeHtml(user.id)}</div>
               </td>
               <td data-label="Role">
@@ -1215,8 +1219,10 @@
               </td>
               <td data-label="Password">
                 <div class="user-actions">
-                  <button type="button" class="btn btn-sm" ${user.deleted ? 'disabled' : ''} onclick="setUserPassword('${user.id}')">${user.pendingPassword ? 'Change Again' : 'Change Password'}</button>
-                  <span class="password-state ${user.pendingPassword ? 'pending' : ''}">${user.pendingPassword ? 'Will update on save' : 'Unchanged'}</span>
+                  ${user.authSource === 'ldap'
+                    ? `<span class="password-state" title="This account's password is managed by LDAP.">Managed by LDAP</span>`
+                    : `<button type="button" class="btn btn-sm" ${user.deleted ? 'disabled' : ''} onclick="setUserPassword('${user.id}')">${user.pendingPassword ? 'Change Again' : 'Change Password'}</button>
+                  <span class="password-state ${user.pendingPassword ? 'pending' : ''}">${user.pendingPassword ? 'Will update on save' : 'Unchanged'}</span>`}
                 </div>
               </td>
               <td data-label="Actions">
@@ -1277,7 +1283,7 @@
 
   function setUserPassword(id) {
     const user = managedUsers.find(u => u.id === id)
-    if (!user || user.deleted) return
+    if (!user || user.deleted || user.authSource === 'ldap') return
     userModalMode = 'password'
     userModalTargetId = id
     document.getElementById('userModalTitle').textContent = 'Change Password'

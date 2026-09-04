@@ -109,5 +109,12 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 | `SERVER_URL` | External base URL used for playback redirects (required) |
 | `PLAYBACK_SIGNING_SECRET` | Optional secret used to sign short-lived playback URLs. If omitted, Fetcherr generates and stores a persistent random secret in SQLite. |
 | `MDBLIST_MAX_ITEMS` | Max items per MDBList list (default: 1000) |
+| `LDAP_URL` | Optional LDAP server for login, e.g. `ldap://authentik-ldap:3389` or `ldaps://ldap.example.com:636`. Requires `LDAP_USER_DN`. |
+| `LDAP_USER_DN` | DN template for LDAP binds, with `{username}` as placeholder, e.g. `cn={username},ou=users,dc=ldap,dc=goauthentik,dc=io` |
+| `LDAP_DEFAULT_ROLE` | Role for users auto-created after a successful LDAP login: `user` (default) or `kids` |
 
 All other configuration is managed through the Settings UI and stored in the database.
+
+When `LDAP_URL` and `LDAP_USER_DN` are both set, logins first try an LDAP bind with the user's credentials and fall back to local accounts, so the local admin keeps working. Users that authenticate via LDAP but don't exist yet are created automatically with `LDAP_DEFAULT_ROLE`.
+
+The Users section of the Settings UI shows whether LDAP is configured and which server URL is in use. Accounts created through an LDAP login carry an LDAP badge, and their password cannot be changed from Fetcherr; manage those credentials in the directory instead.

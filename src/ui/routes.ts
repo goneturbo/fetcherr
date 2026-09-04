@@ -13,8 +13,9 @@ import {
   pruneOrphanedMovies, pruneOrphanedShows, removeSourceItem, setManualMovieAvailabilityOverride,
   setMovieReleaseModePreference,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
-  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, unhideLibraryItem, updateUser,
+  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, unhideLibraryItem, updateUser,
 } from '../db.js'
+import { ldapEnabled } from '../ldap-auth.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
 import {
@@ -396,7 +397,7 @@ export async function uiRoutes(app: FastifyInstance) {
     const body = req.body as { username?: string; password?: string } | undefined
     const username = body?.username ?? ''
     const password = body?.password ?? ''
-    const user = checkCredentials(username, password)
+    const user = await checkCredentials(username, password)
     if (user) {
       loginAttempts.delete(rateKey)
       const token = createSession(user.id)
@@ -774,12 +775,17 @@ export async function uiRoutes(app: FastifyInstance) {
       hasTmdbApiKey:     !!getSetting('tmdbApiKey'),
       hasTvdbApiKey:     !!getSetting('tvdbApiKey'),
       hasTraktClientSecret: !!getSetting('traktClientSecret'),
+      ldap: {
+        enabled: ldapEnabled(),
+        url: process.env.LDAP_URL ?? '',
+      },
       users: listUsers().map(user => ({
         id: user.id,
         username: user.username,
         role: user.role,
         maxRating: user.maxRating,
         searchEnabled: user.searchEnabled,
+        authSource: user.authSource,
       })),
     }
   })
@@ -1048,6 +1054,9 @@ export async function uiRoutes(app: FastifyInstance) {
         return { ok: true }
       }
       if (body.id) {
+        if (body.password && getUserById(body.id)?.authSource === 'ldap') {
+          return reply.code(400).send({ error: 'This account is managed by LDAP; its password cannot be changed here.' })
+        }
         const user = updateUser(body.id, {
           username: body.username,
           password: body.password,
@@ -1055,10 +1064,10 @@ export async function uiRoutes(app: FastifyInstance) {
           maxRating: body.maxRating,
           searchEnabled: body.searchEnabled,
         })
-        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled } }
+        return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
       }
       const user = createUser(body.username ?? '', body.password ?? '', role ?? 'user', body.maxRating ?? 'unrestricted', body.searchEnabled)
-      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled } }
+      return { ok: true, user: { id: user.id, username: user.username, role: user.role, maxRating: user.maxRating, searchEnabled: user.searchEnabled, authSource: user.authSource } }
     } catch (err) {
       return reply.code(400).send({ error: String(err instanceof Error ? err.message : err) })
     }

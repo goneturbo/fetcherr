@@ -6,9 +6,9 @@ import {
   getUiSession,
   getUserById,
   purgeExpiredUiSessions,
-  verifyUserCredentials,
   type AppUser,
 } from '../db.js'
+import { authenticateUser } from '../ldap-auth.js'
 
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000 // 30 days
 
@@ -32,9 +32,9 @@ export function deleteSession(token: string): void {
   deleteUiSession(token)
 }
 
-export function checkCredentials(username: string, password: string): AppUser | null {
+export async function checkCredentials(username: string, password: string): Promise<AppUser | null> {
   if (!authEnabled()) return null
-  return verifyUserCredentials(username, password)
+  return authenticateUser(username, password)
 }
 
 function shouldUseSecureCookie(headers: Record<string, string | undefined>): boolean {

@@ -9,8 +9,9 @@ import {
   listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessKnownRating, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
+  authEnabled, canUserAccessKnownRating, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
 } from '../db.js'
+import { authenticateUser } from '../ldap-auth.js'
 import {
   fetchMovieByTmdbId, posterUrl,
   fetchShowByTmdbId,
@@ -2588,7 +2589,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const body = req.body as Record<string, unknown> | undefined
     const username = bodyString(body, ['Username', 'UserName', 'username', 'Name', 'name']).trim()
     const password = bodyString(body, ['Pw', 'Password', 'password', 'Pass', 'pass'])
-    const user = verifyUserCredentials(username, password)
+    const user = await authenticateUser(username, password)
     if (!user) {
       state.count += 1
       const existingUser = username ? getUserByUsername(username) : null
