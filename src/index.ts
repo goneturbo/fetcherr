@@ -5,17 +5,19 @@ import { collectStreamProviderUrls, config, isListPresentationEnabled, normalize
 import { getDb, getAllSettings } from './db.js'
 import { jellyfinRoutes, resolveJellyfinUser } from './jellyfin/index.js'
 import { uiRoutes } from './ui/routes.js'
+import { stremioAddonRoutes } from './stremio-addon.js'
 import { wrapFastifyLogger } from './logger.js'
 import { markSyncComplete } from './sync-state.js'
 import { cleanupRemovedTraktListSources, syncTraktWatchlist, syncTraktShowsWatchlist, syncTraktList, syncTraktWatchedStatus, startDeviceAuth, tokenStatus } from './trakt.js'
 import { cleanupRemovedMdblistListSources, normalizeMdblistEntries, syncMdblistList } from './mdblist.js'
 import { syncAllDiscoverCategories, removeAllDiscoverSourceItems } from './discover.js'
-import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
+import { fetchRankedStreams, fetchRankedEpisodeStreams, fetchRankedStremioStreams, fetchCinemetaMeta, extractHashFromStream, summarizeStreamForLog, type StremioMediaType, type Stream } from './sootio.js'
 import { resolveStream, probeAudioLanguages, NotCachedError, ProviderUnavailableError, type ResolvedStream } from './rd.js'
 import {
   markPlaybackStarted as markTorBoxPlaybackStarted,
   resolveStream as tbResolveStream,
   rehydrateTorBoxCleanupJobs,
+  retainAddonPlayback as retainTorBoxAddonPlayback,
   touchDownloadUrl as touchTorBoxDownloadUrl,
   trackDirectTorBoxUrl,
   torBoxRequestdlTorrentId,
@@ -1983,6 +1985,48 @@ await app.register(jellyfinRoutes, { prewarmPlayback, registerPlaybackItem, regi
 await app.register(jellyfinRoutes, { prefix: '/emby', prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(jellyfinRoutes, { prefix: '/search', searchOnly: true, prewarmPlayback, registerPlaybackItem, registerPlaybackClient, touchPlaybackItem, stopPlaybackItem, validatePlaybackCandidate, buildPlaybackMediaSources })
 await app.register(uiRoutes)
+// One surface, one prefix: no /emby-style alias registration for the addon. The
+// plugin derives its own route paths and its token redaction from app.prefix, so
+// mounting it elsewhere would stay correct, but there is no reason to.
+await app.register(stremioAddonRoutes, {
+  fetchStreams: (mediaType, externalId) => fetchRankedStremioStreams(
+    mediaType,
+    externalId,
+    undefined,
+    config.preferredAudioLanguage,
+    '',
+    'stremio',
+    config.streamRankingMode === 'provider',
+  ),
+  resolvePlayback: async (streams, label, cacheKey) => {
+    // The plugin's cacheKey namespace (/stremio/play/...) is deliberately separate
+    // from the Jellyfin Stremio path's (/play/stremio/...). The two surfaces build
+    // different candidate sets, so a shared failed-play cache entry would let one
+    // surface's dead end suppress the other's working stream. Do not unify them.
+    //
+    // Through getOrCreatePlaybackResolution like every Jellyfin play route, so a
+    // repeat within its five-minute window costs one debrid resolution. The addon
+    // needs this more than they do: its redirect is no-store, so an obedient
+    // client comes back here on every range request, seek and reconnect.
+    const { promise, reused } = getOrCreatePlaybackResolution(cacheKey, label, () =>
+      resolvePlayableStream(streams, label, cacheKey, undefined, true))
+    if (reused) app.log.info(`stremio: using in-flight resolver for ${label}`)
+    const resolved = await promise
+    // Every Jellyfin play route pairs the resolver with rememberTorBoxPlaybackUrl,
+    // so touchPlaybackItem can push TorBox's 15 minute deletion deadline back
+    // while the client reports progress. A Stremio client cannot do that: it
+    // follows the 302 once and streams the CDN URL directly, so no further
+    // request reaches us and the torrent would be deleted mid-viewing. Give it a
+    // window that does not need extending instead.
+    retainTorBoxAddonPlayback(resolved)
+    return resolved
+  },
+  // Cinemeta explicitly, not fetchStremioMeta: that one follows
+  // stremioSearchSource, and setting it to 'addon' would point the parental gate's
+  // metadata lookup at stream providers that serve no metas, failing the gate
+  // closed for every rating-limited account.
+  fetchMeta: (mediaType, imdbId) => fetchCinemetaMeta(mediaType, imdbId),
+})
 
 // ── Trakt auth ────────────────────────────────────────────────────────────────
 

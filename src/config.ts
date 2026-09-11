@@ -321,6 +321,11 @@ export const config = {
   mediaSourceSelection: parseBooleanSetting(process.env.MEDIA_SOURCE_SELECTION, false),
   mediaSourceLimit: parseMediaSourceLimit(process.env.MEDIA_SOURCE_LIMIT),
   serverUrl:         (process.env.SERVER_URL ?? 'http://localhost:9990').replace(/\/$/, ''),
+  // The same value, kept out of reach of the stored settings that overwrite
+  // serverUrl at boot. An operator can point Server URL at a LAN address for
+  // their own convenience, and install URLs still have to name something a
+  // stranger's device can reach.
+  serverUrlFromEnv:  (process.env.SERVER_URL ?? '').replace(/\/$/, ''),
   newznabUrl:        (process.env.NEWZNAB_URL ?? '').replace(/\/$/, ''),
   newznabApiKey:     process.env.NEWZNAB_API_KEY ?? '',
   nntpHost:          process.env.NNTP_HOST ?? '',

@@ -566,7 +566,20 @@ export async function searchStremioMetas(query: string, types: StremioMediaType[
 }
 
 export async function fetchStremioMeta(type: StremioMediaType, id: string): Promise<StremioMeta | null> {
-  const providers = searchProviderBases()
+  return fetchMetaFrom(searchProviderBases(), type, id)
+}
+
+// The parental gate's lookup, pinned to Cinemeta rather than following
+// stremioSearchSource. That setting is admin-selectable and 'addon' repoints
+// metadata at the configured stream providers, which serve streams and not metas:
+// the lookup would return null, the gate would fail closed, and every
+// rating-limited account would lose the addon on both routes. The Jellyfin search
+// path keeps following the setting, which is what it is for.
+export async function fetchCinemetaMeta(type: StremioMediaType, id: string): Promise<StremioMeta | null> {
+  return fetchMetaFrom([CINEMETA_BASE], type, id)
+}
+
+async function fetchMetaFrom(providers: string[], type: StremioMediaType, id: string): Promise<StremioMeta | null> {
   if (!providers.length || !id.trim()) return null
 
   const settled = await Promise.allSettled(

@@ -13,8 +13,11 @@ import {
   pruneOrphanedMovies, pruneOrphanedShows, removeSourceItem, setManualMovieAvailabilityOverride,
   setMovieReleaseModePreference,
   setSetting, upsertManualShowSubscription, isMovieAvailable, isMovieVisibleToLibrary,
-  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, listUsers, unhideLibraryItem, updateUser,
+  canUserAccessMovie, canUserAccessShow, createUser, deleteUser, getUserById, listUsers, unhideLibraryItem, updateUser,
+  clearStremioToken, mintStremioToken, setStremioEnabled, setStremioPlayCap,
 } from '../db.js'
+import { buildPlaybackOrigin } from '../play-auth.js'
+import { playCapFor } from '../stremio-addon.js'
 import { getLogs } from '../logger.js'
 import { lastSyncAt, nextSyncAt } from '../sync-state.js'
 import {
@@ -322,6 +325,70 @@ function cookieHeaderValue(value: string | string[] | undefined): string | undef
   return Array.isArray(value) ? value[0] : value
 }
 
+// Routes that answer with JSON, so an unauthenticated request must get a status
+// and a body rather than a redirect to an HTML login page. /api/ is in here
+// because the Stremio admin endpoint lives there and the Settings page fetches
+// it: a 302 to login would arrive as HTML in a fetch that expects JSON.
+function isJsonApiRoute(url: string): boolean {
+  return /^\/api\//.test(url)
+    || /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
+}
+
+// The token is a credential, so it is only ever handed out inside the URL an
+// admin pastes into a client, and only from admin-authenticated responses.
+function stremioInstallUrl(stremioToken: string, origin: string): string {
+  return stremioToken ? `${origin}/stremio/${stremioToken}/manifest.json` : ''
+}
+
+// An install URL is for somebody else's device, so it must name the host that
+// device can reach, not the one the admin happens to be browsing. Deriving it
+// from the request means opening Settings on the LAN address mints a link that
+// works nowhere else and that Stremio Web refuses outright for being plain HTTP.
+//
+// Every candidate is therefore tested rather than trusted. The stored Server URL
+// wins when it is usable, but it is operator-editable and on this deployment it
+// was the LAN address, which is exactly the failure this function exists to stop.
+// Play URLs inside a stream response are deliberately still request-derived,
+// because those are for the client that just asked, and a LAN client should get
+// a LAN URL.
+function reachableByAnotherDevice(origin: string): boolean {
+  if (!origin) return false
+  let url: URL
+  try { url = new URL(origin) } catch { return false }
+  // Stremio Web fetches the manifest with XHR from an https page, so a plain-http
+  // origin cannot be installed there at all.
+  if (url.protocol !== 'https:') return false
+  const host = url.hostname
+  // A bare address is either private or a public IP nobody should be handing out
+  // as a durable install URL.
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host) || host.includes(':')) return false
+  return host !== 'localhost' && !host.endsWith('.local')
+}
+
+function stremioInstallOrigin(headers: Record<string, string | undefined>): string {
+  const candidates = [config.serverUrl, config.serverUrlFromEnv, buildPlaybackOrigin(headers)]
+  for (const candidate of candidates) {
+    const trimmed = (candidate ?? '').trim().replace(/\/$/, '')
+    if (reachableByAnotherDevice(trimmed)) return trimmed
+  }
+  // Nothing usable configured. Fall back to the request so the URL is at least
+  // self-consistent, and let the Settings row show the host it named.
+  return buildPlaybackOrigin(headers)
+}
+
+// setStremioPlayCap silently substitutes 30 for a negative or non-finite value,
+// so a typo in the UI would quietly reset a friend's cap to the default instead
+// of failing. Validate here and refuse, rather than leaning on that default.
+const STREMIO_PLAY_CAP_MAX = 1000
+
+function stremioCapError(cap: unknown): string | null {
+  if (cap === undefined) return null
+  if (typeof cap !== 'number' || !Number.isInteger(cap)) return 'cap must be a whole number'
+  if (cap < 0) return 'cap must not be negative'
+  if (cap > STREMIO_PLAY_CAP_MAX) return `cap must not exceed ${STREMIO_PLAY_CAP_MAX}`
+  return null
+}
+
 function currentUiUser(req: { headers: Record<string, string | string[] | undefined> }) {
   const token = getTokenFromCookie(cookieHeaderValue(req.headers.cookie))
   if (!token) return null
@@ -444,8 +511,7 @@ export async function uiRoutes(app: FastifyInstance) {
     ) return
 
     if (!isUiAuthConfigured()) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
-      if (isApiRoute) {
+      if (isJsonApiRoute(url)) {
         return reply.code(503).send({ error: 'Setup required. Create an admin account first.' })
       }
       return reply.redirect('/ui/setup-admin', 302)
@@ -453,8 +519,7 @@ export async function uiRoutes(app: FastifyInstance) {
 
     const token = getTokenFromCookie(req.headers.cookie)
     if (!token || !isValidSession(token) || !getSessionUser(token)) {
-      const isApiRoute = /^\/ui\/(stats|movies|shows|logs-data|settings-data|users-data|search|library|trakt)/.test(url)
-      if (isApiRoute) {
+      if (isJsonApiRoute(url)) {
         return reply.code(401).send({ error: 'Unauthorized' })
       }
       return reply.redirect(`/ui/login?next=${encodeURIComponent(req.url)}`, 302)
@@ -780,6 +845,11 @@ export async function uiRoutes(app: FastifyInstance) {
         role: user.role,
         maxRating: user.maxRating,
         searchEnabled: user.searchEnabled,
+        stremioEnabled: user.stremioEnabled,
+        stremioPlayCap: playCapFor(user),
+        // Derived, never the raw token as its own field: the credential appears
+        // only inside the install URL, and this endpoint is admin-only.
+        installUrl: stremioInstallUrl(user.stremioToken, stremioInstallOrigin(req.headers as Record<string, string | undefined>)),
       })),
     }
   })
@@ -1025,6 +1095,56 @@ export async function uiRoutes(app: FastifyInstance) {
       }
     }
     return { ok: true }
+  })
+
+  // Mint, rotate and revoke a Stremio install URL for one account.
+  app.post('/api/users/:id/stremio', async (req, reply) => {
+    if (!requireAdmin(req, reply as never)) return
+    const { id } = req.params as { id: string }
+    const body = (req.body ?? {}) as { action?: unknown; cap?: unknown }
+
+    // Load-bearing, not a courtesy: mintStremioToken's UPDATE matches no rows
+    // for an unknown id and still returns a token, so without this the caller
+    // would get a live-looking credential that resolves to nobody.
+    const user = getUserById(id)
+    if (!user) return reply.code(404).send({ error: 'User not found' })
+
+    // Validated before any mutation, so a bad cap cannot mint a token first.
+    const capError = stremioCapError(body.cap)
+    if (capError) return reply.code(400).send({ error: capError })
+
+    switch (body.action) {
+      case 'mint':
+      case 'rotate':
+        mintStremioToken(user.id)
+        setStremioEnabled(user.id, true)
+        break
+      case 'clear':
+        // Both halves, so one action fully removes access rather than leaving an
+        // enabled account with no credential or a disabled one holding a live token.
+        clearStremioToken(user.id)
+        setStremioEnabled(user.id, false)
+        break
+      case 'enable':
+        setStremioEnabled(user.id, true)
+        break
+      case 'disable':
+        setStremioEnabled(user.id, false)
+        break
+      default:
+        return reply.code(400).send({ error: 'Unsupported action' })
+    }
+    if (typeof body.cap === 'number') setStremioPlayCap(user.id, body.cap)
+
+    const fresh = getUserById(user.id)!
+    const origin = stremioInstallOrigin(req.headers as Record<string, string | undefined>)
+    // The body carries a credential, so nothing may cache it.
+    reply.header('Cache-Control', 'no-store')
+    return {
+      stremioEnabled: fresh.stremioEnabled,
+      stremioPlayCap: playCapFor(fresh),
+      installUrl: stremioInstallUrl(fresh.stremioToken, origin),
+    }
   })
 
   app.post('/ui/users-data', async (req, reply) => {

@@ -7,7 +7,9 @@
     "build": "tsc && mkdir -p dist/ui/static && cp src/ui/*.html dist/ui/ && cp -R src/ui/static/. dist/ui/static/",
     "mock:jellyfin": "node scripts/mock-jellyfin-client.mjs",
     "start": "node dist/index.js",
-    "dev": "node --watch --import tsx/esm src/index.ts"
+    "dev": "node --watch --import tsx/esm src/index.ts",
+    "test": "node --test --import tsx/esm test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.test.json"
   },
   "dependencies": {
     "@viren070/parse-torrent-title": "^0.7.6",

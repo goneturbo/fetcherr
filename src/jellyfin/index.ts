@@ -9,13 +9,11 @@ import {
   listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
-  authEnabled, canUserAccessKnownRating, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
+  authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, verifyUserCredentials, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
 } from '../db.js'
 import {
   fetchMovieByTmdbId, posterUrl,
   fetchShowByTmdbId,
-  fetchMovieOfficialRatingByIds,
-  fetchShowOfficialRatingByIds,
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
   fetchMovieRecommendations, fetchShowRecommendations,
   resolveTmdbPrefixedImdbId,
@@ -25,6 +23,15 @@ import type { Movie, Show, Season, Episode } from '../db.js'
 import { buildPlaybackOrigin, createSignedPlaybackUrl } from '../play-auth.js'
 import { mdblistListPathFromUrl } from '../mdblist.js'
 import { fetchStremioMeta, searchStremioMetas, type StremioMediaType, type StremioMeta } from '../sootio.js'
+import { trimCacheMap, STREMIO_CACHE_MAX_ITEMS, STREMIO_CACHE_TTL_MS } from '../cache-utils.js'
+import {
+  canUserAccessStremioMeta,
+  pruneStremioRatingCache,
+  stremioMetaImdbId,
+  stremioMetaTmdbId,
+  stremioMetaTvdbId,
+  stremioOfficialRating,
+} from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
@@ -122,9 +129,7 @@ const IMAGE_PROXY_TIMEOUT_MS = 10_000
 const IMAGE_PROXY_MAX_BYTES = 8 * 1024 * 1024
 const IMAGE_PROXY_MAX_REDIRECTS = 5
 const IMAGE_PROXY_CACHE_MAX_ITEMS = 250
-const STREMIO_SEARCH_CACHE_TTL_MS = 15 * 60 * 1000
 const STREMIO_SEARCH_CACHE_MAX_KEYS = 2_000
-const STREMIO_CACHE_MAX_ITEMS = 1_000
 const PLAYED_COMPLETION_THRESHOLD = 0.95
 const NEXT_UP_PROGRESS_THRESHOLD = 0.60
 const JELLYFIN_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000
@@ -138,7 +143,6 @@ const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summari
 const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
 const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
 const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
-const stremioRatingCache = new Map<string, { rating: string; expiresAt: number }>()
 type JellyfinRouteOptions = {
   searchOnly?: boolean
   prewarmPlayback?: (playPath: string, label: string) => void
@@ -251,7 +255,7 @@ function stremioSearchMetaIds(meta: StremioMeta, mediaType: StremioMediaType): {
   pruneStremioCaches()
   const itemId = createHash('md5').update(`stremio:item:${mediaType}:${meta.id}`).digest('hex')
   const sourceId = createHash('md5').update(`stremio:source:${mediaType}:${meta.id}`).digest('hex')
-  const cached = { meta, mediaType, itemId, sourceId, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS }
+  const cached = { meta, mediaType, itemId, sourceId, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS }
   stremioSearchCache.set(itemId, cached)
   stremioSearchCache.set(sourceId, cached)
   trimStremioSearchCache()
@@ -287,7 +291,7 @@ function idToStremioSearchMeta(id: string): { meta: StremioMeta; mediaType: Stre
     stremioSearchCache.delete(cached.sourceId)
     return null
   }
-  const refreshed = { ...cached, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS }
+  const refreshed = { ...cached, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS }
   stremioSearchCache.set(cached.itemId, refreshed)
   stremioSearchCache.set(cached.sourceId, refreshed)
   return { meta: cached.meta, mediaType: cached.mediaType, itemId: cached.itemId, sourceId: cached.sourceId, requestedId: id }
@@ -297,7 +301,7 @@ function stremioSeasonToId(series: StremioMeta, seasonNumber: number): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-season:${series.id}:${seasonNumber}`).digest('hex')
   const id = `${STREMIO_SEASON_ID_PREFIX}${hash.slice(-12)}`
-  stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  stremioSeasonCache.set(id, { series, seasonNumber, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS })
   trimCacheMap(stremioSeasonCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }
@@ -318,7 +322,7 @@ function stremioEpisodeToId(series: StremioMeta, episode: StremioMeta): string {
   pruneStremioCaches()
   const hash = createHash('md5').update(`stremio-episode:${series.id}:${episode.id || episode.season}:${episode.episode || episode.number}`).digest('hex')
   const id = `${STREMIO_EPISODE_ID_PREFIX}${hash.slice(-12)}`
-  stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
+  stremioEpisodeCache.set(id, { series, episode, expiresAt: Date.now() + STREMIO_CACHE_TTL_MS })
   trimCacheMap(stremioEpisodeCache, STREMIO_CACHE_MAX_ITEMS)
   return id
 }
@@ -347,14 +351,6 @@ function isStremioSearchItemId(id: string): boolean {
     || lower.startsWith(STREMIO_EPISODE_ID_PREFIX)
 }
 
-function trimCacheMap<K, V>(cache: Map<K, V>, maxItems: number): void {
-  while (cache.size > maxItems) {
-    const firstKey = cache.keys().next().value as K | undefined
-    if (firstKey === undefined) return
-    cache.delete(firstKey)
-  }
-}
-
 function trimStremioSearchCache(): void {
   const seen = new Set<object>()
   for (const entry of stremioSearchCache.values()) {
@@ -378,9 +374,7 @@ function pruneStremioCaches(now = Date.now()): void {
   for (const [id, entry] of stremioEpisodeCache) {
     if (entry.expiresAt <= now) stremioEpisodeCache.delete(id)
   }
-  for (const [key, entry] of stremioRatingCache) {
-    if (entry.expiresAt <= now) stremioRatingCache.delete(key)
-  }
+  pruneStremioRatingCache(now)
 }
 
 function seasonToId(showTmdbId: number, seasonNum: number): string {
@@ -1941,17 +1935,6 @@ function isStremioErrorMeta(meta: StremioMeta): boolean {
   return stremioMetaName(meta).startsWith('[x]') || stremioMetaName(meta).startsWith('[❌]')
 }
 
-function stremioMetaTmdbId(meta: StremioMeta): number | null {
-  if (!meta.id.startsWith('tmdb:')) return null
-  const tmdbId = Number.parseInt(meta.id.slice(5), 10)
-  return Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : null
-}
-
-function stremioMetaImdbId(meta: StremioMeta): string {
-  const imdbId = meta.imdb_id || meta.imdbId || (meta.id.startsWith('tt') ? meta.id : '')
-  return /^tt\d+$/i.test(imdbId) ? imdbId : ''
-}
-
 // TMDB-catalog Stremio addons emit tmdb: ids for titles without an IMDb
 // mapping in the catalog's own data. Stream-provider addons key on imdb ids,
 // so a bare tmdb: id passed straight through to them returns zero streams
@@ -1965,39 +1948,6 @@ async function resolveStremioPlaybackExternalId(meta: StremioMeta, mediaType: St
     if (resolved) return resolved
   }
   return meta.id
-}
-
-function stremioMetaTvdbId(meta: StremioMeta): number | undefined {
-  const raw = (meta as StremioMeta & { tvdb_id?: number | string; tvdbId?: number | string }).tvdb_id
-    ?? (meta as StremioMeta & { tvdb_id?: number | string; tvdbId?: number | string }).tvdbId
-  const tvdbId = typeof raw === 'number' ? raw : typeof raw === 'string' ? Number.parseInt(raw, 10) : NaN
-  return Number.isFinite(tvdbId) && tvdbId > 0 ? tvdbId : undefined
-}
-
-function stremioRatingCacheKey(meta: StremioMeta, mediaType: StremioMediaType): string {
-  return `${mediaType}:${meta.id}:${stremioMetaImdbId(meta)}:${stremioMetaTmdbId(meta) ?? ''}:${stremioMetaTvdbId(meta) ?? ''}`
-}
-
-async function stremioOfficialRating(meta: StremioMeta, mediaType: StremioMediaType): Promise<string> {
-  pruneStremioCaches()
-  const key = stremioRatingCacheKey(meta, mediaType)
-  const cached = stremioRatingCache.get(key)
-  if (cached && cached.expiresAt > Date.now()) return cached.rating
-
-  const tmdbId = stremioMetaTmdbId(meta)
-  const imdbId = stremioMetaImdbId(meta)
-  const rating = mediaType === 'movie'
-    ? await fetchMovieOfficialRatingByIds({ tmdbId, imdbId })
-    : await fetchShowOfficialRatingByIds({ tmdbId, imdbId, tvdbId: stremioMetaTvdbId(meta) })
-  stremioRatingCache.set(key, { rating, expiresAt: Date.now() + STREMIO_SEARCH_CACHE_TTL_MS })
-  trimCacheMap(stremioRatingCache, STREMIO_CACHE_MAX_ITEMS)
-  return rating
-}
-
-async function canUserAccessStremioMeta(user: AppUser, meta: StremioMeta, mediaType: StremioMediaType): Promise<boolean> {
-  if (!hasRatingLimit(user)) return true
-  const rating = await stremioOfficialRating(meta, mediaType)
-  return canUserAccessKnownRating(user.maxRating, rating)
 }
 
 async function stremioRatingForVisibleMeta(user: AppUser, meta: StremioMeta, mediaType: StremioMediaType): Promise<string> {

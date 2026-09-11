@@ -98,6 +98,25 @@ Search results can always include synced Fetcherr library items. When Stremio se
 > [!NOTE]
 > The `/search` endpoint presents a separate Jellyfin server identity with no library folders or library items. Infuse can use that second connection for search results, while the normal connection remains available for Library Mode browsing and scanning.
 
+## Stremio Add-on
+
+Fetcherr can also work in the other direction and act as a Stremio add-on, so friends can watch from any Stremio client instead of only from Infuse or VidHub. The manifest declares one resource, `stream`, and nothing else: catalogs, artwork and metadata come from Cinemeta, and Stremio only asks Fetcherr for streams. That keeps the add-on small and means it never has to mirror a library.
+
+Access is off for every account until an admin turns it on. In **Settings**, the Users table has a **Stremio Access** column with a checkbox and three buttons. **Create URL** issues an install URL for that account, **Copy install URL** puts it on the clipboard, and **Rotate** replaces it. The checkbox is `stremio_enabled`, the kill switch: unticking it stops that account streaming immediately while keeping its URL, so you can turn access off for an evening without reissuing anything. **Revoke** does both, clearing the URL and the flag.
+
+The install URL is the credential. It looks like `https://your.server/stremio/<43 characters>/manifest.json`, and anyone holding it can stream on whatever Real-Debrid or TorBox account the server is configured with. Treat it like a password:
+
+- Send it to one person, not to a group chat.
+- Expect it to appear in the access log of any reverse proxy in front of Fetcherr, since it sits in the URL path. Fetcherr redacts it in its own logs, but it cannot redact anyone else's.
+- Rotating breaks whatever that person already installed. They need the new URL before they can watch again.
+
+Each account has a daily play cap, 30 titles by default and 200 for admins. A slot is a distinct title per day rather than a request, so seeking, reconnecting or rewatching the same file costs nothing extra, and a second film costs one more. The cap exists because every stream is billed to one debrid account, so it is the only thing bounding an install URL that leaks. Per-account caps live in `stremio_play_cap` and are set through `POST /api/users/<id>/stremio` with a `cap` value between 0 and 1000; the Settings UI shows the current value next to the buttons.
+
+A rating-limited account is checked against the same parental limit the library uses, on browsing and on playback, using the certification Fetcherr resolves for the title. Two things are worth knowing before someone reports a fault:
+
+- Those checks need Cinemeta. While Cinemeta is unreachable the rating cannot be established, and Fetcherr refuses rather than guessing, so a rating-limited account sees "Not available for this account." on everything. Unrestricted accounts are unaffected. The reason appears in the Fetcherr log.
+- A `HEAD` request to a play URL returns 404 rather than a redirect. A player that probes with `HEAD` before fetching may decide the stream is missing. That is deliberate: a `HEAD` served by the full handler would spend a play slot and a debrid resolution for nothing.
+
 ## Connecting VidHub
 
 Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, use `http://YOUR_SERVER:9990/emby`.

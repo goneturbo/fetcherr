@@ -529,6 +529,39 @@ export function touchDownloadUrl(downloadUrl: string): void {
   scheduleDeleteTorrent(downloadUrl, entry, deleteAt)
 }
 
+// A Stremio client follows the addon's 302 once and then streams the CDN URL
+// directly, so no progress ever comes back and touchDownloadUrl will never be
+// called again. Six hours has to outlast the longest plausible single viewing,
+// because unlike the Jellyfin path nothing is going to extend it.
+export const ADDON_PLAYBACK_RETENTION_MS = 6 * 60 * 60 * 1000
+
+// Pushes a tracked entry's deletion deadline out by an explicit duration. Never
+// pulls one in, and does nothing for a URL that is not tracked.
+export function retainDownloadUrl(downloadUrl: string, retainForMs: number): void {
+  const entry = cleanupByDownloadUrl.get(downloadUrl)
+  if (!entry) return
+  const deleteAt = Date.now() + retainForMs
+  if (deleteAt <= entry.deleteAt) return
+  scheduleDeleteTorrent(downloadUrl, entry, deleteAt)
+}
+
+// Called from the addon's resolvePlayback wrapper in src/index.ts. A retention
+// failure must never fail a play, so everything here is best-effort: a
+// non-TorBox resolution is ignored, an untracked URL is ignored, and a throw is
+// swallowed. torBoxCleanupMode stays the admin's to set: when they have turned
+// cleanup off there is no tracked entry to extend in the first place.
+export function retainAddonPlayback(resolved: { url?: string; provider?: string } | null | undefined): void {
+  // url first: a nullish resolution must not turn a controlled 404 into a
+  // TypeError on the way out.
+  if (!resolved?.url) return
+  if (resolved?.provider !== 'TorBox') return
+  try {
+    retainDownloadUrl(resolved.url, ADDON_PLAYBACK_RETENTION_MS)
+  } catch (err) {
+    console.warn(`torbox: could not extend addon playback retention: ${err}`)
+  }
+}
+
 export function rehydrateTorBoxCleanupJobs(): void {
   if (!torBoxApiKey()) return
   if (!torBoxCleanupEnabled()) {

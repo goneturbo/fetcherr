@@ -87,6 +87,9 @@ export interface AppUser {
   role: AppUserRole
   maxRating: string
   searchEnabled: boolean
+  stremioToken: string
+  stremioEnabled: boolean
+  stremioPlayCap: number
   createdAt: string
   updatedAt: string
 }
@@ -315,6 +318,19 @@ CREATE TABLE IF NOT EXISTS app_users (
   updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
 );
 
+CREATE TABLE IF NOT EXISTS stremio_plays (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id     TEXT NOT NULL,
+  played_on   TEXT NOT NULL,
+  media_type  TEXT NOT NULL,
+  external_id TEXT NOT NULL,
+  info_hash   TEXT NOT NULL DEFAULT '',
+  title       TEXT NOT NULL DEFAULT '',
+  finalized_at TEXT NOT NULL DEFAULT '',
+  created_at  TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+);
+CREATE INDEX IF NOT EXISTS stremio_plays_user_day ON stremio_plays(user_id, played_on);
+
 CREATE TABLE IF NOT EXISTS ui_sessions (
   token         TEXT PRIMARY KEY,
   user_id       TEXT NOT NULL,
@@ -506,6 +522,14 @@ export function getDb(): Database.Database {
     )`) } catch { /* already exists */ }
     try { _db.exec(`CREATE INDEX IF NOT EXISTS torbox_cleanup_jobs_delete_at ON torbox_cleanup_jobs(delete_at)`) } catch { /* already exists */ }
     migrateAppUserRoles(_db)
+    // After migrateAppUserRoles, which rebuilds app_users from scratch on very old
+    // databases and would drop these columns if they were added before it ran.
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_token TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_enabled INTEGER NOT NULL DEFAULT 0`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE app_users ADD COLUMN stremio_play_cap INTEGER NOT NULL DEFAULT 30`) } catch { /* already exists */ }
+    // Partial, so every account without a token can hold '' without colliding.
+    try { _db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS app_users_stremio_token ON app_users(stremio_token) WHERE stremio_token <> ''`) } catch { /* already exists */ }
+    try { _db.exec(`ALTER TABLE stremio_plays ADD COLUMN finalized_at TEXT NOT NULL DEFAULT ''`) } catch { /* already exists */ }
     migrateAppUserSearchEnabled(_db)
     migrateLegacyUserData(_db)
   }
@@ -564,6 +588,9 @@ function row2appUser(r: Record<string, unknown>): AppUser {
     role,
     maxRating: effectiveMaxRatingForRole(role, (r.max_rating as string) ?? 'unrestricted'),
     searchEnabled: r.search_enabled == null ? defaultSearchEnabledForRole(role) : Number(r.search_enabled) !== 0,
+    stremioToken: (r.stremio_token as string) ?? '',
+    stremioEnabled: Number(r.stremio_enabled ?? 0) !== 0,
+    stremioPlayCap: Number(r.stremio_play_cap ?? 30),
     createdAt: (r.created_at as string) ?? '',
     updatedAt: (r.updated_at as string) ?? '',
   }
@@ -1677,6 +1704,134 @@ export function deleteUser(userId: string): void {
     db.prepare(`DELETE FROM user_item_data WHERE user_id = ?`).run(userId)
     db.prepare(`DELETE FROM app_users WHERE id = ?`).run(userId)
   })()
+}
+
+// ── Stremio addon access ─────────────────────────────────────────────────────
+
+export function mintStremioToken(userId: string): string {
+  const token = randomBytes(32).toString('base64url')
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_token = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(token, userId)
+  return token
+}
+
+export function clearStremioToken(userId: string): void {
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_token = '', updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(userId)
+}
+
+export function setStremioEnabled(userId: string, enabled: boolean): void {
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_enabled = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(enabled ? 1 : 0, userId)
+}
+
+export function setStremioPlayCap(userId: string, cap: number): void {
+  const safe = Number.isFinite(cap) && cap >= 0 ? Math.floor(cap) : 30
+  getDb().prepare(`
+    UPDATE app_users
+    SET stremio_play_cap = ?, updated_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(safe, userId)
+}
+
+export function getUserByStremioToken(token: string): AppUser | null {
+  if (!token) return null
+  const row = getDb().prepare(`SELECT * FROM app_users WHERE stremio_token = ?`).get(token) as Record<string, unknown> | undefined
+  return row ? row2appUser(row) : null
+}
+
+export function countStremioPlaysToday(userId: string): number {
+  const row = getDb().prepare(`
+    SELECT COUNT(*) AS n FROM stremio_plays
+    WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
+  `).get(userId) as { n: number }
+  return row.n
+}
+
+// Reserve a slot and count it in the same statement, because check-then-act
+// across an await does not hold: better-sqlite3 is synchronous and node is
+// single-threaded, so every request in a burst read the count before the first
+// write landed, and 20 concurrent requests against a cap of 1 all passed. The
+// cap is read inside the INSERT as a bound parameter, so SQLite's own statement
+// atomicity is what enforces it.
+// Returns the row id to finalize or release, or null when the cap is reached.
+export interface StremioPlayReservation {
+  id: number
+  // False when an earlier request for the same file today already took the slot.
+  // The caller must not release a row it did not create.
+  created: boolean
+}
+
+// A slot is a title, not an HTTP request. Cache-Control: no-store on the play
+// redirect exists so a client cannot pin an expiring CDN URL, which means an
+// obedient client re-enters the play route on every range request, seek and
+// reconnect. Inserting per request turned that into "Daily play limit reached"
+// mid-film, so a same-day row for the same file is reused instead.
+//
+// Wrapped in a transaction so the select and the insert cannot interleave: the
+// atomicity Task 7's fix established has to survive the second branch, or a burst
+// of 20 requests would slip past the cap again.
+export function reserveStremioPlay(play: {
+  userId: string
+  mediaType: string
+  externalId: string
+  infoHash: string
+  cap: number
+}): StremioPlayReservation | null {
+  const db = getDb()
+  const reserve = db.transaction((): StremioPlayReservation | null => {
+    const existing = db.prepare(`
+      SELECT id FROM stremio_plays
+      WHERE user_id = ?
+        AND played_on = strftime('%Y-%m-%d','now','localtime')
+        AND external_id = ?
+        AND info_hash = ?
+      ORDER BY id ASC
+      LIMIT 1
+    `).get(play.userId, play.externalId, play.infoHash) as { id: number } | undefined
+    if (existing) return { id: Number(existing.id), created: false }
+
+    const info = db.prepare(`
+      INSERT INTO stremio_plays (user_id, played_on, media_type, external_id, info_hash, title)
+      SELECT ?, strftime('%Y-%m-%d','now','localtime'), ?, ?, ?, ''
+      WHERE (
+        SELECT COUNT(*) FROM stremio_plays
+        WHERE user_id = ? AND played_on = strftime('%Y-%m-%d','now','localtime')
+      ) < ?
+    `).run(play.userId, play.mediaType, play.externalId, play.infoHash, play.userId, play.cap)
+    return info.changes === 1 ? { id: Number(info.lastInsertRowid), created: true } : null
+  })
+  return reserve()
+}
+
+// Resolution failed, so the slot was never spent and must not count. Only an
+// unfinalized row is released: two requests for the same file share one row, so an
+// unconditional delete here would remove a play another request had already served
+// and counted, leaving a viewer streaming with nothing recorded.
+export function releaseStremioPlay(id: number): void {
+  getDb().prepare(`DELETE FROM stremio_plays WHERE id = ? AND finalized_at = ''`).run(id)
+}
+
+// Returns whether the row was still there. It may not be: two requests for the
+// same file share one row, and if the one that created it fails and releases it,
+// the other is left holding an id that no longer exists. The caller re-reserves
+// rather than serving a play nobody counted.
+export function finalizeStremioPlay(id: number, title: string): boolean {
+  const info = getDb().prepare(`
+    UPDATE stremio_plays
+    SET title = ?, finalized_at = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+    WHERE id = ?
+  `).run(title, id)
+  return info.changes === 1
 }
 
 export function authEnabled(): boolean {
