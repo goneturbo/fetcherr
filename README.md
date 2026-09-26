@@ -133,6 +133,9 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 | `LDAP_DEFAULT_ROLE` | Role for users auto-created after a successful LDAP login: `user` (default) or `kids` |
 | `LDAP_CONNECT_TIMEOUT_MS` | How long to wait for the LDAP connection itself (default: 2000) |
 | `LDAP_TIMEOUT_MS` | How long to wait for the bind to be answered (default: 10000). Raise it if valid logins are refused on slow directory hardware |
+| `LDAP_REQUIRED_GROUP` | Optional group DN a user must belong to in order to log in, e.g. `cn=media-users,ou=groups,dc=ldap,dc=goauthentik,dc=io`. Unset means every directory user may log in |
+| `LDAP_BIND_DN` | Optional service account DN used to read group membership, for directories that refuse searches to ordinary users (Authentik does). Only used with `LDAP_REQUIRED_GROUP` |
+| `LDAP_BIND_PASSWORD` | Password for `LDAP_BIND_DN` |
 
 All other configuration is managed through the Settings UI and stored in the database.
 
@@ -144,7 +147,11 @@ Local usernames stay local deliberately. A directory entry with the same name be
 
 Accounts created by an LDAP login have no password of their own, so they sign in through the directory or not at all. Local accounts are unaffected and keep working if the directory is down.
 
-**Every account in the directory can sign in.** There is no group or filter restriction yet, so pointing `LDAP_URL` at a directory with many users means any of them can log in and get an account on first sign-in. Point it at a directory whose users you are happy to admit, or keep using local accounts.
+**Restricting who may log in.** Without `LDAP_REQUIRED_GROUP`, every account in the directory can sign in and gets an account on first login, so pointing `LDAP_URL` at a directory with many users admits all of them. Set `LDAP_REQUIRED_GROUP` to a group DN and only its members get in.
+
+Membership is read right after the bind, on the connection the user just authenticated. Directories that refuse searches to ordinary users need a service account instead, which is what `LDAP_BIND_DN` and `LDAP_BIND_PASSWORD` are for; Authentik is in that camp unless the user belongs to a group carrying search permission. Fetcherr asks the user entry for `memberOf` first and falls back to reading the group's `member` list, so it works with or without the OpenLDAP memberof overlay.
+
+When the directory cannot answer the membership question at all, through a refused search, a timeout, a broken service account or a group DN with a typo in it, Fetcherr splits the difference: accounts that already exist keep working, and no new account is created. An unreadable directory should not lock out the household, and it should not hand out accounts either. A user removed from the group is refused at their next login, though anything already issued to them stays valid until it expires.
 
 The Users section of the Settings UI shows whether LDAP is configured and which server URL is in use. Accounts created through an LDAP login carry an LDAP badge, and their password cannot be changed from Fetcherr; manage those credentials in the directory instead.
 
