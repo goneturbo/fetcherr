@@ -8,7 +8,7 @@ import {
   listMovies, countMovies, getMovieByTmdbId,
   listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
-  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
+  getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, getFirstAiredEpisodeForShow, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
   authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
 } from '../db.js'
 import { authenticateUser } from '../ldap-auth.js'
@@ -1362,7 +1362,7 @@ function showToSeriesItem(s: Show, userId = DEFAULT_ADMIN_USER_ID) {
   const id = showTmdbToId(s.tmdbId)
   const ud = getUserData(id, userId)
   const showMode = getEffectiveShowMode(s.tmdbId)
-  const childCount = showMode.mode === 'latest' ? 1 : s.numSeasons
+  const childCount = !getFirstAiredEpisodeForShow(s.tmdbId) ? 0 : showMode.mode === 'latest' ? 1 : s.numSeasons
   const posterTag = s.posterPath ? s.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const thumbTag = (s.backdropPath || s.posterPath) ? (s.backdropPath || s.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
   const logoTag = s.logoPath ? s.logoPath.replace(/\W/g, '').slice(0, 16) : undefined
@@ -1817,7 +1817,11 @@ function showToSearchSeriesItem(s: Show) {
 }
 
 function visibleSeasonsForShow(show: Show): Season[] {
+  // A season with no aired episodes lists as an empty folder, and Infuse shows
+  // "An error occurred" when it opens one (e.g. a show announced but not yet
+  // premiered). The Stremio path already derives its seasons from aired episodes.
   const seasons = getSeasonsForShow(show.tmdbId)
+    .filter(s => getAiredEpisodesForSeason(show.tmdbId, s.seasonNumber).length > 0)
   const showMode = getEffectiveShowMode(show.tmdbId)
   if (showMode.mode !== 'latest' || !showMode.activeSeasonNumber) return seasons
   return seasons.filter(s => s.seasonNumber === showMode.activeSeasonNumber)
