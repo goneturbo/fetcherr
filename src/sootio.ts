@@ -221,19 +221,27 @@ function junkPenalty(s: Stream, ctx: StreamRankContext = {}): number {
   return penalty
 }
 
-function episodeSpecificityScore(s: Stream): number {
+// One episode however the release writes it: S01E01, S01 E01, S01.Ep01, S01EP01,
+// S1E01, S01E001 (long anime seasons).
+const SINGLE_EPISODE = /\bs\d{1,2}[ ._-]?ep?[ ._-]?\d{2,4}\b/
+// A run of episodes: S01E01-E03, S01 E01 - 03, E01-E03. The end stays two digits,
+// as before, so "S01E01 - 001" (absolute number) and "S01E01 - 700" (a title like
+// "7:00 A.M.") are not read as ranges.
+const EPISODE_RANGE = /\bs\d{1,2}[ ._-]?ep?[ ._-]?\d{2,4}\s*-\s*(?:ep?)?\d{2}\b|\bep?\d{2}\s*-\s*ep?\d{2}\b/
+
+export function episodeSpecificityScore(s: Stream): number {
   const text = streamMetadataText(s)
   const filename = typeof s.behaviorHints?.filename === 'string'
     ? s.behaviorHints.filename.toLowerCase()
     : ''
-  const filenameHasEpisode = /\bs\d{2}e\d{2}\b/.test(filename)
+  const filenameHasEpisode = SINGLE_EPISODE.test(filename)
   let score = 0
-  if (/\bs\d{2}e\d{2}\b/.test(text)) score += 4
+  if (SINGLE_EPISODE.test(text)) score += 4
   if (/\bs\d{2}e\d{2}[a-z]\b/.test(text)) score -= 2
-  if (/\bs\d{2}e\d{2}\s*-\s*(?:e)?\d{2}\b|\be\d{2}\s*-\s*e\d{2}\b/.test(text)) score -= 4
+  if (EPISODE_RANGE.test(text)) score -= 4
   if (/\bextended[ ._-]*cinematic[ ._-]*format\b|\bcinematic[ ._-]*format\b|\bfan[ ._-]*edit\b/.test(text)) score -= 2
   if (!filenameHasEpisode && /\[s\d{2}-s\d{2}\]|\bseasons?\b|\bcomplete\b|\bcollection\b/.test(text)) score -= 4
-  if (/\bs\d{2}\b/.test(text) && !/\bs\d{2}e\d{2}\b/.test(text)) score -= 1
+  if (/\bs\d{2}\b/.test(text) && !SINGLE_EPISODE.test(text)) score -= 1
   return score
 }
 
