@@ -1849,13 +1849,23 @@ async function resolvePlaybackCandidate(token: string | undefined, playPath: str
   const candidate = getPlaybackCandidate(token, playPath)
   if (!candidate) return null
   app.log.info(`play: resolving selected candidate for ${candidate.label}`)
-  return resolvePlayableStream(
-    [candidate.stream],
-    candidate.label,
-    `${playPath}:candidate:${token}`,
-    candidate.fileHint,
-    true,
-  )
+  try {
+    return await resolvePlayableStream(
+      [candidate.stream],
+      candidate.label,
+      `${playPath}:candidate:${token}`,
+      candidate.fileHint,
+      true,
+    )
+  } catch (err) {
+    // A provider outage (503) would fail the ranked list too, so surface it.
+    // A 404 means only this stream is dead, typically a stale [RD+] marker the
+    // debrid no longer has cached; returning null lets the route fall back to
+    // the ranked candidates instead of failing a play another source can serve.
+    if (err instanceof PlaybackResolutionError && err.statusCode !== 404) throw err
+    app.log.warn(`play: selected candidate failed for ${candidate.label}, falling back to ranked candidates: ${err}`)
+    return null
+  }
 }
 
 app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
