@@ -479,9 +479,12 @@ function trackDownloadUrl(downloadUrl: string, torrentId: number): void {
     scheduleDeleteTorrent(downloadUrl, existing)
     return
   }
-  const entry: CleanupEntry = { torrentId, activeRequests: 0, deleteAt: Date.now() + CLEANUP_IDLE_DELAY_MS, retryCount: 0 }
+  const deleteAt = Date.now() + CLEANUP_IDLE_DELAY_MS
+  const entry: CleanupEntry = { torrentId, activeRequests: 0, deleteAt, retryCount: 0 }
   cleanupByDownloadUrl.set(downloadUrl, entry)
-  scheduleDeleteTorrent(downloadUrl, entry)
+  // The same value, not a second Date.now(): scheduleDeleteTorrent persists only a
+  // deadline that changed, and a fresh entry's deadline has not.
+  scheduleDeleteTorrent(downloadUrl, entry, deleteAt)
 }
 
 export function markPlaybackStarted(downloadUrl: string): () => void {
