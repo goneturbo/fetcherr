@@ -70,6 +70,18 @@ Fetcherr exposes Jellyfin-compatible search results from both the synced library
 
 For shows, Fetcherr hydrates search results into seasons and aired episodes so clients can drill into a result before playback. Future or unaired episodes are hidden from search drill-downs using the same visibility rules as the local library.
 
+### TMDB Search
+
+Set **Search source** to **TMDB** in Settings to search TMDB instead of Cinemeta. TMDB matches a title's original name as well as its translated one, so "Le Bureau des légendes" finds "The Bureau" and "Moromeții" finds "The Moromete Family". It also looks further into TMDB's results than Cinemeta's catalog goes.
+
+TMDB search uses the TMDB API key Fetcherr already has configured; nothing else needs to be set up. A title TMDB has no IMDb id for is left out of the results, because streams are matched by IMDb id and nothing could play it.
+
+Fetcherr falls back to Cinemeta:
+
+- For one-letter searches, which are too narrow for TMDB to be worth asking.
+- Per media type, when TMDB's answer for that type fails. The other type still uses TMDB if it succeeded.
+- For 60 seconds after any TMDB error, so one bad key or outage doesn't cost every keystroke a timeout.
+
 ## Media Source Selection
 
 Fetcherr can optionally expose multiple cached stream candidates as Jellyfin media sources. Infuse presents these as selectable versions before playback (long press on play button), which is useful when a provider returns multiple quality, codec, or source options for the same movie or episode.
@@ -128,6 +140,8 @@ Add Fetcherr as a Jellyfin server in VidHub. If prompted for an Emby endpoint, u
 | `SERVER_URL` | External base URL used for playback redirects (required) |
 | `PLAYBACK_SIGNING_SECRET` | Optional secret used to sign short-lived playback URLs. If omitted, Fetcherr generates and stores a persistent random secret in SQLite. |
 | `MDBLIST_MAX_ITEMS` | Max items per MDBList list (default: 1000) |
+| `TMDB_BASE_URL` | TMDB API base URL, for a self-hosted mirror or proxy (default: `https://api.themoviedb.org/3`) |
+| `TMDB_SEARCH_TIMEOUT_MS` | How long a TMDB search waits before that search falls back to Cinemeta (default: 5000) |
 | `LDAP_URL` | Optional LDAP server for login, e.g. `ldap://authentik-ldap:3389` or `ldaps://ldap.example.com:636`. Requires `LDAP_USER_DN`. |
 | `LDAP_USER_DN` | DN template for LDAP binds, with `{username}` as placeholder, e.g. `cn={username},ou=users,dc=ldap,dc=goauthentik,dc=io` |
 | `LDAP_DEFAULT_ROLE` | Role for users auto-created after a successful LDAP login: `user` (default) or `kids` |
