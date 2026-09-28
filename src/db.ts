@@ -122,6 +122,18 @@ export interface UiSession {
   createdAt: string
 }
 
+// What a played 8009- id stands for: the series meta's id, plus the episode's
+// season/episode numbers, so a play can be traced back to its episode after
+// the id's stremio metadata cache has expired. Never per-user, and never
+// deleted by this table's own writers — it only records what the id means.
+export interface StremioEpisodeRef {
+  itemId: string
+  seriesId: string
+  season: number
+  episode: number
+  createdAt: number
+}
+
 export interface MusicRelease {
   hash: string
   title: string
@@ -477,6 +489,14 @@ CREATE TABLE IF NOT EXISTS music_meta_tracks (
   UNIQUE(album_id, source_track_id)
 );
 CREATE INDEX IF NOT EXISTS music_meta_tracks_album ON music_meta_tracks(album_id, disc_num, track_num, title);
+
+CREATE TABLE IF NOT EXISTS stremio_episode_refs (
+  item_id    TEXT    PRIMARY KEY,
+  series_id  TEXT    NOT NULL,
+  season     INTEGER NOT NULL,
+  episode    INTEGER NOT NULL,
+  created_at INTEGER NOT NULL
+);
 
 `
 
@@ -2194,6 +2214,32 @@ export function countHiddenLibraryItems(): number {
     SELECT COUNT(*) AS n
     FROM hidden_library_items
   `).get() as { n: number }).n
+}
+
+export function upsertStremioEpisodeRef(ref: { itemId: string; seriesId: string; season: number; episode: number }): void {
+  getDb().prepare(`
+    INSERT INTO stremio_episode_refs (item_id, series_id, season, episode, created_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(item_id) DO UPDATE SET
+      series_id = excluded.series_id,
+      season    = excluded.season,
+      episode   = excluded.episode
+  `).run(ref.itemId, ref.seriesId, ref.season, ref.episode, Date.now())
+}
+
+export function getStremioEpisodeRef(itemId: string): StremioEpisodeRef | null {
+  const row = getDb().prepare(`
+    SELECT item_id, series_id, season, episode, created_at
+    FROM stremio_episode_refs
+    WHERE item_id = ?
+  `).get(itemId) as { item_id: string; series_id: string; season: number; episode: number; created_at: number } | undefined
+  if (!row) return null
+  return { itemId: row.item_id, seriesId: row.series_id, season: row.season, episode: row.episode, createdAt: row.created_at }
+}
+
+export function hasStremioEpisodeRef(itemId: string): boolean {
+  const row = getDb().prepare(`SELECT 1 FROM stremio_episode_refs WHERE item_id = ? LIMIT 1`).get(itemId)
+  return !!row
 }
 
 export function listSourceKeys(prefix?: string): string[] {

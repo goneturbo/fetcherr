@@ -10,6 +10,7 @@ import {
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, getFirstAiredEpisodeForShow, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
   authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
+  upsertStremioEpisodeRef, getStremioEpisodeRef, hasStremioEpisodeRef,
 } from '../db.js'
 import { authenticateUser } from '../ldap-auth.js'
 import {
@@ -146,6 +147,10 @@ const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summari
 const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
 const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
 const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
+// Keyed by series id rather than by requested episode id, so resolving several
+// expired episodes of the same show shares one Cinemeta series fetch (see
+// fetchSeriesForStremioEpisodeRef below), whether or not the calls overlap.
+const stremioEpisodeRefSeriesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
 type JellyfinRouteOptions = {
   searchOnly?: boolean
   prewarmPlayback?: (playPath: string, label: string) => void
@@ -404,7 +409,69 @@ function pruneStremioCaches(now = Date.now()): void {
   for (const [id, entry] of stremioEpisodeCache) {
     if (entry.expiresAt <= now) stremioEpisodeCache.delete(id)
   }
+  for (const [id, entry] of stremioEpisodeRefSeriesCache) {
+    if (entry.expiresAt <= now) stremioEpisodeRefSeriesCache.delete(id)
+  }
   pruneStremioRatingCache(now)
+}
+
+// Fetches (and hydrates) the series meta a stremio_episode_refs row names, for
+// resolveStremioEpisode below. The promise is cached by series id for the same
+// TTL as the episode/season caches, so a resume row listing several episodes
+// of one show costs one Cinemeta request rather than one per episode.
+function fetchSeriesForStremioEpisodeRef(seriesId: string): Promise<StremioMeta | null> {
+  const now = Date.now()
+  const cached = stremioEpisodeRefSeriesCache.get(seriesId)
+  if (cached && cached.expiresAt > now) return cached.promise
+  const promise = hydrateStremioSeriesMeta({ id: seriesId, type: 'series' })
+    .then(series => ((series.videos?.length ?? 0) > 0 ? series : null))
+    .catch(() => null)
+  stremioEpisodeRefSeriesCache.set(seriesId, { promise, expiresAt: now + STREMIO_CACHE_TTL_MS })
+  trimCacheMap(stremioEpisodeRefSeriesCache, STREMIO_CACHE_MAX_ITEMS)
+  return promise
+}
+
+// Resolves a stremio episode id whether or not its 15-minute cache entry is
+// still alive. Once that entry has expired, the id can only be traced back
+// through the stremio_episode_refs row a play wrote for it (see
+// rememberStremioEpisodeRef); without one, or if the series no longer has a
+// matching episode, or the id the catalog's current data recomputes to
+// disagrees with what was requested, it stays unknown — same as any id that
+// never resolved, which is what issue #34 requires of resume.
+async function resolveStremioEpisode(id: string): Promise<{ series: StremioMeta; episode: StremioMeta } | null> {
+  const cached = idToStremioEpisode(id)
+  if (cached) return cached
+  const ref = getStremioEpisodeRef(id)
+  if (!ref) return null
+  const series = await fetchSeriesForStremioEpisodeRef(ref.seriesId)
+  if (!series) return null
+  const video = (series.videos ?? []).find(v =>
+    stremioEpisodeSeasonNumber(v) === ref.season && stremioEpisodeNumber(v) === ref.episode,
+  )
+  if (!video) return null
+  if (stremioEpisodeToId(series, video) !== id) return null
+  return { series, episode: video }
+}
+
+// Called wherever watch state is written for an item id, so an id that later
+// falls out of the 15-minute stremioEpisodeCache can still be resolved for
+// resume. Only fires when that cache is still warm — right after a play went
+// through it — since that is the only moment this can read the series and
+// episode the id names. A failed write is logged and never fails the caller.
+function rememberStremioEpisodeRef(id: string): void {
+  if (!id.toLowerCase().startsWith(STREMIO_EPISODE_ID_PREFIX)) return
+  const cached = idToStremioEpisode(id)
+  if (!cached) return
+  try {
+    upsertStremioEpisodeRef({
+      itemId: id,
+      seriesId: cached.series.id,
+      season: stremioEpisodeSeasonNumber(cached.episode),
+      episode: stremioEpisodeNumber(cached.episode),
+    })
+  } catch (err) {
+    console.warn(`stremio-episode-ref: failed to remember ${id}: ${err instanceof Error ? err.message : String(err)}`)
+  }
 }
 
 function seasonToId(showTmdbId: number, seasonNum: number): string {
@@ -3231,7 +3298,14 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     // requests within the TTL window share one resolution instead of each
     // re-resolving the whole list.
     const resolved = await withReadCache(`resume:${user.id}`, async () => {
-      const ids = listResumeItemIds(10_000, 0, user.id).filter(id => !isStremioSearchItemId(id))
+      // A search item's id is unresolvable once its metadata cache expires,
+      // except for a stremio episode with a stremio_episode_refs row: that
+      // one can still be traced back to its series and episode (see
+      // resolveStremioEpisode), so it is kept here and left to handleItem to
+      // resolve or drop.
+      const ids = listResumeItemIds(10_000, 0, user.id).filter(id =>
+        !isStremioSearchItemId(id) || (id.toLowerCase().startsWith(STREMIO_EPISODE_ID_PREFIX) && hasStremioEpisodeRef(id)),
+      )
       const items = []
       for (const id of ids) {
         const item = await handleItem(id, {
@@ -3408,11 +3482,17 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       return buildMdblistFolderItem(mdblistUrl, mdblistFolderMembers(currentUser, mdblistUrl).length)
     }
 
-    const stremioEpisode = idToStremioEpisode(id)
+    const stremioEpisode = await resolveStremioEpisode(id)
     if (stremioEpisode) {
       if (!await canUserAccessStremioMeta(currentUser, stremioEpisode.series, 'series')) return reply.code(404).send({ error: 'Not found' })
       const item = stremioEpisodeToItem(stremioEpisode.series, stremioEpisode.episode) as Record<string, unknown>
       const { series, episode } = stremioEpisode
+      // stremioEpisodeToItem has no user in scope, so it cannot fill in real
+      // watch state; overlay it here, the way movieToItem/episodeToItem do for
+      // their own ids, so a resumed episode opens (and lists in Resume) at its
+      // saved position rather than always reporting zero.
+      const runtimeTicks = stremioRuntimeTicks(episode, 45)
+      item.UserData = userDataForItem(id, getUserData(id, currentUser.id), runtimeTicks)
       const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
       const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
@@ -3421,7 +3501,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         sourceId: id,
         playPath,
         name,
-        runtimeTicks: stremioRuntimeTicks(episode, 45),
+        runtimeTicks,
       })
     }
 
@@ -3698,7 +3778,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       return sendMdblistFolderImage(mdblistImageUrl, type, query, headers, reply)
     }
 
-    const stremioEpisode = idToStremioEpisode(id)
+    const stremioEpisode = await resolveStremioEpisode(id)
     if (stremioEpisode) {
       if (rootFolderUser && !await canUserAccessStremioMeta(rootFolderUser, stremioEpisode.series, 'series')) return reply.code(404).send()
       const path = stremioEpisode.episode.poster || stremioEpisode.series.poster
@@ -3862,6 +3942,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const canonicalItemId = normalizePlaybackItemId(itemId)
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
+      rememberStremioEpisodeRef(canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -3881,6 +3962,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const canonicalItemId = normalizePlaybackItemId(itemId)
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
+      rememberStremioEpisodeRef(canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -3905,6 +3987,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const runtimeTicks = bodyRuntimeTicks ?? runtimeTicksForItem(canonicalItemId) ?? undefined
       if (playedToCompletion || reachedCompletionThreshold(positionTicks, runtimeTicks)) {
         markPlayed(canonicalItemId, user.id)
+        rememberStremioEpisodeRef(canonicalItemId)
         if (playedToCompletion) {
           app.log.info(`progress: marked played ${canonicalItemId}`)
         } else {
@@ -3912,6 +3995,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         }
       } else if (positionTicks != null) {
         saveProgress(canonicalItemId, positionTicks, user.id)
+        rememberStremioEpisodeRef(canonicalItemId)
         if (canonicalItemId !== itemId) {
           app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
         }
@@ -3934,6 +4018,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       }
     }
     markPlayed(itemId, user.id)
+    rememberStremioEpisodeRef(itemId)
     const ud = getUserData(itemId, user.id)
     return { PlayCount: ud.playCount, Played: ud.played, LastPlayedDate: ud.lastPlayedDate || undefined }
   }
@@ -3970,7 +4055,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       return searchDisabledPlaybackInfo(buildPlaybackOrigin(req.headers))
     }
 
-    const stremioEpisode = idToStremioEpisode(id)
+    const stremioEpisode = await resolveStremioEpisode(id)
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
       if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send({ error: 'Not found' })
@@ -4194,7 +4279,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       return reply.code(409).send({ error: 'Search disabled', message: 'Fetcherr Search Disabled' })
     }
 
-    const stremioEpisode = idToStremioEpisode(id)
+    const stremioEpisode = await resolveStremioEpisode(id)
     if (stremioEpisode) {
       const { series, episode } = stremioEpisode
       if (!await canUserAccessStremioMeta(user, series, 'series')) return reply.code(404).send()
