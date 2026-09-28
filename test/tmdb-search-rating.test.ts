@@ -31,6 +31,11 @@ const heistSeries: FakeTmdbSeries[] = [
   { id: 6102, name: 'Heist Show MA', imdb: 'tt6102' },
   { id: 6103, name: 'Heist Show Unknown', imdb: 'tt6103' },
 ]
+// Its rating is never primed, and its /tv/{id} details carry a real
+// certification, so its rating check has to reach the fake TMDB for real.
+const tvDetailsSeries: FakeTmdbSeries[] = [
+  { id: 6501, name: 'Tvdetails Show', imdb: 'tt6501', certification: 'TV-14' },
+]
 // TMDB lists the exact title last, behind 30 looser ones.
 const ratedMovies: FakeTmdbMovie[] = [
   ...Array.from({ length: 30 }, (_, i) => ({ id: 6201 + i, title: `Rated Movie ${i + 1}`, imdb: `tt${6201 + i}`, certification: 'PG' })),
@@ -44,7 +49,7 @@ const throttledMovies: FakeTmdbMovie[] = Array.from({ length: 40 }, (_, i) => ({
 }))
 
 const tmdb = await startFakeTmdb({
-  movies: [...heistMovies, ...ratedMovies, ...throttledMovies], series: [...heistSeries, ...ratedSeries],
+  movies: [...heistMovies, ...ratedMovies, ...throttledMovies], series: [...heistSeries, ...ratedSeries, ...tvDetailsSeries],
   // Fast enough to stay inside the search timeout below, slow enough to force overlap.
   slowMs: 40,
 })
@@ -57,10 +62,11 @@ test.after(async () => {
 })
 
 // The series gate reads this cache before it reaches TMDB or TVDB. Heist Show
-// Unknown is left out on purpose, so its lookup finds nothing.
-primeStremioRating({ id: 'tt6101', type: 'series' }, 'series', 'TV-PG')
-primeStremioRating({ id: 'tt6102', type: 'series' }, 'series', 'TV-MA')
-for (const show of ratedSeries) primeStremioRating({ id: String(show.imdb), type: 'series' }, 'series', 'TV-PG')
+// Unknown is left out on purpose, so its lookup finds nothing. The cache key
+// includes the TMDB id a search result carries, so the primed meta needs it too.
+primeStremioRating({ id: 'tt6101', type: 'series', tmdbId: 6101 }, 'series', 'TV-PG')
+primeStremioRating({ id: 'tt6102', type: 'series', tmdbId: 6102 }, 'series', 'TV-MA')
+for (const show of ratedSeries) primeStremioRating({ id: String(show.imdb), type: 'series', tmdbId: show.id }, 'series', 'TV-PG')
 
 // The first account created takes the default admin id, so it goes first.
 const admin = db.createUser('admin', 'pw', 'admin', 'unrestricted')
@@ -109,10 +115,19 @@ test('unrestricted accounts make no rating lookups', async () => {
 test('a rating-limited account keeps what its limit allows and loses the rest', async () => {
   const items = await search('heist', tokens.teen)
   assert.deepEqual(items.map(item => [item.Name, item.OfficialRating]), [['Heist PG', 'PG'], ['Heist Show', 'TV-PG']])
-  // One rating lookup per movie. The series nobody rated is looked up, found
-  // nowhere, and refused.
+  // One rating lookup per movie. The series nobody rated is looked up by its
+  // TMDB id, found without a certification, and refused. Its TMDB id is known
+  // from search, so the check never falls back to a /find lookup.
   assert.equal(tmdb.count('movie-details'), 3)
-  assert.deepEqual(tmdb.requests.filter(r => r.scope === 'find').map(r => r.path), ['/find/tt6103'])
+  assert.equal(tmdb.count('tv-details'), 1)
+  assert.equal(tmdb.count('find'), 0)
+})
+
+test("a rating-limited account checks a TMDB-found series' rating by its TMDB id, not a find lookup", async () => {
+  const items = await search('tvdetails', tokens.teen)
+  assert.deepEqual(items.map(item => [item.Name, item.OfficialRating]), [['Tvdetails Show', 'TV-14']])
+  assert.deepEqual(tmdb.requests.filter(r => r.scope === 'tv-details').map(r => r.path), ['/tv/6501'])
+  assert.equal(tmdb.count('find'), 0)
 })
 
 test('rating checks stop at the 40 best title matches', async () => {

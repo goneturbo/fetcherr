@@ -29,9 +29,13 @@ export function primeStremioRating(meta: StremioMeta, mediaType: StremioMediaTyp
 }
 
 export function stremioMetaTmdbId(meta: StremioMeta): number | null {
-  if (!meta.id.startsWith('tmdb:')) return null
-  const tmdbId = Number.parseInt(meta.id.slice(5), 10)
-  return Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : null
+  if (meta.id.startsWith('tmdb:')) {
+    const tmdbId = Number.parseInt(meta.id.slice(5), 10)
+    return Number.isFinite(tmdbId) && tmdbId > 0 ? tmdbId : null
+  }
+  // Set only by TMDB search: an id search already knew, ahead of the IMDb
+  // lookup a rating check would otherwise need.
+  return Number.isInteger(meta.tmdbId) && meta.tmdbId! > 0 ? meta.tmdbId! : null
 }
 
 export function stremioMetaImdbId(meta: StremioMeta): string {

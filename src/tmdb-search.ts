@@ -169,6 +169,7 @@ export function tmdbSeriesToMeta(hit: TmdbSeriesHit): StremioMeta {
     id: hit.imdbId,
     type: 'series',
     name: hit.name,
+    tmdbId: hit.tmdbId,
     ...(hit.posterPath ? { poster: hit.posterPath } : {}),
     ...(hit.backdropPath ? { background: hit.backdropPath } : {}),
     ...(hit.overview ? { description: hit.overview } : {}),

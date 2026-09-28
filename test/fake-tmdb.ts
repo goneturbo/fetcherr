@@ -3,14 +3,14 @@ import { createServer, type Server } from 'node:http'
 // A stand-in TMDB over real HTTP, so the search client really connects, really
 // times out and really parses JSON. It answers the calls fetcherr makes during
 // a search and a rating check: /search/movie, /search/tv,
-// /{movie|tv}/{id}/external_ids, /movie/{id} and /find/{imdb}. Behaviour is
-// chosen per scope and can be switched mid-test.
+// /{movie|tv}/{id}/external_ids, /movie/{id}, /tv/{id} and /find/{imdb}.
+// Behaviour is chosen per scope and can be switched mid-test.
 //
 // Not a test file itself: `npm test` globs test/*.test.ts.
 
 export const FAKE_TMDB_KEY = 'fake-tmdb-key'
 
-export type FakeTmdbScope = 'movie' | 'tv' | 'movie-ids' | 'tv-ids' | 'movie-details' | 'find'
+export type FakeTmdbScope = 'movie' | 'tv' | 'movie-ids' | 'tv-ids' | 'movie-details' | 'tv-details' | 'find'
 export type FakeTmdbMode = 'answers' | 'empty' | 'slow' | 'unauthorized' | 'error'
 
 export interface FakeTmdbMovie {
@@ -37,6 +37,8 @@ export interface FakeTmdbSeries {
   overview?: string
   poster_path?: string | null
   popularity?: number
+  // The US content rating /tv/{id} reports. Unset: none at all.
+  certification?: string
 }
 
 export interface FakeTmdbOptions {
@@ -128,6 +130,17 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     // A cast, because fetchMovieByTmdbId only trusts a stored record that has one.
     credits: { cast: [{ id: 1, name: 'Somebody', character: 'Someone', profile_path: null }], crew: [] },
   })
+  const seriesDetails = (s: FakeTmdbSeries) => ({
+    ...seriesResult(s),
+    number_of_seasons: 1,
+    genres: [],
+    external_ids: { imdb_id: s.imdb },
+    content_ratings: {
+      results: s.certification === undefined ? [] : [{ iso_3166_1: 'US', rating: s.certification }],
+    },
+    // A cast, because fetchShowByTmdbId only trusts a stored record that has one.
+    credits: { cast: [{ id: 1, name: 'Somebody', character: 'Someone', profile_path: null }], crew: [] },
+  })
 
   function scopeOf(path: string): FakeTmdbScope | 'unknown' {
     if (path === '/search/movie') return 'movie'
@@ -135,6 +148,7 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     if (/^\/movie\/\d+\/external_ids$/.test(path)) return 'movie-ids'
     if (/^\/tv\/\d+\/external_ids$/.test(path)) return 'tv-ids'
     if (/^\/movie\/\d+$/.test(path)) return 'movie-details'
+    if (/^\/tv\/\d+$/.test(path)) return 'tv-details'
     if (/^\/find\/[^/]+$/.test(path)) return 'find'
     return 'unknown'
   }
@@ -165,6 +179,10 @@ export async function startFakeTmdb(options: FakeTmdbOptions = {}): Promise<Fake
     if (scope === 'movie-details') {
       const movie = movies.find(m => m.id === id)
       return movie ? [200, JSON.stringify(movieDetails(movie))] : [404, NOT_FOUND]
+    }
+    if (scope === 'tv-details') {
+      const show = series.find(s => s.id === id)
+      return show ? [200, JSON.stringify(seriesDetails(show))] : [404, NOT_FOUND]
     }
     if (failLookups.has(id)) return [500, '{"success":false,"status_code":11}']
     const item = scope === 'movie-ids' ? movies.find(m => m.id === id) : series.find(s => s.id === id)
