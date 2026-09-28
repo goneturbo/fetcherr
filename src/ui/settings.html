@@ -130,11 +130,13 @@
     </label>
     <div class="field" id="stremioSearchSourceField" hidden>
       <label for="stremioSearchSource">Search source</label>
-      <select id="stremioSearchSource">
+      <select id="stremioSearchSource" onchange="syncStremioSearchSourceNote()">
         <option value="cinemeta">Cinemeta — Stremio public catalog, no setup needed</option>
+        <option value="tmdb">TMDB: matches original and translated titles (needs the TMDB API key)</option>
         <option value="trakt">Trakt — uses Trakt API (requires Trakt setup)</option>
         <option value="addon">Add-on catalog — uses your configured stream add-ons</option>
       </select>
+      <div class="field-note" id="stremioSearchSourceNote" hidden>No TMDB API key is set, so search uses Cinemeta.</div>
     </div>
   </section>
 
@@ -471,6 +473,8 @@
   let clearTorBoxApiKey = false
   let clearPremiumizeApiKey = false
   let hasStoredTmdbApiKey = false
+  // Unlike hasStoredTmdbApiKey, also true for a key set through TMDB_API_KEY.
+  let tmdbApiKeyConfigured = false
   let hasStoredTvdbApiKey = false
   let hasStoredTraktClientSecret = false
   let hasStoredMdblistApiKey = false
@@ -684,6 +688,12 @@
     const enabled = document.getElementById('stremioSearchEnabled').checked
     document.getElementById('stremioSearchSourceField').hidden = !enabled
     renderUsers()
+  }
+
+  // Search quietly uses Cinemeta when TMDB is chosen without a key, so the page says so.
+  function syncStremioSearchSourceNote() {
+    const source = document.getElementById('stremioSearchSource').value
+    document.getElementById('stremioSearchSourceNote').hidden = source !== 'tmdb' || tmdbApiKeyConfigured
   }
 
   function syncDiscoverPresentationVisibility() {
@@ -1055,6 +1065,8 @@
     document.getElementById('mediaSourceSelection').checked = d.mediaSourceSelection === true
     document.getElementById('stremioSearchEnabled').checked = d.stremioSearchEnabled === true
     document.getElementById('stremioSearchSource').value = d.stremioSearchSource || 'cinemeta'
+    tmdbApiKeyConfigured = d.tmdbApiKeyConfigured === true
+    syncStremioSearchSourceNote()
     syncStremioSearchSourceVisibility()
     document.getElementById('discoverEnabled').checked = d.discoverEnabled === true
     document.getElementById('discoverPresentationMode').value = d.discoverPresentationMode || 'folder'

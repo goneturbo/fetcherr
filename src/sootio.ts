@@ -465,9 +465,10 @@ function providerBases(): string[] {
 }
 
 function searchProviderBases(): string[] {
-  if (config.stremioSearchSource === 'cinemeta' || config.stremioSearchSource === 'trakt') {
-    return [CINEMETA_BASE]
-  }
+  // Only 'addon' searches the stream add-ons. TMDB and Trakt find titles
+  // elsewhere, but their series still get episodes from Cinemeta, and Cinemeta
+  // is where a failed TMDB search falls back to.
+  if (config.stremioSearchSource !== 'addon') return [CINEMETA_BASE]
   const urls = [...config.stremioSearchProviderUrls]
   if (!urls.length) urls.push(...providerBases())
   return [...new Set(urls)]
