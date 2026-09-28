@@ -392,21 +392,50 @@ test('a search that gave up waiting for its turn does not rest TMDB', async t =>
   assert.deepEqual((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies?.map(m => m.tmdbId), [4101])
 })
 
-test('a search page that waited for its turn still has the whole timeout once sent', async t => {
+test('a busy queue is bounded to about one deadline for the request that waits, not the old worst case', async t => {
+  t.mock.method(console, 'warn', () => {})
+  const busy = numbered(10, 5001, n => `Filler ${n}`)
+  const fake = await fakeTmdb(t, { movies: [...busy, { id: 6001, title: 'Agent', imdb: 'tt6001' }], slowMs: 220 })
+  fake.setMode('movie', 'slow')
+  for (const movie of busy) fake.holdLookups.add(movie.id)
+  const filler = findTmdbTitles('filler', ['movie'], NO_SKIP)
+  await until(() => fake.held() === 10, 'ten held lookups')
+  config.tmdbSearchTimeoutMs = 300
+  const started = Date.now()
+  const search = findTmdbTitles('agent', ['movie'], NO_SKIP)
+  await sleep(180)
+  fake.release(1)
+  const hits = await search
+  // A full search can pass through up to three stages this way - page 1, page
+  // 2, the IMDb window - each now bounded to one deadline. The bug this fixes
+  // let a page that waited also keep a fresh timeout for TMDB's answer on top,
+  // so a busy queue could cost close to five deadlines rather than about three.
+  assert.ok(Date.now() - started < 300 * 3, `took ${Date.now() - started} ms`)
+  assert.equal(hits.movies, null)
+  fake.release()
+  await filler
+})
+
+test('a page that waited in line and then ran out of time does not rest TMDB', async t => {
+  t.mock.method(console, 'warn', () => {})
   const busy = numbered(10, 4201, n => `Agent ${n}`)
-  const fake = await fakeTmdb(t, { movies: [...busy, { id: 4301, title: 'Heat', imdb: 'tt4301' }], slowMs: 300 })
+  const fake = await fakeTmdb(t, { movies: [...busy, { id: 4301, title: 'Heat', imdb: 'tt4301' }], slowMs: 220 })
   fake.setMode('movie', 'slow')
   for (const movie of busy) fake.holdLookups.add(movie.id)
   const agent = findTmdbTitles('agent', ['movie'], NO_SKIP)
   await until(() => fake.held() === 10, 'ten held lookups')
-  config.tmdbSearchTimeoutMs = 400
+  config.tmdbSearchTimeoutMs = 300
   const heat = findTmdbTitles('heat', ['movie'], NO_SKIP)
-  // 150 ms in line and 300 in flight: more than 400 in all, but TMDB answered
-  // well inside its timeout.
-  await sleep(150)
+  // 180 ms in line leaves only 120 ms of the one deadline for TMDB's answer,
+  // and it is slow by 220 ms: not enough, but queueing cost the time, not TMDB.
+  await sleep(180)
+  fake.release(1)
+  assert.equal((await heat).movies, null)
   fake.release()
-  assert.deepEqual((await heat).movies?.map(m => m.tmdbId), [4301])
   await agent
+  // TMDB itself never failed, so the next keystroke asks it again at once.
+  fake.setMode('movie', 'answers')
+  assert.deepEqual((await findTmdbTitles('heat', ['movie'], NO_SKIP)).movies?.map(m => m.tmdbId), [4301])
 })
 
 test('TMDB resting is logged once per minute at most, without the key', async t => {

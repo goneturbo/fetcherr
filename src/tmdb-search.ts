@@ -204,9 +204,9 @@ function cachedPage<T>(kind: Kind, term: string, page: number, parse: (entry: un
   // Deleted first, so the fresh entry goes to the back of the eviction order.
   pageCache.delete(key)
   const path = `/search/${kind}`
-  // The same length of time for waiting in line and, once sent, for TMDB's answer.
+  // One deadline for the whole request: waiting in line and, once sent, TMDB's answer.
   const promise = tmdbSearchGet(path, { query: term, language: 'en-US', include_adult: 'false', page: String(page) },
-    AbortSignal.timeout(config.tmdbSearchTimeoutMs), priority, config.tmdbSearchTimeoutMs).then(raw => parsePage(raw, parse, path))
+    AbortSignal.timeout(config.tmdbSearchTimeoutMs), priority).then(raw => parsePage(raw, parse, path))
   const entry = { promise: promise as Promise<Page<unknown>>, expiresAt: now + PAGE_TTL_MS }
   pageCache.set(key, entry)
   trimCacheMap(pageCache, PAGE_CACHE_MAX)
@@ -316,45 +316,56 @@ function withImdbIds<T extends { tmdbId: number }>(
   return hits
 }
 
-// Our own line ran out of time, not TMDB, so TMDB is not rested for it.
+// Our own line ran out of time, not TMDB, so TMDB is not rested for it. Also
+// thrown when a request did get a turn but only after waiting for one, and the
+// same deadline then ran out while TMDB was still answering: queueing, not
+// TMDB, cost the time, so it is treated the same as never getting a turn.
 class NoTurnInTime extends Error {}
 
 // The key travels in the query string, so every error names the path alone.
-// `wait` bounds the time in line, and the request too unless it has a timeout
-// of its own, which starts once it is sent. A request that waited behind newer
-// searches then times out on TMDB's answer alone.
-async function tmdbSearchGet(path: string, params: Record<string, string>, wait: AbortSignal, priority: number, timeoutMs?: number): Promise<unknown> {
-  if (!await takeTurn(wait, priority)) throw new NoTurnInTime(`${path} timed out waiting for its turn`)
-  const signal = timeoutMs === undefined ? wait : AbortSignal.timeout(timeoutMs)
+// One deadline covers a request's whole life: waiting in line for a turn and,
+// once it has one, TMDB's answer. A request that waited and then ran out of
+// time is not TMDB's fault, so it is reclassified as NoTurnInTime too.
+async function tmdbSearchGet(path: string, params: Record<string, string>, deadline: AbortSignal, priority: number): Promise<unknown> {
+  const turn = await takeTurn(deadline, priority)
+  if (turn === false) throw new NoTurnInTime(`${path} timed out waiting for its turn`)
   try {
-    const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
-    let res: Response
-    try {
-      res = await fetch(`${config.tmdbBaseUrl}${path}?${query}`, { signal })
-    } catch {
-      throw new Error(signal.aborted ? `${path} timed out` : `${path} could not be reached`)
-    }
-    if (!res.ok) {
-      await res.body?.cancel().catch(() => {})
-      throw new Error(`${path} answered HTTP ${res.status}`)
-    }
-    try {
-      return await res.json()
-    } catch {
-      throw new Error(signal.aborted ? `${path} timed out` : `${path} answered something other than JSON`)
-    }
+    return await answerFor(path, params, deadline)
+  } catch (err) {
+    if (turn === 'waited' && deadline.aborted) throw new NoTurnInTime(`${path} timed out after waiting for its turn`)
+    throw err
   } finally {
     endTurn()
   }
 }
 
-// False when the signal gave up first. A request that gives up leaves the line,
-// so a search the user has typed past holds no place in it.
-function takeTurn(signal: AbortSignal, priority: number): Promise<boolean> {
+async function answerFor(path: string, params: Record<string, string>, signal: AbortSignal): Promise<unknown> {
+  const query = new URLSearchParams({ ...params, api_key: config.tmdbApiKey })
+  let res: Response
+  try {
+    res = await fetch(`${config.tmdbBaseUrl}${path}?${query}`, { signal })
+  } catch {
+    throw new Error(signal.aborted ? `${path} timed out` : `${path} could not be reached`)
+  }
+  if (!res.ok) {
+    await res.body?.cancel().catch(() => {})
+    throw new Error(`${path} answered HTTP ${res.status}`)
+  }
+  try {
+    return await res.json()
+  } catch {
+    throw new Error(signal.aborted ? `${path} timed out` : `${path} answered something other than JSON`)
+  }
+}
+
+// 'now': a turn was free. 'waited': the caller queued for one and got it
+// before the signal gave up. false: the signal gave up first, so the caller
+// leaves the line - a search the user has typed past holds no place in it.
+function takeTurn(signal: AbortSignal, priority: number): Promise<'now' | 'waited' | false> {
   if (signal.aborted) return Promise.resolve(false)
   if (requestsInFlight < REQUESTS_IN_FLIGHT) {
     requestsInFlight++
-    return Promise.resolve(true)
+    return Promise.resolve('now')
   }
   return new Promise(resolve => {
     const waiter = {
@@ -362,7 +373,7 @@ function takeTurn(signal: AbortSignal, priority: number): Promise<boolean> {
       start: () => {
         signal.removeEventListener('abort', leave)
         requestsInFlight++
-        resolve(true)
+        resolve('waited')
       },
     }
     const leave = () => {
