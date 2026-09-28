@@ -13,7 +13,7 @@ import {
 } from '../db.js'
 import { authenticateUser } from '../ldap-auth.js'
 import {
-  fetchMovieByTmdbId, posterUrl,
+  fetchMovieByTmdbId, fetchMovieOfficialRatingByIds, posterUrl,
   fetchShowByTmdbId,
   fetchAndCacheSeasonDetails, ensureShowSeasonsCached,
   fetchMovieRecommendations, fetchShowRecommendations,
@@ -35,6 +35,7 @@ import {
   stremioOfficialRating,
 } from '../stremio-rating.js'
 import { searchTraktMetas } from '../trakt.js'
+import { findTmdbTitles, tmdbMovieToMovie, tmdbSeriesToMeta, withTmdbTurn, type TmdbHits, type TmdbMovieHit, type TmdbSeriesHit } from '../tmdb-search.js'
 
 // ── ID helpers ────────────────────────────────────────────────────────────────
 // Real Jellyfin uses GUIDs for all IDs. Infuse validates this client-side.
@@ -268,10 +269,37 @@ function stremioSearchMetaToId(meta: StremioMeta, mediaType: StremioMediaType): 
   return stremioSearchMetaIds(meta, mediaType).itemId
 }
 
+// Search answers carry no episodes, and each keystroke of a search is a new
+// search, so without this every one fetched the same series again. Ten minutes,
+// so new episodes still show up.
+const SERIES_EPISODES_TTL_MS = 10 * 60 * 1000
+const SERIES_EPISODES_MAX = 500
+const seriesEpisodesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
+
+// By IMDb id: a series with its episodes, or null.
+function fetchSeriesWithEpisodes(id: string): Promise<StremioMeta | null> {
+  const now = Date.now()
+  const cached = seriesEpisodesCache.get(id)
+  if (cached && cached.expiresAt > now) return cached.promise
+  // Deleted first, so the fresh entry goes to the back of the eviction order.
+  seriesEpisodesCache.delete(id)
+  const promise = fetchStremioMeta('series', id)
+    .catch(() => null)
+    .then(meta => meta && (meta.videos?.length ?? 0) > 0 ? meta : null)
+  const entry = { promise, expiresAt: now + SERIES_EPISODES_TTL_MS }
+  seriesEpisodesCache.set(id, entry)
+  trimCacheMap(seriesEpisodesCache, SERIES_EPISODES_MAX)
+  // Only a series with episodes is kept. Anything else is asked again next time.
+  void promise.then(meta => {
+    if (!meta && seriesEpisodesCache.get(id) === entry) seriesEpisodesCache.delete(id)
+  })
+  return promise
+}
+
 async function hydrateStremioSeriesMeta(series: StremioMeta): Promise<StremioMeta> {
   if ((series.videos?.length ?? 0) > 0) return series
-  const detailed = await fetchStremioMeta('series', series.id).catch(() => null)
-  if (!detailed || !(detailed.videos?.length ?? 0)) return series
+  const detailed = await fetchSeriesWithEpisodes(series.id)
+  if (!detailed) return series
 
   const merged: StremioMeta = {
     ...series,
@@ -1247,6 +1275,11 @@ function parseJsonArray<T>(value: string): T[] {
   }
 }
 
+// 0 means TMDB has no release or air date for the title, not the year zero.
+function productionYear(year: number): number | undefined {
+  return year > 0 ? year : undefined
+}
+
 function genreItems(genres: string[]) {
   return genres.map(name => ({ Name: name, Id: stableMetaId('genre', name) }))
 }
@@ -1329,7 +1362,7 @@ function movieToItem(m: Movie, userId = DEFAULT_ADMIN_USER_ID) {
     IsPlayable:         true,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     m.year,
+    ProductionYear:     productionYear(m.year),
     Overview:           m.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1379,7 +1412,7 @@ function showToSeriesItem(s: Show, userId = DEFAULT_ADMIN_USER_ID) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     s.year,
+    ProductionYear:     productionYear(s.year),
     Overview:           s.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1745,7 +1778,7 @@ function movieToSearchItem(m: Movie) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     m.year,
+    ProductionYear:     productionYear(m.year),
     Overview:           m.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -1789,7 +1822,7 @@ function showToSearchSeriesItem(s: Show) {
     IsPlayable:         false,
     CanDelete:          false,
     CanDownload:        false,
-    ProductionYear:     s.year,
+    ProductionYear:     productionYear(s.year),
     Overview:           s.overview,
     Genres:             genres,
     GenreItems:         genreItems(genres),
@@ -2034,6 +2067,74 @@ function searchDisabledResponse(
   }
 }
 
+// TMDB answers search only with a key. A single letter matches thousands of
+// titles and would spend a whole search's lookups on ones nobody meant, so
+// Cinemeta answers it, as it did before.
+function tmdbSearchActive(searchTerm: string): boolean {
+  return config.stremioSearchSource === 'tmdb' && !!config.tmdbApiKey && [...searchTerm.trim()].length > 1
+}
+
+// A rating-limited account costs one rating lookup per title, so only the best
+// title matches, the ones the apps would show, are checked.
+const TMDB_RATING_CHECKS = 40
+
+type TmdbCandidate = { Name: string; OriginalTitle: string; popularity: number; movie: TmdbMovieHit } | { Name: string; OriginalTitle: string; popularity: number; series: TmdbSeriesHit }
+
+// Movies become the search-movie items Similar already uses. Series become the
+// same Stremio series items a Cinemeta result does, so both open and play as today.
+async function tmdbSearchItems(hits: TmdbHits, searchTerm: string, user: AppUser): Promise<Record<string, unknown>[]> {
+  // TMDB's popularity is what a person usually means among equal title matches:
+  // the 2002 series "Monk" before six films of the same name. rankSearchResults
+  // is stable, so title-match rank still comes first and popularity only breaks
+  // ties within a rank.
+  const candidates: TmdbCandidate[] = [
+    ...(hits.movies ?? []).map(movie => ({ Name: movie.title, OriginalTitle: movie.originalTitle, popularity: movie.popularity, movie })),
+    ...(hits.series ?? []).map(series => ({ Name: series.name, OriginalTitle: series.originalTitle, popularity: series.popularity, series })),
+  ].sort((a, b) => b.popularity - a.popularity)
+  const limited = hasRatingLimit(user)
+  // Unrestricted accounts, which is every account today, make no extra calls.
+  const shown = limited ? rankSearchResults(candidates, searchTerm).slice(0, TMDB_RATING_CHECKS) : candidates
+  const items = await Promise.all(shown.map(async candidate => withOriginalTitle(await tmdbCandidateItem(candidate, user, limited), candidate.OriginalTitle)))
+  return items.filter((item): item is Record<string, unknown> => item !== null)
+}
+
+// Jellyfin's own field, which search ranking reads too.
+function withOriginalTitle<T extends Record<string, unknown> | null>(item: T, originalTitle: string | undefined): T {
+  return item && originalTitle ? { ...item, OriginalTitle: originalTitle } : item
+}
+
+async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limited: boolean): Promise<Record<string, unknown> | null> {
+  try {
+    if ('movie' in candidate) {
+      const movie = tmdbMovieToMovie(candidate.movie)
+      if (limited) {
+        // One turn from the shared TMDB budget, same as every search lookup, so a
+        // kids account cannot outrun the limit by typing a title.
+        const rating = await withTmdbTurn(
+          () => fetchMovieOfficialRatingByIds({ tmdbId: movie.tmdbId, imdbId: movie.imdbId }),
+          AbortSignal.timeout(config.tmdbSearchTimeoutMs),
+        )
+        movie.officialRating = rating ?? ''
+        // An empty rating is refused, as for every other title a limited account sees.
+        // A check that got no turn, or timed out, is empty the same way.
+        if (!canUserAccessMovie(user, movie)) return null
+      }
+      return searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)
+    }
+    const meta = tmdbSeriesToMeta(candidate.series)
+    const allowed = limited
+      ? await withTmdbTurn(() => canUserAccessStremioMeta(user, meta, 'series'), AbortSignal.timeout(config.tmdbSearchTimeoutMs))
+      : await canUserAccessStremioMeta(user, meta, 'series')
+    if (!allowed) return null
+    const rating = await stremioRatingForVisibleMeta(user, meta, 'series')
+    return stremioSearchMetaToItem(await hydrateStremioSeriesMeta(meta), 'series', undefined, { officialRating: rating }) as Record<string, unknown>
+  } catch {
+    // A rating that cannot be established refuses the title. For anyone else,
+    // one odd title is not worth failing the whole search over.
+    return null
+  }
+}
+
 async function buildSearchResultItems(
   searchTerm: string,
   includeTypes: string,
@@ -2059,18 +2160,48 @@ async function buildSearchResultItems(
     ? filterShowsForUser(user, listShows({ search: searchTerm, sortBy, sortOrder, limit: 10_000, offset: 0, userId: user.id, ...apiLibraryFilter() }))
     : []
   const externalSearchEnabled = externalSearchEnabledForUser(user)
-
-  const rawStremioMetas = externalSearchEnabled && stremioTypes.length
-    ? await (config.stremioSearchSource === 'trakt'
-        ? searchTraktMetas(searchTerm, stremioTypes).catch(() => [])
-        : searchStremioMetas(searchTerm, stremioTypes).catch(() => []))
-    : []
-  const stremioMetas = rawStremioMetas.filter(meta => !isStremioErrorMeta(meta))
-
   const localMovieIds = new Set(localMovies.map(movie => movie.tmdbId))
   const localShowIds = new Set(localShows.map(show => show.tmdbId))
   const localMovieImdbIds = new Set(localMovies.map(movie => movie.imdbId).filter(Boolean))
   const localShowImdbIds = new Set(localShows.map(show => show.imdbId).filter(Boolean))
+
+  const tmdbHits = externalSearchEnabled && stremioTypes.length && tmdbSearchActive(searchTerm)
+    ? await findTmdbTitles(searchTerm, stremioTypes, {
+        movieTmdbIds: localMovieIds,
+        movieImdbIds: localMovieImdbIds,
+        seriesTmdbIds: localShowIds,
+        seriesImdbIds: localShowImdbIds,
+      })
+    : null
+  // The library search matches English titles only, so TMDB can find a library
+  // title by another name, such as its original one. It is still the library's
+  // own item, so watch state and resume stay in one place.
+  const tmdbLibraryMovies = tmdbHits?.movies?.length
+    ? listMovies({ tmdbIds: tmdbHits.movies.map(hit => hit.tmdbId), limit: 10_000, userId: user.id, ...apiLibraryFilter() })
+    : []
+  const tmdbLibraryShows = tmdbHits?.series?.length
+    ? listShows({ tmdbIds: tmdbHits.series.map(hit => hit.tmdbId), limit: 10_000, userId: user.id, ...apiLibraryFilter() })
+    : []
+  const tmdbLibraryMovieIds = new Set(tmdbLibraryMovies.map(movie => movie.tmdbId))
+  const tmdbLibraryShowIds = new Set(tmdbLibraryShows.map(show => show.tmdbId))
+  const tmdbItems = tmdbHits
+    ? await tmdbSearchItems({
+        movies: tmdbHits.movies && tmdbHits.movies.filter(hit => !tmdbLibraryMovieIds.has(hit.tmdbId)),
+        series: tmdbHits.series && tmdbHits.series.filter(hit => !tmdbLibraryShowIds.has(hit.tmdbId)),
+      }, searchTerm, user)
+    : []
+  // With TMDB as the source, the Stremio search only fills in the types TMDB
+  // could not answer. Otherwise it answers every type, as it always has.
+  const stremioSearchTypes = tmdbHits
+    ? stremioTypes.filter(type => (type === 'movie' ? tmdbHits.movies : tmdbHits.series) === null)
+    : stremioTypes
+
+  const rawStremioMetas = externalSearchEnabled && stremioSearchTypes.length
+    ? await (config.stremioSearchSource === 'trakt'
+        ? searchTraktMetas(searchTerm, stremioSearchTypes).catch(() => [])
+        : searchStremioMetas(searchTerm, stremioSearchTypes).catch(() => []))
+    : []
+  const stremioMetas = rawStremioMetas.filter(meta => !isStremioErrorMeta(meta))
   const stremioSearchMetas: StremioMeta[] = []
   for (const meta of stremioMetas) {
     const mediaType = String(meta.type ?? '').toLowerCase() as StremioMediaType
@@ -2098,6 +2229,16 @@ async function buildSearchResultItems(
   const combined = withoutExcludedLocationTypes([
     ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
     ...localShows.map(show => showToSeriesItem(show, user.id)),
+    // With the name TMDB matched them by, so they rank by it too.
+    ...filterMoviesForUser(user, tmdbLibraryMovies).map(movie => withOriginalTitle(
+      searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>),
+      tmdbHits?.movies?.find(hit => hit.tmdbId === movie.tmdbId)?.originalTitle,
+    )),
+    ...filterShowsForUser(user, tmdbLibraryShows).map(show => withOriginalTitle(
+      showToSeriesItem(show, user.id) as Record<string, unknown>,
+      tmdbHits?.series?.find(hit => hit.tmdbId === show.tmdbId)?.originalTitle,
+    )),
+    ...tmdbItems,
     ...stremioSearchItems,
   ], excludedLocationTypes)
 
