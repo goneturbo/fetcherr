@@ -8,7 +8,6 @@ import {
 } from './db.js'
 import { fetchContentRatingFallback, fetchEpisodeStillFallbacks, fetchSeriesLanguage } from './tvdb.js'
 
-const BASE = 'https://api.themoviedb.org/3'
 const MISSING_STILL_RETRY_MS = 7 * 24 * 60 * 60 * 1000
 const ACTIVE_SHOW_REFRESH_MS = 6 * 60 * 60 * 1000
 
@@ -24,7 +23,7 @@ export function tmdbLocale(): string {
 
 async function tmdbGet(path: string): Promise<unknown> {
   const sep = path.includes('?') ? '&' : '?'
-  const res = await fetch(`${BASE}${path}${sep}api_key=${config.tmdbApiKey}&language=${tmdbLocale()}`, {
+  const res = await fetch(`${config.tmdbBaseUrl}${path}${sep}api_key=${config.tmdbApiKey}&language=${tmdbLocale()}`, {
     signal: AbortSignal.timeout(15_000),
   })
   if (!res.ok) throw new Error(`TMDB ${res.status} for ${path}`)
