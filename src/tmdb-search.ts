@@ -386,10 +386,11 @@ function endTurn(): void {
 
 // Rating checks for a limited account reach TMDB through src/tmdb.ts, outside
 // this module. They take turns from the same budget, so one kids account typing
-// a title cannot outrun the limit every other search keeps to. The priority is
-// fixed and lower than any search's, so a lookup always goes first when both are
-// waiting. `work` must not itself take a turn: nothing it reaches may call
-// tmdbSearchGet, or it would wait behind a turn it is holding.
+// a title cannot outrun the limit every other search keeps to. They wait behind
+// every search request, since their priority is fixed below any search's. That
+// is the safe side to lose on: a check that gets no turn before its deadline
+// refuses the title. `work` must not itself take a turn: nothing it reaches may
+// call tmdbSearchGet, or it would wait behind a turn it is holding.
 const RATING_CHECK_PRIORITY = 0
 
 export async function withTmdbTurn<T>(work: () => Promise<T>, signal: AbortSignal): Promise<T | null> {
