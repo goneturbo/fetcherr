@@ -11,6 +11,9 @@
     "test": "node --test --import tsx/esm test/*.test.ts",
     "typecheck": "tsc -p tsconfig.test.json"
   },
+  "engines": {
+    "node": ">=20.4"
+  },
   "dependencies": {
     "@viren070/parse-torrent-title": "^0.7.6",
     "better-sqlite3": "^11.0.0",
