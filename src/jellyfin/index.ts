@@ -1830,7 +1830,7 @@ function stremioSeasonToItem(series: StremioMeta, seasonNumber: number) {
   }
 }
 
-function stremioEpisodeToItem(series: StremioMeta, episode: StremioMeta) {
+function stremioEpisodeToItem(series: StremioMeta, episode: StremioMeta, userId?: string) {
   const id = stremioEpisodeToId(series, episode)
   const seasonNumber = stremioEpisodeSeasonNumber(episode)
   const episodeNumber = stremioEpisodeNumber(episode)
@@ -1864,11 +1864,13 @@ function stremioEpisodeToItem(series: StremioMeta, episode: StremioMeta) {
     EnableMediaSourceDisplay: true,
     ImageTags:          (episode.poster || series.poster) ? { Primary: createHash('sha1').update(episode.poster || series.poster || '').digest('hex').slice(0, 16) } : {},
     ProviderIds:        { Stremio: episode.id || `${series.id}:${seasonNumber}:${episodeNumber}` },
-    UserData:           userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }, runtimeTicks),
+    UserData:           userId
+      ? userDataForItem(id, getUserData(id, userId), runtimeTicks)
+      : userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }, runtimeTicks),
   }
 }
 
-function movieToSearchItem(m: Movie) {
+function movieToSearchItem(m: Movie, userId?: string) {
   const genres: string[] = JSON.parse(m.genres || '[]')
   const id = searchMovieTmdbToId(m.tmdbId)
   const posterTag = m.posterPath ? m.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
@@ -1909,7 +1911,9 @@ function movieToSearchItem(m: Movie) {
     BackdropImageTags:  m.backdropPath ? [m.backdropPath.replace(/\W/g, '').slice(0, 16)] : [],
     ParentId:           FOLDER_ID,
     ProviderIds:        { Imdb: m.imdbId || undefined, Tmdb: String(m.tmdbId) },
-    UserData:           userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }),
+    UserData:           userId
+      ? userDataForItem(id, getUserData(id, userId))
+      : userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }),
   }
 }
 
@@ -2228,7 +2232,7 @@ async function tmdbCandidateItem(candidate: TmdbCandidate, user: AppUser, limite
         // A check that got no turn, or timed out, is empty the same way.
         if (!canUserAccessMovie(user, movie)) return null
       }
-      return searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)
+      return searchMovieAutoplayItem(movieToSearchItem(movie, user.id) as Record<string, unknown>)
     }
     const meta = tmdbSeriesToMeta(candidate.series)
     const allowed = limited
@@ -2336,11 +2340,11 @@ async function buildSearchResultItems(
   }))
 
   const combined = withoutExcludedLocationTypes([
-    ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>)),
+    ...localMovies.map(movie => searchMovieAutoplayItem(movieToSearchItem(movie, user.id) as Record<string, unknown>)),
     ...localShows.map(show => showToSeriesItem(show, user.id)),
     // With the name TMDB matched them by, so they rank by it too.
     ...filterMoviesForUser(user, tmdbLibraryMovies).map(movie => withOriginalTitle(
-      searchMovieAutoplayItem(movieToSearchItem(movie) as Record<string, unknown>),
+      searchMovieAutoplayItem(movieToSearchItem(movie, user.id) as Record<string, unknown>),
       tmdbHits?.movies?.find(hit => hit.tmdbId === movie.tmdbId)?.originalTitle,
     )),
     ...filterShowsForUser(user, tmdbLibraryShows).map(show => withOriginalTitle(
@@ -2370,7 +2374,7 @@ async function buildSimilarItems(itemId: string, user: AppUser, limit: number) {
     const recIds = await fetchMovieRecommendations(movieTmdbId, limit)
     const movies = (await Promise.all(recIds.map(id => fetchMovieByTmdbId(id))))
       .filter((m): m is Movie => Boolean(m) && canUserAccessMovie(user, m as Movie))
-    return movies.map(m => searchMovieAutoplayItem(movieToSearchItem(m) as Record<string, unknown>))
+    return movies.map(m => searchMovieAutoplayItem(movieToSearchItem(m, user.id) as Record<string, unknown>))
   }
 
   if (showTmdbId) {
@@ -3038,7 +3042,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const visibleEpisodes = await visibleStremioEpisodes(seriesMeta)
       if (includeTypes.includes('episode')) {
         return {
-          Items: pagedItems(visibleEpisodes, offset, limit).map(ep => stremioEpisodeToItem(seriesMeta, ep)),
+          Items: pagedItems(visibleEpisodes, offset, limit).map(ep => stremioEpisodeToItem(seriesMeta, ep, user.id)),
           TotalRecordCount: visibleEpisodes.length,
           StartIndex: offset,
         }
@@ -3059,7 +3063,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const episodes = (await visibleStremioEpisodes(stremioSeasonRef.series))
         .filter(ep => stremioEpisodeSeasonNumber(ep) === stremioSeasonRef.seasonNumber)
       return {
-        Items: pagedItems(episodes, offset, limit).map(ep => stremioEpisodeToItem(stremioSeasonRef.series, ep)),
+        Items: pagedItems(episodes, offset, limit).map(ep => stremioEpisodeToItem(stremioSeasonRef.series, ep, user.id)),
         TotalRecordCount: episodes.length,
         StartIndex: offset,
       }
@@ -3561,14 +3565,9 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
     const stremioEpisode = await resolveStremioEpisode(id)
     if (stremioEpisode) {
       if (!await canUserAccessStremioMeta(currentUser, stremioEpisode.series, 'series')) return reply.code(404).send({ error: 'Not found' })
-      const item = stremioEpisodeToItem(stremioEpisode.series, stremioEpisode.episode) as Record<string, unknown>
+      const item = stremioEpisodeToItem(stremioEpisode.series, stremioEpisode.episode, currentUser.id) as Record<string, unknown>
       const { series, episode } = stremioEpisode
-      // stremioEpisodeToItem has no user in scope, so it cannot fill in real
-      // watch state; overlay it here, the way movieToItem/episodeToItem do for
-      // their own ids, so a resumed episode opens (and lists in Resume) at its
-      // saved position rather than always reporting zero.
       const runtimeTicks = stremioRuntimeTicks(episode, 45)
-      item.UserData = userDataForItem(id, getUserData(id, currentUser.id), runtimeTicks)
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
       // addDetailMediaSources returns the item untouched, playPath unused, when
       // there is nothing to build media sources for (headers is unset, which is
@@ -3680,7 +3679,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const movie = await fetchMovieByTmdbId(searchMovieTmdbId)
       if (!movie) return reply.code(404).send({ error: 'Not found' })
       if (!canUserAccessMovie(currentUser, movie)) return reply.code(404).send({ error: 'Not found' })
-      const item = movieToSearchItem(movie) as Record<string, unknown>
+      const item = movieToSearchItem(movie, currentUser.id) as Record<string, unknown>
       const movieItem = searchMovieAutoplayItem(item)
       if (!movie.imdbId || !isMovieVisibleToLibrary(movie)) return movieItem
       return addMovieDetailMediaSources(movieItem, headers, {
@@ -3778,7 +3777,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
         ? visibleEpisodes.filter(ep => stremioEpisodeSeasonNumber(ep) === stremioSeason.seasonNumber)
         : visibleEpisodes
       return {
-        Items: episodes.map(ep => stremioEpisodeToItem(seriesMeta, ep)),
+        Items: episodes.map(ep => stremioEpisodeToItem(seriesMeta, ep, user.id)),
         TotalRecordCount: episodes.length,
         StartIndex: 0,
       }

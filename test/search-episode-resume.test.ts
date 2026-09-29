@@ -17,6 +17,7 @@ process.env.STREMIO_SEARCH_ENABLED = 'true'
 
 const db = await import('../src/db.js')
 const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/index.js')
+const { config } = await import('../src/config.js')
 
 const TICKS_PER_MIN = 60 * 10_000_000
 
@@ -156,6 +157,33 @@ async function getResume(app: ReturnType<typeof Fastify>, token: string, userId:
   const res = await app.inject({ method: 'GET', url: `/Users/${userId}/Items/Resume`, headers: { 'x-emby-token': token } })
   assert.equal(res.statusCode, 200, `resume failed: ${res.body}`)
   return res.json() as { Items: Array<Record<string, unknown>>; TotalRecordCount: number }
+}
+
+// Finds a series' 32-hex "Stremio Search" id via the same search call
+// discoverEpisodes makes, without minting any 8009- episode ids.
+async function findSeriesId(app: ReturnType<typeof Fastify>, token: string, show: FakeShow): Promise<string> {
+  const res = await app.inject({
+    method: 'GET',
+    url: `/Users/anyone/Items?searchterm=${encodeURIComponent(show.name)}`,
+    headers: { 'x-emby-token': token },
+  })
+  assert.equal(res.statusCode, 200, `search for ${show.name} failed: ${res.body}`)
+  const seriesItem = (res.json().Items as Array<{ Id: string; Name: string }>).find(item => item.Name === show.name)
+  assert.ok(seriesItem, `series ${show.name} not found in search results`)
+  return seriesItem!.Id
+}
+
+async function listShowEpisodes(app: ReturnType<typeof Fastify>, token: string, seriesId: string, seasonId?: string) {
+  const url = seasonId ? `/Shows/${seriesId}/Episodes?seasonId=${seasonId}` : `/Shows/${seriesId}/Episodes`
+  const res = await app.inject({ method: 'GET', url, headers: { 'x-emby-token': token } })
+  assert.equal(res.statusCode, 200, `episode list failed: ${res.body}`)
+  return res.json() as { Items: Array<Record<string, unknown>>; TotalRecordCount: number }
+}
+
+async function getItem(app: ReturnType<typeof Fastify>, token: string, userId: string, itemId: string) {
+  const res = await app.inject({ method: 'GET', url: `/Users/${userId}/Items/${itemId}`, headers: { 'x-emby-token': token } })
+  assert.equal(res.statusCode, 200, `open ${itemId} failed: ${res.body}`)
+  return res.json() as Record<string, unknown>
 }
 
 // ── The tests ────────────────────────────────────────────────────────────────
@@ -407,6 +435,149 @@ test('the search identity still answers resume with no items', async () => {
   const app = await buildApp({ searchOnly: true })
   const resume = await getResume(app, token, user.id)
   assert.deepEqual(resume, { Items: [], TotalRecordCount: 0, StartIndex: 0 })
+  await app.close()
+})
+
+// Task 2: search episodes and search films carry the user's real watch state
+// wherever they are listed, not just at the one click-through path task 1
+// covered. Infuse reads the season's episode list before PlaybackInfo, so a
+// zero there restarts an in-progress episode even though PlaybackInfo itself
+// would have reported the real position.
+
+// A movie stubbed straight into the movies table, with imdbId and a non-empty
+// castJson: fetchMovieByTmdbId's cache check returns it without a network
+// call, so this works with the fake, non-network TMDB key set just below.
+function stubSearchFilm(tmdbId: number, title: string): string {
+  db.upsertMovie({
+    tmdbId,
+    imdbId: `tt${tmdbId}`,
+    mediaLanguage: 'en',
+    title,
+    year: 2019,
+    overview: '',
+    posterPath: '',
+    backdropPath: '',
+    logoPath: '',
+    genres: '[]',
+    runtimeMins: 100,
+    popularity: 0,
+    officialRating: '',
+    communityRating: 0,
+    studiosJson: '[]',
+    tagsJson: '[]',
+    castJson: '[{"id":1,"name":"Someone","type":"cast"}]',
+    releaseDate: '2019-01-01',
+    digitalReleaseDate: '2019-01-01',
+    syncedAt: new Date().toISOString(),
+  })
+  return `00000000-0000-4000-8004-${tmdbId.toString(16).padStart(12, '0')}`
+}
+
+test('a search episode with a saved position shows it in the series list, the season list, and when opened directly', async () => {
+  const { user, token } = authedUser('episode-userdata')
+  const app = await buildApp()
+  const seriesId = await findSeriesId(app, token, SHOW_A)
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_A)
+  await reportProgress(app, token, ep1, 5 * TICKS_PER_MIN)
+
+  const seriesList = await listShowEpisodes(app, token, seriesId)
+  const seriesEntry = seriesList.Items.find(item => item.Id === ep1)
+  assert.ok(seriesEntry, 'expected the played episode in the series-level list')
+  assert.equal((seriesEntry!.UserData as Record<string, unknown>).PlaybackPositionTicks, 5 * TICKS_PER_MIN)
+
+  const seasonId = seriesEntry!.SeasonId as string
+  const seasonList = await listShowEpisodes(app, token, seriesId, seasonId)
+  const seasonEntry = seasonList.Items.find(item => item.Id === ep1)
+  assert.ok(seasonEntry, 'expected the played episode in the season-filtered list')
+  assert.equal((seasonEntry!.UserData as Record<string, unknown>).PlaybackPositionTicks, 5 * TICKS_PER_MIN)
+
+  const opened = await getItem(app, token, user.id, ep1)
+  assert.equal((opened.UserData as Record<string, unknown>).PlaybackPositionTicks, 5 * TICKS_PER_MIN)
+  await app.close()
+})
+
+test('a search episode marked played shows Played: true in the episode list', async () => {
+  const { user, token } = authedUser('episode-played')
+  const app = await buildApp()
+  const seriesId = await findSeriesId(app, token, SHOW_B)
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_B)
+
+  const markRes = await app.inject({ method: 'POST', url: `/UserPlayedItems/${ep1}`, headers: { 'x-emby-token': token } })
+  assert.equal(markRes.statusCode, 200, `mark played failed: ${markRes.body}`)
+
+  const list = await listShowEpisodes(app, token, seriesId)
+  const entry = list.Items.find(item => item.Id === ep1)
+  assert.ok(entry, 'expected the marked-played episode in the episode list')
+  assert.equal((entry!.UserData as Record<string, unknown>).Played, true)
+  await app.close()
+})
+
+test('a search film with a saved position shows it in /Items/{id} and in resume', async () => {
+  const { user, token } = authedUser('search-film')
+  const originalKey = config.tmdbApiKey
+  config.tmdbApiKey = 'fake-search-film-key'
+  try {
+    const app = await buildApp()
+    const filmId = stubSearchFilm(4_242_555, 'Search-Only Film')
+    db.saveProgress(filmId, 7 * TICKS_PER_MIN, user.id)
+
+    const opened = await getItem(app, token, user.id, filmId)
+    assert.equal(opened.Name, 'Search-Only Film')
+    assert.equal((opened.UserData as Record<string, unknown>).PlaybackPositionTicks, 7 * TICKS_PER_MIN)
+
+    const resume = await getResume(app, token, user.id)
+    assert.equal(resume.TotalRecordCount, 1)
+    assert.equal(resume.Items[0].Name, 'Search-Only Film')
+    assert.equal((resume.Items[0].UserData as Record<string, unknown>).PlaybackPositionTicks, 7 * TICKS_PER_MIN)
+    await app.close()
+  } finally {
+    config.tmdbApiKey = originalKey
+  }
+})
+
+test('another user sees their own watch state on a search episode, not this user\'s', async () => {
+  const { user: userA, token: tokenA } = authedUser('multi-user-a')
+  const { token: tokenB } = authedUser('multi-user-b')
+  const app = await buildApp()
+  const seriesId = await findSeriesId(app, tokenA, SHOW_A)
+  const [ep1] = await discoverEpisodes(app, tokenA, userA.id, SHOW_A)
+  await reportProgress(app, tokenA, ep1, 5 * TICKS_PER_MIN)
+
+  const listForA = await listShowEpisodes(app, tokenA, seriesId)
+  const entryForA = listForA.Items.find(item => item.Id === ep1)
+  assert.equal((entryForA!.UserData as Record<string, unknown>).PlaybackPositionTicks, 5 * TICKS_PER_MIN)
+
+  const listForB = await listShowEpisodes(app, tokenB, seriesId)
+  const entryForB = listForB.Items.find(item => item.Id === ep1)
+  assert.ok(entryForB, 'expected the other user to see the episode too, just not its position')
+  assert.equal((entryForB!.UserData as Record<string, unknown>).PlaybackPositionTicks, 0)
+  await app.close()
+})
+
+test('a search episode and a search film with no saved data still show today\'s zeros', async () => {
+  const { user, token } = authedUser('no-saved-data')
+  const app = await buildApp()
+  const seriesId = await findSeriesId(app, token, SHOW_A)
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_A)
+
+  const list = await listShowEpisodes(app, token, seriesId)
+  const entry = list.Items.find(item => item.Id === ep1)
+  assert.ok(entry)
+  const epUserData = entry!.UserData as Record<string, unknown>
+  assert.equal(epUserData.PlaybackPositionTicks, 0)
+  assert.equal(epUserData.Played, false)
+
+  const originalKey = config.tmdbApiKey
+  config.tmdbApiKey = 'fake-search-film-key'
+  try {
+    const filmId = stubSearchFilm(4_242_777, 'Untouched Search Film')
+    const opened = await getItem(app, token, user.id, filmId)
+    const filmUserData = opened.UserData as Record<string, unknown>
+    assert.equal(filmUserData.PlaybackPositionTicks, 0)
+    assert.equal(filmUserData.Played, false)
+  } finally {
+    config.tmdbApiKey = originalKey
+  }
   await app.close()
 })
 
