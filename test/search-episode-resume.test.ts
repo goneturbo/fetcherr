@@ -25,7 +25,10 @@ const TICKS_PER_MIN = 60 * 10_000_000
 interface FakeShow { id: string; name: string }
 const SHOW_A: FakeShow = { id: 'tt9990001', name: 'Resume Test Show' }
 const SHOW_B: FakeShow = { id: 'tt9990002', name: 'Flaky Refetch Show' }
-const SHOWS = [SHOW_A, SHOW_B]
+const SHOW_C: FakeShow = { id: 'tt9990003', name: 'Hanging Refetch Show' }
+const SHOW_D: FakeShow = { id: 'tt9990004', name: 'Retry After Failure Show' }
+const SHOW_E: FakeShow = { id: 'tt9990005', name: 'Rewrite Guard Show' }
+const SHOWS = [SHOW_A, SHOW_B, SHOW_C, SHOW_D, SHOW_E]
 
 function seriesVideos(show: FakeShow) {
   return [
@@ -36,6 +39,15 @@ function seriesVideos(show: FakeShow) {
 
 const metaFetchCounts = new Map<string, number>()
 const failingSeriesIds = new Set<string>()
+// Per-series artificial delay (ms) before a /meta/series/ response, and a set
+// of series ids whose response never arrives at all — for Important 1's
+// parallel-prefetch and hung-Cinemeta tests below.
+const seriesFetchDelayMs = new Map<string, number>()
+const hangingSeriesIds = new Set<string>()
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
@@ -63,6 +75,11 @@ globalThis.fetch = (async (input: RequestInfo | URL) => {
     const show = SHOWS.find(s => s.id === seriesId)
     if (!show) return jsonResponse({}, 404)
     if (failingSeriesIds.has(seriesId)) return jsonResponse({ error: 'boom' }, 500)
+    const delay = seriesFetchDelayMs.get(seriesId)
+    if (delay) await sleep(delay)
+    // Simulates a Cinemeta that hangs rather than answers: the response never
+    // arrives, so only handleResumeItems' own bound can move the caller on.
+    if (hangingSeriesIds.has(seriesId)) return new Promise<Response>(() => {})
     return jsonResponse({ meta: { id: show.id, type: 'series', name: show.name, videos: seriesVideos(show) } })
   }
 
@@ -245,6 +262,143 @@ test('two episodes of one show cost one Cinemeta fetch to resolve after expiry',
 
   const after = metaFetchCounts.get(SHOW_A.id) ?? 0
   assert.equal(after - before, 1, 'expected exactly one Cinemeta fetch for two episodes of one show')
+  await app.close()
+})
+
+test('resume resolves two different series in parallel, not one after another', async () => {
+  const { user, token } = authedUser('parallel-resolve')
+  const app = await buildApp()
+  const [ep1A] = await discoverEpisodes(app, token, user.id, SHOW_A)
+  const [ep1B] = await discoverEpisodes(app, token, user.id, SHOW_B)
+  await reportProgress(app, token, ep1A, 3 * TICKS_PER_MIN)
+  await reportProgress(app, token, ep1B, 3 * TICKS_PER_MIN)
+
+  expireStremioCaches()
+  // Each series answers after ~300ms; run one after another that's ~600ms,
+  // run in parallel it's close to 300ms. The threshold below sits well under
+  // the serial sum, with generous margin either side.
+  seriesFetchDelayMs.set(SHOW_A.id, 300)
+  seriesFetchDelayMs.set(SHOW_B.id, 300)
+  try {
+    const start = Date.now()
+    const resume = await getResume(app, token, user.id)
+    const elapsed = Date.now() - start
+    assert.equal(resume.TotalRecordCount, 2)
+    assert.ok(elapsed < 550, `expected well under the ~600ms serial sum, took ${elapsed}ms`)
+  } finally {
+    seriesFetchDelayMs.delete(SHOW_A.id)
+    seriesFetchDelayMs.delete(SHOW_B.id)
+  }
+  await app.close()
+})
+
+test('a hung Cinemeta does not hold up library rows for more than the prefetch bound, and its episode is left out', async () => {
+  const { user, token } = authedUser('hung-refetch')
+  const app = await buildApp()
+
+  // A real library movie: before this feature, resume for rows like this made
+  // no network calls at all, and that must still hold when a search episode
+  // on the same list is stuck behind a Cinemeta that never answers.
+  const movieTmdbId = 4_242_001
+  const movieItemId = `00000000-0000-4000-8000-${movieTmdbId.toString(16).padStart(12, '0')}`
+  db.upsertMovie({
+    tmdbId: movieTmdbId,
+    imdbId: 'tt4242001',
+    mediaLanguage: 'en',
+    title: 'Library Movie',
+    year: 2020,
+    overview: '',
+    posterPath: '',
+    backdropPath: '',
+    logoPath: '',
+    genres: '[]',
+    runtimeMins: 100,
+    popularity: 0,
+    officialRating: '',
+    communityRating: 0,
+    studiosJson: '[]',
+    tagsJson: '[]',
+    castJson: '[]',
+    releaseDate: '2020-01-01',
+    digitalReleaseDate: '2020-01-01',
+    syncedAt: new Date().toISOString(),
+  })
+  // handleItem's plain-movie branch also requires a source item on file
+  // (the sign a title is actually in the library, not just cached TMDB meta).
+  db.addSourceItem('resume-test', 'movie', movieTmdbId)
+  db.saveProgress(movieItemId, 5 * TICKS_PER_MIN, user.id)
+
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_C)
+  await reportProgress(app, token, ep1, 2 * TICKS_PER_MIN)
+
+  expireStremioCaches()
+  hangingSeriesIds.add(SHOW_C.id)
+  try {
+    const start = Date.now()
+    const resume = await getResume(app, token, user.id)
+    const elapsed = Date.now() - start
+    assert.ok(elapsed < 3_500, `expected the bound (~3s) to cap the wait, took ${elapsed}ms`)
+    assert.equal(resume.TotalRecordCount, 1)
+    assert.equal(resume.Items.length, 1)
+    assert.equal(resume.Items[0].Name, 'Library Movie')
+  } finally {
+    hangingSeriesIds.delete(SHOW_C.id)
+  }
+  await app.close()
+})
+
+test('a failed series refetch is not remembered for 15 minutes: the next resolve retries', async () => {
+  const { user, token } = authedUser('retry-after-failure')
+  const app = await buildApp()
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_D)
+  await reportProgress(app, token, ep1, 2 * TICKS_PER_MIN)
+
+  expireStremioCaches()
+  failingSeriesIds.add(SHOW_D.id)
+  const failedRes = await app.inject({ method: 'GET', url: `/Users/${user.id}/Items/${ep1}`, headers: { 'x-emby-token': token } })
+  assert.equal(failedRes.statusCode, 404, 'expected the failed refetch to leave the episode unresolved')
+  failingSeriesIds.delete(SHOW_D.id)
+
+  // No clock jump and no cache-clearing hook here: if the failure were cached
+  // for the full 15-minute TTL like a success, this immediate next call would
+  // still see it and 404 again.
+  const retryRes = await app.inject({ method: 'GET', url: `/Users/${user.id}/Items/${ep1}`, headers: { 'x-emby-token': token } })
+  assert.equal(retryRes.statusCode, 200, 'expected the next resolve to retry rather than reuse the failed lookup')
+  assert.equal(retryRes.json().Name, 'Pilot')
+  await app.close()
+})
+
+test('an unchanged ref is not rewritten by a later progress report', async () => {
+  const { user, token } = authedUser('rewrite-guard')
+  const app = await buildApp()
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_E)
+  await reportProgress(app, token, ep1, 1 * TICKS_PER_MIN)
+  const original = db.getStremioEpisodeRef(ep1)
+  assert.ok(original, 'expected the first progress report to write a ref')
+
+  // Tamper the stored row directly. A rewrite on the next progress report
+  // would put the real series id back; skipping the rewrite, as this fix
+  // does, leaves the tampered value in place — that is the observable
+  // difference between rewriting an unchanged ref and skipping it.
+  db.getDb().prepare(`UPDATE stremio_episode_refs SET series_id = ? WHERE item_id = ?`).run('tampered-series-id', ep1)
+  assert.equal(db.getStremioEpisodeRef(ep1)?.seriesId, 'tampered-series-id')
+
+  await reportProgress(app, token, ep1, 2 * TICKS_PER_MIN)
+  assert.equal(db.getStremioEpisodeRef(ep1)?.seriesId, 'tampered-series-id', 'expected the second report to skip the upsert, not restore the real series id')
+  await app.close()
+})
+
+test('the stream route redirects a search episode with an expired cache through its ref', async () => {
+  const { user, token } = authedUser('stream-redirect')
+  const app = await buildApp()
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_A)
+  await reportProgress(app, token, ep1, 2 * TICKS_PER_MIN)
+
+  expireStremioCaches()
+
+  const res = await app.inject({ method: 'GET', url: `/Videos/${ep1}/stream`, headers: { 'x-emby-token': token } })
+  assert.equal(res.statusCode, 302)
+  assert.match(res.headers.location as string, /\/play\/stremio\/series\/tt9990001%3A1%3A1/i)
   await app.close()
 })
 

@@ -151,6 +151,11 @@ const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: Stre
 // expired episodes of the same show shares one Cinemeta series fetch (see
 // fetchSeriesForStremioEpisodeRef below), whether or not the calls overlap.
 const stremioEpisodeRefSeriesCache = new Map<string, { promise: Promise<StremioMeta | null>; expiresAt: number }>()
+// How long handleResumeItems' series prefetch (below) waits before moving on
+// regardless. Bounds the worst case, a Cinemeta that hangs rather than
+// answers, to one wait instead of letting it hold up every row on the list,
+// library titles included.
+const RESUME_SERIES_PREFETCH_BOUND_MS = 3_000
 type JellyfinRouteOptions = {
   searchOnly?: boolean
   prewarmPlayback?: (playPath: string, label: string) => void
@@ -426,8 +431,16 @@ function fetchSeriesForStremioEpisodeRef(seriesId: string): Promise<StremioMeta 
   const promise = hydrateStremioSeriesMeta({ id: seriesId, type: 'series' })
     .then(series => ((series.videos?.length ?? 0) > 0 ? series : null))
     .catch(() => null)
-  stremioEpisodeRefSeriesCache.set(seriesId, { promise, expiresAt: now + STREMIO_CACHE_TTL_MS })
+  const entry = { promise, expiresAt: now + STREMIO_CACHE_TTL_MS }
+  stremioEpisodeRefSeriesCache.set(seriesId, entry)
   trimCacheMap(stremioEpisodeRefSeriesCache, STREMIO_CACHE_MAX_ITEMS)
+  // A failed fetch is not worth remembering for the full TTL: evict it so the
+  // next call retries instead of treating the series as unresolved, on every
+  // item/PlaybackInfo/stream/subtitle route it has episodes on, for up to 15
+  // minutes after one Cinemeta blip.
+  void promise.then(series => {
+    if (!series && stremioEpisodeRefSeriesCache.get(seriesId) === entry) stremioEpisodeRefSeriesCache.delete(seriesId)
+  })
   return promise
 }
 
@@ -441,6 +454,10 @@ function fetchSeriesForStremioEpisodeRef(seriesId: string): Promise<StremioMeta 
 async function resolveStremioEpisode(id: string): Promise<{ series: StremioMeta; episode: StremioMeta } | null> {
   const cached = idToStremioEpisode(id)
   if (cached) return cached
+  // Same shape check idToStremioEpisode makes. Without it, every id that
+  // isn't one — every library movie and episode on the item, image and
+  // PlaybackInfo routes — would still pay for a SQLite lookup below.
+  if (!/^00000000-0000-4000-8009-[0-9a-f]{12}$/i.test(id)) return null
   const ref = getStremioEpisodeRef(id)
   if (!ref) return null
   const series = await fetchSeriesForStremioEpisodeRef(ref.seriesId)
@@ -453,6 +470,22 @@ async function resolveStremioEpisode(id: string): Promise<{ series: StremioMeta;
   return { series, episode: video }
 }
 
+// Ids this process has already confirmed have a stremio_episode_refs row, so
+// rememberStremioEpisodeRef below can skip both the upsert and its fallback
+// hasStremioEpisodeRef read on every later progress report for the same
+// episode, not only the first. Bounded like the stremio caches above: a miss
+// here just costs one avoidable read, not a correctness problem.
+const rememberedStremioEpisodeRefIds = new Set<string>()
+
+function markStremioEpisodeRefRemembered(id: string): void {
+  rememberedStremioEpisodeRefIds.add(id)
+  while (rememberedStremioEpisodeRefIds.size > STREMIO_CACHE_MAX_ITEMS) {
+    const oldest = rememberedStremioEpisodeRefIds.values().next().value as string | undefined
+    if (oldest === undefined) return
+    rememberedStremioEpisodeRefIds.delete(oldest)
+  }
+}
+
 // Called wherever watch state is written for an item id, so an id that later
 // falls out of the 15-minute stremioEpisodeCache can still be resolved for
 // resume. Only fires when that cache is still warm — right after a play went
@@ -460,6 +493,14 @@ async function resolveStremioEpisode(id: string): Promise<{ series: StremioMeta;
 // episode the id names. A failed write is logged and never fails the caller.
 function rememberStremioEpisodeRef(id: string): void {
   if (!id.toLowerCase().startsWith(STREMIO_EPISODE_ID_PREFIX)) return
+  if (rememberedStremioEpisodeRefIds.has(id)) return
+  // A progress report repeats every ~10s for up to 15 minutes while the cache
+  // stays warm; a ref already on file needs no rewrite, just the one read
+  // above (or none, once this id is in the set) instead of an upsert too.
+  if (hasStremioEpisodeRef(id)) {
+    markStremioEpisodeRefRemembered(id)
+    return
+  }
   const cached = idToStremioEpisode(id)
   if (!cached) return
   try {
@@ -469,6 +510,7 @@ function rememberStremioEpisodeRef(id: string): void {
       season: stremioEpisodeSeasonNumber(cached.episode),
       episode: stremioEpisodeNumber(cached.episode),
     })
+    markStremioEpisodeRefRemembered(id)
   } catch (err) {
     console.warn(`stremio-episode-ref: failed to remember ${id}: ${err instanceof Error ? err.message : String(err)}`)
   }
@@ -3306,8 +3348,42 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const ids = listResumeItemIds(10_000, 0, user.id).filter(id =>
         !isStremioSearchItemId(id) || (id.toLowerCase().startsWith(STREMIO_EPISODE_ID_PREFIX) && hasStremioEpisodeRef(id)),
       )
+      // Every kept 8009- id above has a ref, so warm their distinct series
+      // once, in parallel, before resolving anything below. Without this the
+      // loop would await one Cinemeta fetch per series in turn — the normal
+      // state once the 15-minute caches have lapsed — and library rows on the
+      // same list would wait behind all of them. fetchSeriesForStremioEpisodeRef
+      // never rejects and shares its promise with resolveStremioEpisode's own
+      // call, so this only warms that cache; it is bounded so one hung
+      // Cinemeta series can't hold up the rest of the list either.
+      const episodeRefSeriesIds = new Map<string, string>() // id -> seriesId
+      for (const id of ids) {
+        if (!id.toLowerCase().startsWith(STREMIO_EPISODE_ID_PREFIX)) continue
+        const ref = getStremioEpisodeRef(id)
+        if (ref) episodeRefSeriesIds.set(id, ref.seriesId)
+      }
+      const settledSeriesIds = new Set<string>()
+      const distinctSeriesIds = [...new Set(episodeRefSeriesIds.values())]
+      if (distinctSeriesIds.length) {
+        const prefetches = distinctSeriesIds.map(seriesId =>
+          fetchSeriesForStremioEpisodeRef(seriesId).then(() => settledSeriesIds.add(seriesId)),
+        )
+        await new Promise<void>(resolve => {
+          const timer = setTimeout(resolve, RESUME_SERIES_PREFETCH_BOUND_MS)
+          Promise.all(prefetches).then(() => {
+            clearTimeout(timer)
+            resolve()
+          })
+        })
+      }
       const items = []
       for (const id of ids) {
+        // A series that didn't settle within the bound above stays unresolved
+        // for this pass; skip it rather than await it further, so a hung
+        // Cinemeta series is left out — as issue #34 already allows for any id
+        // that cannot resolve — instead of delaying the rest of the list.
+        const seriesId = episodeRefSeriesIds.get(id)
+        if (seriesId && !settledSeriesIds.has(seriesId)) continue
         const item = await handleItem(id, {
           code: () => ({ send: () => null }),
         }, user)
@@ -3493,9 +3569,15 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       // saved position rather than always reporting zero.
       const runtimeTicks = stremioRuntimeTicks(episode, 45)
       item.UserData = userDataForItem(id, getUserData(id, currentUser.id), runtimeTicks)
-      const externalId = await resolveStremioEpisodePlaybackExternalId(series, episode)
-      const playPath = `/play/stremio/series/${encodeURIComponent(externalId)}`
       const name = `${stremioMetaName(series)} - ${stremioMetaName(episode)}`
+      // addDetailMediaSources returns the item untouched, playPath unused, when
+      // there is nothing to build media sources for (headers is unset, which is
+      // what the resume list's own handleItem calls pass). Skip the external-id
+      // resolve then, since for a tmdb: series it can build a TMDB air-date
+      // index the resume path never needed.
+      const playPath = headers
+        ? `/play/stremio/series/${encodeURIComponent(await resolveStremioEpisodePlaybackExternalId(series, episode))}`
+        : ''
       return addDetailMediaSources(item, headers, {
         itemId: id,
         sourceId: id,
