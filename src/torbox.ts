@@ -482,8 +482,11 @@ function trackDownloadUrl(downloadUrl: string, torrentId: number): void {
   const deleteAt = Date.now() + CLEANUP_IDLE_DELAY_MS
   const entry: CleanupEntry = { torrentId, activeRequests: 0, deleteAt, retryCount: 0 }
   cleanupByDownloadUrl.set(downloadUrl, entry)
-  // The same value, not a second Date.now(): scheduleDeleteTorrent persists only a
-  // deadline that changed, and a fresh entry's deadline has not.
+  // This play's row is otherwise first saved by the first progress report
+  // that moves the deadline, about a minute in (touchDownloadUrl, gated by
+  // CLEANUP_RESCHEDULE_GRANULARITY_MS). A restart before that would lose the
+  // entry and leave the torrent on TorBox.
+  upsertTorBoxCleanupJob(downloadUrl, torrentId, deleteAt)
   scheduleDeleteTorrent(downloadUrl, entry, deleteAt)
 }
 

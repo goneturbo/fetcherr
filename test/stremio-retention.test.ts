@@ -10,15 +10,12 @@ process.env.DATABASE_PATH = databasePath
 const db = await import('../src/db.js')
 const torbox = await import('../src/torbox.js')
 
-// Every TorBox resolution schedules its own deletion 15 minutes out. The Jellyfin
-// routes push that back through touchDownloadUrl each time a client reports
-// progress. A Stremio client follows our 302 once and then streams the CDN URL
-// directly, so no second request ever reaches us and nothing will ever extend it.
-//
-// The 15 minute deadline lives only in torbox.ts's in-memory map: scheduleDeleteTorrent
-// persists a row only when the deadline *changes*, and creating an entry sets the
-// same value it schedules. So a cleanup job row appearing at all is the signal
-// that something moved the deadline, and its delete_at is by how much.
+// Every TorBox resolution schedules its own deletion 15 minutes out and saves that
+// row right away, so a restart before anything else happens still finds it. The
+// Jellyfin routes push the deadline back through touchDownloadUrl each time a
+// client reports progress. A Stremio client follows our 302 once and then
+// streams the CDN URL directly, so no second request ever reaches us and
+// nothing will ever extend it beyond what retainAddonPlayback saves here.
 
 // A tracked entry only exists for a requestdl URL, since that is what carries the
 // torrent id cleanup needs.
@@ -27,11 +24,14 @@ const requestdlUrl = (torrentId: number) =>
 
 const jobFor = (url: string) => db.listTorBoxCleanupJobs().find(job => job.downloadUrl === url) ?? null
 const hoursOut = (deleteAt: number) => (deleteAt - Date.now()) / 3_600_000
+const minutesOut = (deleteAt: number) => (deleteAt - Date.now()) / 60_000
 
 test('retaining an addon play pushes the deletion deadline out by six hours', () => {
   const url = requestdlUrl(1001)
   torbox.trackDirectTorBoxUrl(url)
-  assert.equal(jobFor(url), null, 'the untouched 15 minute deadline is in memory only')
+  const fresh = jobFor(url)
+  assert.notEqual(fresh, null, 'a freshly tracked URL has a row so a restart before the first touch does not lose it')
+  assert.ok(minutesOut(fresh!.deleteAt) > 14.9 && minutesOut(fresh!.deleteAt) < 15.1, `expected ~15 minutes, got ${minutesOut(fresh!.deleteAt)}`)
 
   torbox.retainAddonPlayback({ url, provider: 'TorBox' })
 
@@ -45,10 +45,11 @@ test('retaining an addon play pushes the deletion deadline out by six hours', ()
 test('a resolution from another provider is left alone', () => {
   const url = requestdlUrl(1002)
   torbox.trackDirectTorBoxUrl(url)
+  const before = jobFor(url)!.deleteAt
   torbox.retainAddonPlayback({ url, provider: 'RealDebrid' })
   torbox.retainAddonPlayback({ url, provider: 'Premiumize' })
   torbox.retainAddonPlayback({ url })
-  assert.equal(jobFor(url), null, 'only a TorBox resolution should be retained')
+  assert.equal(jobFor(url)!.deleteAt, before, 'only a TorBox resolution should push the deadline out')
 })
 
 test('retention never pulls a deadline back in', () => {
