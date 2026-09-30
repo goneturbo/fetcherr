@@ -23,6 +23,7 @@ import {
   torBoxRequestdlTorrentId,
 } from './torbox.js'
 import { resolveStream as pmResolveStream } from './premiumize.js'
+import { shouldWarmTorBoxLink, warmTorBoxLink } from './torbox-link.js'
 import { getShowByImdbId, getMovieByImdbId, getEpisodesForSeason, getLatestSeasonNumberForShow, isEpisodeVisibleToLibrary, listLatestSeasonShowSubscriptions, listMovies, listShows, pruneAllOrphanedMovies, pruneAllOrphanedShows, removeSourceKey, upsertManualShowSubscription } from './db.js'
 import { ensureShowSeasonsCached, refreshShowMetadataIfNeeded, refreshMovieMetadataIfNeeded } from './tmdb.js'
 import { getSessionUser, getTokenFromCookie, isUiAuthConfigured, isValidSession } from './ui/auth.js'
@@ -328,6 +329,14 @@ function playbackClientName(playPath: string): string {
 function rememberTorBoxPlaybackUrl(playPath: string, resolved: PlayResolution): void {
   if (resolved.provider !== 'TorBox') return
   torBoxPlaybackUrls.set(playPath, { url: resolved.url, expiresAt: Date.now() + PLAYBACK_ITEM_TTL_MS })
+}
+
+// TorBox's CDN needs a moment to learn a freshly issued presigned token, so
+// warm the link ourselves rather than hand the player a URL that 400s. The
+// resolved URL itself is untouched: cleanup tracking, rememberTorBoxPlaybackUrl
+// and the resolution caches all still key off it.
+async function playbackRedirectUrl(url: string): Promise<string> {
+  return shouldWarmTorBoxLink(url) ? await warmTorBoxLink(url) : url
 }
 
 function touchPlaybackItem(itemId: string): void {
@@ -1901,7 +1910,7 @@ app.get('/play/stremio/:mediaType/:externalId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1939,7 +1948,7 @@ app.get('/play/:imdbId', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
@@ -1980,7 +1989,7 @@ app.get('/play/:imdbId/:season/:episode', async (req, reply) => {
       return promise
     })()
     rememberTorBoxPlaybackUrl(playPath, resolved)
-    return reply.redirect(resolved.url, 302)
+    return reply.redirect(await playbackRedirectUrl(resolved.url), 302)
   } catch (err) {
     if (err instanceof PlaybackResolutionError) {
       return reply.code(err.statusCode).send(err.response)
