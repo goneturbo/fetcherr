@@ -406,6 +406,12 @@ function prewarmPlayback(playPath: string, label: string): void {
   promise
     .then(resolved => {
       app.log.info(`prewarm: ready for ${label}${resolved.filename ? ` → ${resolved.filename}` : ''}`)
+      // Start the warm now instead of waiting for /play: it then overlaps the
+      // requestdl redirect and the CDN's first-byte probe with the player still
+      // loading subtitles, rather than adding that wait to /play's own latency.
+      // warmTorBoxLink caches the result (and joins an in-flight warm if /play
+      // gets there first), so this never does the work twice.
+      if (shouldWarmTorBoxLink(resolved.url)) warmTorBoxLink(resolved.url)
     })
     .catch(err => app.log.info(`prewarm: ended for ${label}: ${err}`))
     .finally(() => {
