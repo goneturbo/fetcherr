@@ -6,7 +6,7 @@ import { config, normalizeListPresentation, discoverPresentationFromMode, DISCOV
 import { discoverSourceKey } from '../discover.js'
 import {
   listMovies, countMovies, getMovieByTmdbId,
-  listUsers, getUserData, saveProgress, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds,
+  listUsers, getUserData, saveProgress, saveRestartPosition, markPlayed, markUnplayed, listResumeItemIds, getAllPlayedItemIds, MIN_RESUME_TICKS, EARLY_STOP_FLOOR_TICKS,
   getEffectiveShowMode, listShows, countShows, getShowByTmdbId,
   getSeasonsForShow, getSeason, getEpisodesForSeason, getAiredEpisodesForSeason, getFirstAiredEpisodeForShow, isMovieVisibleToLibrary, isEpisodeVisibleToLibrary, hasAnySourceItem,
   authEnabled, canUserAccessMovie, canUserAccessShow, getDb, getUserById, getUserByUsername, hasRatingLimit, DEFAULT_ADMIN_USER_ID, isLibraryItemHidden, listSourceItems, getPersonProfilePath, type AppUser,
@@ -144,6 +144,43 @@ const jellyfinTokens = new Map<string, { userId: string; expiresAt: number }>()
 const loginAttempts = new Map<string, { count: number; resetAt: number }>()
 const proxiedImageCache = new Map<string, { buffer: Buffer; contentType: string; expiresAt: number }>()
 const traktCollectionSummaryCache = new Map<string, { expiresAt: number; summaries: TraktCollectionSummary[] }>()
+
+// Whether a Progress report above 0 has been seen for an account and item
+// since it last stopped, so Stopped can tell a real restart-and-give-up from
+// a single low position number, which a failed or barely-started play would
+// report too. The TTL bounds a play that never sends Stop (a crash or force
+// quit) from lingering forever; the size cap bounds pathological growth the
+// same way.
+const PLAY_RAN_SINCE_STOP_TTL_MS = 6 * 60 * 60 * 1000
+const PLAY_RAN_SINCE_STOP_MAX_ITEMS = 1_000
+const playRanSinceStop = new Map<string, number>() // `${userId}:${itemId}` -> expiresAt
+
+function playRanSinceStopKey(userId: string, itemId: string): string {
+  return `${userId}:${itemId}`
+}
+
+function rememberPlayRanSinceStop(userId: string, itemId: string): void {
+  const key = playRanSinceStopKey(userId, itemId)
+  playRanSinceStop.delete(key) // re-set so it moves to the end; trimming below drops the oldest, not this one
+  playRanSinceStop.set(key, Date.now() + PLAY_RAN_SINCE_STOP_TTL_MS)
+  trimCacheMap(playRanSinceStop, PLAY_RAN_SINCE_STOP_MAX_ITEMS)
+}
+
+function didPlayRunSinceStop(userId: string, itemId: string): boolean {
+  const key = playRanSinceStopKey(userId, itemId)
+  const expiresAt = playRanSinceStop.get(key)
+  if (expiresAt == null) return false
+  if (expiresAt <= Date.now()) {
+    playRanSinceStop.delete(key)
+    return false
+  }
+  return true
+}
+
+function forgetPlayRanSinceStop(userId: string, itemId: string): void {
+  playRanSinceStop.delete(playRanSinceStopKey(userId, itemId))
+}
+
 const stremioSearchCache = new Map<string, { meta: StremioMeta; mediaType: StremioMediaType; itemId: string; sourceId: string; expiresAt: number }>()
 const stremioSeasonCache = new Map<string, { series: StremioMeta; seasonNumber: number; expiresAt: number }>()
 const stremioEpisodeCache = new Map<string, { series: StremioMeta; episode: StremioMeta; expiresAt: number }>()
@@ -4024,6 +4061,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
       rememberStremioEpisodeRef(canonicalItemId)
+      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -4044,6 +4082,7 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       opts.touchPlaybackItem?.(canonicalItemId)
       saveProgress(canonicalItemId, positionTicks, user.id)
       rememberStremioEpisodeRef(canonicalItemId)
+      if (positionTicks > 0) rememberPlayRanSinceStop(user.id, canonicalItemId)
       if (canonicalItemId !== itemId) {
         app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
       }
@@ -4065,6 +4104,10 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
       const canonicalItemId = normalizePlaybackItemId(itemId)
       opts.stopPlaybackItem?.(canonicalItemId)
       idToStremioSearchMeta(canonicalItemId) // refresh TTL so 15-min cleanup window starts from stop time
+      // Captured before forgetting below: this Stop is what ends the play the
+      // remembered flag was tracking, whichever branch below handles it.
+      const ranSinceStop = didPlayRunSinceStop(user.id, canonicalItemId)
+      forgetPlayRanSinceStop(user.id, canonicalItemId)
       const runtimeTicks = bodyRuntimeTicks ?? runtimeTicksForItem(canonicalItemId) ?? undefined
       if (playedToCompletion || reachedCompletionThreshold(positionTicks, runtimeTicks)) {
         markPlayed(canonicalItemId, user.id)
@@ -4075,12 +4118,31 @@ export async function jellyfinRoutes(app: FastifyInstance, opts: JellyfinRouteOp
           app.log.info(`progress: auto-marked played ${canonicalItemId} at ${positionTicks} / ${runtimeTicks} ticks`)
         }
       } else if (positionTicks != null) {
-        saveProgress(canonicalItemId, positionTicks, user.id)
+        // A play that really ran (a Progress report above 0 since the last Stop)
+        // and stopped between the 5s floor and MIN_RESUME_TICKS started over from
+        // the beginning and was given up on early: keep that stop's position in
+        // Continue Watching, overwriting the old point, instead of saveProgress's
+        // keep-the-old-point rule below. The floor excludes Infuse's pre-seek
+        // first Progress report of a resumed play. Gated on an existing resume
+        // point so a title played from the start and stopped early does not get
+        // added to Continue Watching for the first time: without a prior point,
+        // behaviour here is exactly saveProgress's own, below.
+        const hadExistingResumePoint = getUserData(canonicalItemId, user.id).positionTicks >= EARLY_STOP_FLOOR_TICKS
+        const restartedAndGaveUpEarly = hadExistingResumePoint && ranSinceStop && positionTicks >= EARLY_STOP_FLOOR_TICKS && positionTicks < MIN_RESUME_TICKS
+        if (restartedAndGaveUpEarly) {
+          saveRestartPosition(canonicalItemId, positionTicks, user.id)
+          app.log.info(`progress: saved restart position ${canonicalItemId} at ${positionTicks} ticks`)
+        } else {
+          saveProgress(canonicalItemId, positionTicks, user.id)
+          app.log.info(`progress: stopped ${canonicalItemId} at ${positionTicks} ticks`)
+        }
+        // Runs on both paths above, the restart save and the normal saveProgress:
+        // a search episode stopped early on the restart path still needs its ref
+        // written here, or it cannot be found again once its 15-minute cache lapses.
         rememberStremioEpisodeRef(canonicalItemId)
         if (canonicalItemId !== itemId) {
           app.log.info(`progress: normalized ${itemId} -> ${canonicalItemId}`)
         }
-        app.log.info(`progress: stopped ${canonicalItemId} at ${positionTicks} ticks`)
       } else {
         app.log.warn(`progress: missing stop position for ${canonicalItemId}`)
       }

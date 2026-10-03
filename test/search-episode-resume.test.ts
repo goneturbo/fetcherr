@@ -20,6 +20,7 @@ const { jellyfinRoutes, resolveJellyfinUser } = await import('../src/jellyfin/in
 const { config } = await import('../src/config.js')
 
 const TICKS_PER_MIN = 60 * 10_000_000
+const TICKS_PER_SEC = 10_000_000
 
 // ── A fake Cinemeta: manifest, catalog search and per-episode meta lookups ──
 
@@ -153,6 +154,16 @@ async function reportProgress(app: ReturnType<typeof Fastify>, token: string, it
   assert.equal(res.statusCode, 200, `progress report failed: ${res.body}`)
 }
 
+async function stopPlaying(app: ReturnType<typeof Fastify>, token: string, itemId: string, positionTicks: number) {
+  const res = await app.inject({
+    method: 'POST',
+    url: '/Sessions/Playing/Stopped',
+    headers: { 'x-emby-token': token },
+    payload: { ItemId: itemId, PositionTicks: positionTicks },
+  })
+  assert.equal(res.statusCode, 200, `stop report failed: ${res.body}`)
+}
+
 async function getResume(app: ReturnType<typeof Fastify>, token: string, userId: string) {
   const res = await app.inject({ method: 'GET', url: `/Users/${userId}/Items/Resume`, headers: { 'x-emby-token': token } })
   assert.equal(res.statusCode, 200, `resume failed: ${res.body}`)
@@ -203,6 +214,30 @@ test('a ref written while the cache is warm lets a search episode resume after i
   assert.equal(resume.Items.length, 1)
   assert.equal(resume.Items[0].Name, 'Pilot')
   assert.equal((resume.Items[0].UserData as { PlaybackPositionTicks: number }).PlaybackPositionTicks, 5 * TICKS_PER_MIN)
+  await app.close()
+})
+
+test('a search episode stopped early on the restart path still has its ref written, and resumes after its cache expires', async () => {
+  const { user, token } = authedUser('restart-path-ref')
+  const app = await buildApp()
+  const [ep1] = await discoverEpisodes(app, token, user.id, SHOW_A)
+
+  // An existing resume point, same as a real resume-and-jump-back: the first
+  // report is a real position above MIN_RESUME_TICKS, so the episode already
+  // had a saved point before the restart-and-give-up below.
+  await reportProgress(app, token, ep1, 5 * TICKS_PER_MIN)
+  await reportProgress(app, token, ep1, 1 * TICKS_PER_SEC)
+  await stopPlaying(app, token, ep1, 90 * TICKS_PER_SEC)
+  const opened = await getItem(app, token, user.id, ep1)
+  assert.equal((opened.UserData as Record<string, unknown>).PlaybackPositionTicks, 90 * TICKS_PER_SEC)
+
+  expireStremioCaches()
+
+  const resume = await getResume(app, token, user.id)
+  assert.equal(resume.TotalRecordCount, 1)
+  assert.equal(resume.Items.length, 1)
+  assert.equal(resume.Items[0].Name, 'Pilot')
+  assert.equal((resume.Items[0].UserData as { PlaybackPositionTicks: number }).PlaybackPositionTicks, 90 * TICKS_PER_SEC)
   await app.close()
 })
 
