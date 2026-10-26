@@ -570,6 +570,57 @@ test('a search film with a saved position shows it in /Items/{id} and in resume'
   }
 })
 
+// A library film lists RunTimeTicks and UserData.PlayedPercentage, and Infuse
+// only resumes what has both: after a relaunch it played Shawshank and Avatar,
+// opened as search films, from 0:00 although resume listed their positions.
+test('a search film lists its runtime and played percentage in /Items/{id} and in resume, as a library film does', async () => {
+  const { user, token } = authedUser('search-film-runtime')
+  const originalKey = config.tmdbApiKey
+  config.tmdbApiKey = 'fake-search-film-key'
+  try {
+    const app = await buildApp()
+    const filmId = stubSearchFilm(4_242_888, 'Runtime Search Film') // runtimeMins: 100
+    db.saveProgress(filmId, 25 * TICKS_PER_MIN, user.id)
+
+    const opened = await getItem(app, token, user.id, filmId)
+    assert.equal(opened.RunTimeTicks, 100 * TICKS_PER_MIN)
+    assert.equal((opened.UserData as Record<string, unknown>).PlayedPercentage, 25)
+    assert.equal((opened.UserData as Record<string, unknown>).PlaybackPositionTicks, 25 * TICKS_PER_MIN)
+
+    const resume = await getResume(app, token, user.id)
+    const listed = resume.Items.find(item => item.Id === filmId)
+    assert.ok(listed, 'expected the search film in resume')
+    assert.equal(listed!.RunTimeTicks, 100 * TICKS_PER_MIN)
+    assert.equal((listed!.UserData as Record<string, unknown>).PlayedPercentage, 25)
+    await app.close()
+  } finally {
+    config.tmdbApiKey = originalKey
+  }
+})
+
+// Infuse's Stopped body carries no RunTimeTicks, so the server's own runtime is
+// all that can tell a finished film. Avatar stopped at 197.3 of 198 minutes
+// stayed unplayed in Continue Watching because search ids had no runtime.
+test('a search film stopped in its last 5% is marked played and leaves resume', async () => {
+  const { user, token } = authedUser('search-film-finished')
+  const originalKey = config.tmdbApiKey
+  config.tmdbApiKey = 'fake-search-film-key'
+  try {
+    const app = await buildApp()
+    const filmId = stubSearchFilm(4_242_999, 'Finished Search Film') // runtimeMins: 100
+    await reportProgress(app, token, filmId, 50 * TICKS_PER_MIN)
+    await stopPlaying(app, token, filmId, 97 * TICKS_PER_MIN)
+
+    const opened = await getItem(app, token, user.id, filmId)
+    assert.equal((opened.UserData as Record<string, unknown>).Played, true)
+    const resume = await getResume(app, token, user.id)
+    assert.equal(resume.Items.find(item => item.Id === filmId), undefined)
+    await app.close()
+  } finally {
+    config.tmdbApiKey = originalKey
+  }
+})
+
 test('another user sees their own watch state on a search episode, not this user\'s', async () => {
   const { user: userA, token: tokenA } = authedUser('multi-user-a')
   const { token: tokenB } = authedUser('multi-user-b')

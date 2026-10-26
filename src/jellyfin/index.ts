@@ -884,7 +884,9 @@ function runtimeTicksForItem(itemId: string): number | null {
     return episode ? (episode.runtimeMins || 45) * 60 * 10_000_000 : null
   }
 
-  const tmdbId = idToTmdb(itemId)
+  // A search film (8004-) is a row in the same movies table as a library one.
+  // idToTmdb answers 0, not null, for an id it does not know.
+  const tmdbId = idToTmdb(itemId) || idToSearchMovieTmdb(itemId)
   if (!tmdbId) return null
   const movie = getMovieByTmdbId(tmdbId)
   return movie ? (movie.runtimeMins || 90) * 60 * 10_000_000 : null
@@ -1909,6 +1911,10 @@ function stremioEpisodeToItem(series: StremioMeta, episode: StremioMeta, userId?
 
 function movieToSearchItem(m: Movie, userId?: string) {
   const genres: string[] = JSON.parse(m.genres || '[]')
+  // Same runtime as movieToItem and the MediaSources this film is played from.
+  // Without RunTimeTicks, Infuse played search films from 0:00 after a
+  // relaunch even though their PlaybackPositionTicks was set.
+  const runtimeTicks = (m.runtimeMins || 90) * 60 * 10_000_000
   const id = searchMovieTmdbToId(m.tmdbId)
   const posterTag = m.posterPath ? m.posterPath.replace(/\W/g, '').slice(0, 16) : undefined
   const thumbTag = (m.backdropPath || m.posterPath) ? (m.backdropPath || m.posterPath).replace(/\W/g, '').slice(0, 16) : undefined
@@ -1938,6 +1944,7 @@ function movieToSearchItem(m: Movie, userId?: string) {
     ExternalUrls:       externalUrls('movie', m.imdbId, m.tmdbId),
     PremiereDate:       jellyfinPremiereDate(m.releaseDate || m.digitalReleaseDate),
     DateCreated:        m.syncedAt,
+    RunTimeTicks:       runtimeTicks,
     IsFolder:           false,
     ImageTags:          {
       ...(posterTag ? { Primary: posterTag } : {}),
@@ -1949,8 +1956,8 @@ function movieToSearchItem(m: Movie, userId?: string) {
     ParentId:           FOLDER_ID,
     ProviderIds:        { Imdb: m.imdbId || undefined, Tmdb: String(m.tmdbId) },
     UserData:           userId
-      ? userDataForItem(id, getUserData(id, userId))
-      : userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }),
+      ? userDataForItem(id, getUserData(id, userId), runtimeTicks)
+      : userDataForItem(id, { played: false, playCount: 0, positionTicks: 0, lastPlayedDate: '' }, runtimeTicks),
   }
 }
 
